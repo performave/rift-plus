@@ -66,19 +66,45 @@ run_on_start = ["sudo rift sa load"]
 ```
 
 The rule authorizes exactly one command line, from exactly the binary that
-installed it: rebuild or move `rift` and it stops authorizing, and
+installed it: rebuild, upgrade or move `rift` and it stops authorizing, and
 `sudo rift sa install-sudoers` has to run again. It is validated with
 `visudo -c` before it is moved into place, so a malformed rule can never lock
 sudo.
+
+That failure is a quiet one -- launchd has nowhere to type the password, so the
+addition simply is not there after the next Dock restart -- which is why rift
+checks the rule itself. `rift sa status` reports it on a second line, and rift
+warns in its log at startup whenever `run_on_start` contains a
+`sudo ... sa load` and the rule is missing or pinned to another build. The check
+reads `sudo -l` (the rule file itself is root-only) and compares the digest the
+rule names against the running binary, so it answers for the binary you ask,
+not for a path.
+
+## Uninstalling
+
+`brew uninstall` removes the keg and nothing else: the bundle and the sudoers
+rule are root-owned and outside Homebrew's prefix, and a formula has no hook that
+runs on uninstall. Take them out first, while the binary is still there to do
+it:
+
+```sh
+sudo rift sa uninstall --all   # the bundle and the sudoers rule
+brew services stop rift-plus
+brew uninstall rift-plus
+```
+
+The payload already inside Dock is untouched by any of this; it goes when Dock
+does (`killall Dock`), and is harmless until then.
 
 ## Commands
 
 | command | root | what it does |
 |---|---|---|
-| `rift sa status` | no | handshakes with the payload inside Dock |
+| `rift sa status` | no | handshakes with the payload inside Dock; reports the sudoers rule |
 | `rift sa load` | yes | installs if needed, injects, reports health |
 | `rift sa install` | yes | writes the bundle without injecting |
 | `rift sa uninstall` | yes | removes `/Library/ScriptingAdditions/rift.osax` |
+| `rift sa uninstall --all` | yes | that, and the sudoers rule: everything outside Homebrew's prefix |
 | `rift sa install-sudoers` | yes | passwordless `sudo rift sa load` |
 | `rift sa uninstall-sudoers` | yes | removes that rule |
 

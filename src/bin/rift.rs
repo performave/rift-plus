@@ -206,6 +206,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
         process::exit(0);
     }
 
+    rift_wm::sys::osax::warn_if_sudoers_rule_is_stale(&config.settings.run_on_start);
     execute_startup_commands(&config.settings.run_on_start);
     // After run_on_start, since that is where `sudo rift sa load` usually is.
     rift_wm::sys::scripting_addition::apply_space_switch_animation(

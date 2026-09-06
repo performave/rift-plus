@@ -58,7 +58,12 @@ pub enum SaCommands {
     /// Write the scripting addition to disk without injecting (requires root)
     Install,
     /// Remove the scripting addition from disk (requires root)
-    Uninstall,
+    Uninstall {
+        /// Also remove the sudoers rule: everything `rift sa` put outside
+        /// Homebrew's prefix, which `brew uninstall` cannot reach
+        #[arg(long)]
+        all: bool,
+    },
     /// Allow passwordless `sudo rift sa load` for the invoking user
     InstallSudoers,
     /// Remove the passwordless `sudo rift sa load` rule
@@ -77,13 +82,24 @@ pub fn handle_sa_command(cmd: &SaCommands) -> Result<String, String> {
                 "scripting addition v{OSAX_VERSION} installed at {OSAX_BASE_DIR}"
             ))
         }
-        SaCommands::Uninstall => {
+        SaCommands::Uninstall { all } => {
             require_root("uninstalled")?;
-            if !is_installed() {
-                return Ok(format!("no scripting addition installed at {OSAX_BASE_DIR}"));
+            let mut report = if is_installed() {
+                remove().map_err(|error| format!("failed to remove {OSAX_BASE_DIR}: {error}"))?;
+                format!("removed {OSAX_BASE_DIR}")
+            } else {
+                format!("no scripting addition installed at {OSAX_BASE_DIR}")
+            };
+            if *all {
+                report.push('\n');
+                report.push_str(&uninstall_sudoers()?);
+                // Nothing here unloads the payload: it belongs to Dock once
+                // injected, and only Dock going away takes it with it.
+                report.push_str(
+                    "\na payload already inside Dock stays until Dock restarts ('killall Dock')",
+                );
             }
-            remove().map_err(|error| format!("failed to remove {OSAX_BASE_DIR}: {error}"))?;
-            Ok(format!("removed {OSAX_BASE_DIR}"))
+            Ok(report)
         }
         SaCommands::InstallSudoers => install_sudoers(),
         SaCommands::UninstallSudoers => uninstall_sudoers(),
@@ -645,6 +661,14 @@ fn reapply_to_running_rift() -> &'static str {
 /// that is actually running: a Dock restart drops the payload while leaving the
 /// bundle installed and looking fine.
 fn status() -> Result<String, String> {
+    // The rule is reported whatever the payload says: a healthy payload with
+    // a stale rule is exactly the setup that breaks at the next Dock restart.
+    let rule = sudoers_rule_state().describe();
+    let append = |line: String| format!("{line}\n{rule}");
+    payload_status().map(append).map_err(append)
+}
+
+fn payload_status() -> Result<String, String> {
     let Some(user) = invoking_user() else {
         return Err("cannot determine the current user (env USER is not set)".to_string());
     };
@@ -762,9 +786,146 @@ fn uninstall_sudoers() -> Result<String, String> {
     }
 }
 
+/// What the passwordless rule says about *this* binary, as far as an
+/// unprivileged process can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SudoersRule {
+    /// No rule authorizes `sa load` for this user without a password.
+    Missing,
+    /// The rule is pinned to this binary's digest.
+    Current,
+    /// The rule is pinned to some other binary's digest, so `sudo rift sa load`
+    /// asks for a password; `pinned` is the path it names.
+    Stale { pinned: String },
+    /// The check itself could not be made.
+    Unknown(String),
+}
+
+impl SudoersRule {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Missing => format!(
+                "no passwordless 'sudo rift sa load' rule for this user; run \
+                 'sudo rift sa install-sudoers' if run_on_start loads the addition"
+            ),
+            Self::Current => {
+                "the passwordless 'sudo rift sa load' rule is pinned to this binary".to_string()
+            }
+            Self::Stale { pinned } => format!(
+                "the passwordless rule at {SUDOERS_PATH} is pinned to a different build of \
+                 {pinned}, so 'sudo rift sa load' will ask for a password (rift was rebuilt, \
+                 upgraded or moved since); run 'sudo rift sa install-sudoers'"
+            ),
+            Self::Unknown(error) => {
+                format!("could not check the passwordless 'sa load' rule: {error}")
+            }
+        }
+    }
+}
+
+/// The rule file is root-only, so this asks `sudo -l` instead, which lists the
+/// user's rules digest and all. That listing is itself passwordless exactly
+/// when the user has *some* NOPASSWD rule (sudoers' `listpw=any` default) --
+/// and the rule looked for is one -- so a listing that wants a password is a
+/// user without it. The digest, not the path, is what decides staleness: the
+/// path the rule names and the one this process runs under may differ (the
+/// launchd plist runs the keg, `sudo rift` finds the symlink) while the bytes
+/// are the same.
+pub fn sudoers_rule_state() -> SudoersRule {
+    if !Path::new(SUDOERS_PATH).exists() {
+        return SudoersRule::Missing;
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            return SudoersRule::Unknown(format!("cannot locate this executable: {error}"));
+        }
+    };
+    let sha = match sha256_hex(&exe) {
+        Ok(sha) => sha,
+        Err(error) => {
+            return SudoersRule::Unknown(format!("unable to hash '{}': {error}", exe.display()));
+        }
+    };
+
+    let output = match Command::new("/usr/bin/sudo").args(["-n", "-l"]).output() {
+        Ok(output) => output,
+        Err(error) => return SudoersRule::Unknown(format!("could not run sudo: {error}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("password") {
+            return SudoersRule::Missing;
+        }
+        return SudoersRule::Unknown(format!("'sudo -n -l' failed: {}", stderr.trim()));
+    }
+
+    let rules = pinned_load_rules(&String::from_utf8_lossy(&output.stdout));
+    if rules.iter().any(|(digest, _)| *digest == sha) {
+        SudoersRule::Current
+    } else if let Some((_, pinned)) = rules.into_iter().next() {
+        SudoersRule::Stale { pinned }
+    } else {
+        SudoersRule::Missing
+    }
+}
+
+/// Every `sha256:<digest> <path> sa load` in a `sudo -l` listing, as
+/// (digest, path). sudo wraps long entries across lines, so this reads tokens
+/// rather than lines.
+fn pinned_load_rules(listing: &str) -> Vec<(String, String)> {
+    let tokens: Vec<&str> = listing.split_whitespace().collect();
+    tokens
+        .windows(4)
+        .filter_map(|window| match window {
+            [digest, path, "sa", "load"] if path.starts_with('/') => {
+                let digest = digest.strip_prefix("sha256:")?;
+                Some((digest.to_ascii_lowercase(), (*path).to_string()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `run_on_start` is where `sudo rift sa load` lives, and the launchd service
+/// has no tty for the password sudo asks for once the rule no longer matches
+/// this binary. Said up front, naming the fix, rather than left to the
+/// command's own "a password is required" in the log.
+pub fn warn_if_sudoers_rule_is_stale(run_on_start: &[String]) {
+    let loads_via_sudo = run_on_start.iter().any(|command| {
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        tokens.first() == Some(&"sudo") && tokens.ends_with(&["sa", "load"])
+    });
+    if !loads_via_sudo {
+        return;
+    }
+    match sudoers_rule_state() {
+        SudoersRule::Current => {}
+        state => tracing::warn!("{}", state.describe()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_rules_survive_sudo_wrapping_the_listing() {
+        // What `sudo -l` prints on a machine with rift's rule and yabai's next
+        // to it, wrapped the way sudo wraps.
+        let listing = "User eric may run the following commands on host:\n    (ALL) ALL\n    \
+                       (root) NOPASSWD:\n        \
+                       sha256:943905C34467f2fc569f7730728df1c32123e47771f86acde8b7ab1b7c684f81\n        \
+                       /opt/homebrew/bin/rift sa load\n    (root) NOPASSWD:\n        \
+                       sha256:0cd2e1bd2b2ee394eb04c2cd48a42ce6be027eb79be9a4311ca7862b2fd0bcb6\n        \
+                       /opt/homebrew/bin/yabai --load-sa\n";
+        assert_eq!(pinned_load_rules(listing), vec![(
+            "943905c34467f2fc569f7730728df1c32123e47771f86acde8b7ab1b7c684f81".to_string(),
+            "/opt/homebrew/bin/rift".to_string()
+        )]);
+        assert!(pinned_load_rules("(ALL) ALL").is_empty());
+    }
 
     #[test]
     fn version_matches_the_payload_header() {
