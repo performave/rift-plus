@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.3-plus.2] - 2026-09-06
+
 ### Added
 
 - **rift notices when the passwordless `sa load` rule no longer matches it.**
@@ -68,7 +70,6 @@ Entries describe this fork's changes relative to
 - **A desktop rift made at an unplug is only destroyed once its windows have
   somewhere to go.** When the returning display brings no fresh desktop for
   the survivor, the made one is its desktop now and stays, windows and all.
-
 - **`mouse_follows_focus` follows a cmd-tab that comes right after a click.**
   A focus change within half a second of a mouse release is taken to be the
   click's own doing — into a window, on another display's menu bar, to dismiss
@@ -392,5 +393,6 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.3-plus.1...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.3-plus.2...HEAD
+[0.5.3-plus.2]: https://github.com/performave/rift-plus/compare/v0.5.3-plus.1...v0.5.3-plus.2
 [0.5.3-plus.1]: https://github.com/performave/rift-plus/compare/v0.5.3...v0.5.3-plus.1
