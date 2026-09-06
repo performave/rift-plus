@@ -143,6 +143,35 @@ impl Reactor {
         self.restore_window_to_active_layout_if_visible(window, space)
     }
 
+    /// The window server has just ordered `window` in. If it is on its way
+    /// back from native fullscreen and nothing has put it in its tree yet,
+    /// this is the moment.
+    ///
+    /// Leaving fullscreen, the window server orders the window out, moves it
+    /// to its user space, moves the display there, and only then orders it
+    /// back in. An inventory taken in between leaves the window out — an AX
+    /// window without an on-screen peer — and the space change that would
+    /// have re-added it has come and gone. The order-in is the last event
+    /// that mentions the window, so it has to do the adding; a window with no
+    /// slot waiting is an ordinary order-in and is left alone.
+    pub(super) fn restore_ordered_in_window_after_fullscreen(&mut self, window: WindowId) -> bool {
+        let Some(space) = self
+            .fullscreen_slots_awaiting_insertion()
+            .into_iter()
+            .find_map(|(waiting, space)| (waiting == window).then_some(space))
+        else {
+            return false;
+        };
+        if !self.is_space_active(space) {
+            return false;
+        }
+        crate::sys::trace::act(
+            "fullscreen_slot",
+            &(window.idx.get(), "ordered in; restoring", space.get()),
+        );
+        self.restore_window_to_layout_after_fullscreen(window, space)
+    }
+
     /// The slots whose window is not in its tree yet. Asked before a layout
     /// event is applied; whichever of these windows is tiled afterwards was
     /// put there by that event, whatever kind of event it was. Discovery

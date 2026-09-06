@@ -42,6 +42,10 @@ thread_local! {
     static TEST_SPACE_WINDOW_LIST_BY_SPACE_OVERRIDE: RefCell<HashMap<u64, Vec<u32>>> = RefCell::new(HashMap::default());
     static TEST_WINDOW_SPACES_OVERRIDE: RefCell<HashMap<u32, Vec<u64>>> = RefCell::new(HashMap::default());
     static TEST_WINDOW_ORDERED_IN_OVERRIDE: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::default());
+    /// What `app_window_suitability` answers; without an entry it says
+    /// unsuitable, the inert answer, which retires any window an inventory
+    /// omits.
+    static TEST_WINDOW_SUITABILITY_OVERRIDE: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::default());
     /// Ids the window server has forgotten. `get_window` fabricates a record for
     /// any id in tests, so this is how a test says "this window is really gone".
     static TEST_WINDOW_GONE_OVERRIDE: RefCell<HashSet<u32>> = RefCell::new(HashSet::default());
@@ -1174,7 +1178,26 @@ pub fn set_window_ordered_in_override(id: WindowServerId, ordered: Option<bool>)
     });
 }
 
+#[cfg(test)]
+pub fn set_window_suitability_override(id: WindowServerId, suitable: Option<bool>) {
+    TEST_WINDOW_SUITABILITY_OVERRIDE.with(|override_suitable| {
+        let mut override_suitable = override_suitable.borrow_mut();
+        if let Some(suitable) = suitable {
+            override_suitable.insert(id.as_u32(), suitable);
+        } else {
+            override_suitable.remove(&id.as_u32());
+        }
+    });
+}
+
 pub fn app_window_suitability(id: WindowServerId) -> Option<bool> {
+    #[cfg(test)]
+    if let Some(suitable) = TEST_WINDOW_SUITABILITY_OVERRIDE
+        .with(|override_suitable| override_suitable.borrow().get(&id.as_u32()).copied())
+    {
+        return Some(suitable);
+    }
+
     trace::observe("app_window_suitability", id.as_u32(), || {
         live_answer(
             || {

@@ -2042,6 +2042,93 @@ fn fullscreen_exit_across_an_active_fullscreen_space_bsp() {
     fullscreen_exit_across_an_active_fullscreen_space(LayoutMode::Bsp);
 }
 
+/// The same exit, with the window server's ordering-out mixed in — recorded
+/// off a YouTube video in Zen. The window is ordered out while it leaves the
+/// fullscreen space and only ordered back in *after* the display has reached
+/// the user space, so every path that runs on the arrival — the appearance,
+/// the space change, the discovery it triggers — finds the window hidden and
+/// leaves it out. The order-in is the last event that mentions the window,
+/// and it has to be the one that puts it back.
+#[test]
+fn fullscreen_exit_restores_the_slot_when_the_window_is_ordered_in_last() {
+    let (mut apps, mut reactor) = test_context();
+
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let user_space = SpaceId::new(1);
+    let fullscreen_space = SpaceId::new(0x400000000 + user_space.get());
+    let left = WindowId::new(1, 1);
+    let right = WindowId::new(1, 2);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(user_space)]));
+    make_active_app(&mut apps, &mut reactor, 1, make_windows(2), Some(left));
+
+    let order = |reactor: &Reactor| {
+        reactor
+            .layout_manager
+            .layout_engine
+            .windows_on_space_in_layout_order(user_space)
+    };
+    assert_eq!(order(&reactor), vec![left, right]);
+
+    let wsid = reactor.state.windows.window(left).unwrap().info.sys_id.unwrap();
+
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+    window_server_destroyed(&mut reactor, wsid, user_space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+    window_server_appeared(&mut reactor, wsid, fullscreen_space, SpaceEventKind::Fullscreen);
+    assert!(!has_window_in_layout(&mut reactor, user_space, frame, left));
+
+    reactor.space_state.fullscreen_spaces.insert(fullscreen_space);
+    reactor.handle_event(space_state_event(vec![frame], vec![None]));
+    apps.simulate_until_quiet(&mut reactor);
+
+    // Leaving: ordered out, gone from the fullscreen space, back on the user
+    // space, and the display follows — all while the window is still hidden.
+    // An inventory taken meanwhile leaves the window out, as the app actor
+    // does for an AX window without an on-screen window-server peer; the
+    // window server still knows the window and calls it suitable, so the
+    // omission does not retire it.
+    let hidden = apps.windows.remove(&left).expect("the window is known to its app");
+    crate::sys::window_server::set_window_suitability_override(wsid, Some(true));
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+    window_server_destroyed(&mut reactor, wsid, fullscreen_space, SpaceEventKind::Fullscreen);
+    reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, false));
+    window_server_appeared(&mut reactor, wsid, user_space, SpaceEventKind::User);
+    reactor.space_state.fullscreen_spaces.remove(&fullscreen_space);
+    // The display's snapshot lists what is on screen, which is not yet the
+    // returning window.
+    let right_wsid = reactor.state.windows.window(right).unwrap().info.sys_id.unwrap();
+    reactor.handle_event(space_state_event_with(
+        vec![frame],
+        vec![Some(user_space)],
+        |state| {
+            state.active_window_spaces.insert(right_wsid, user_space);
+        },
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(
+        reactor.state.windows.contains_window(left),
+        "the window is not dead, only hidden"
+    );
+    assert!(
+        !has_window_in_layout(&mut reactor, user_space, frame, left),
+        "a window the window server still reports hidden must not be tiled yet"
+    );
+
+    // Then the window server orders it in.
+    apps.windows.insert(left, hidden);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+    crate::sys::window_server::set_window_suitability_override(wsid, None);
+    reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, true));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        order(&reactor),
+        vec![left, right],
+        "the order-in is the last event about the window; it must put it back where it was"
+    );
+}
+
 #[test]
 fn known_window_server_appearance_restores_same_workspace_after_fullscreen() {
     let (mut apps, mut reactor) = test_context();

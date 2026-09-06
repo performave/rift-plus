@@ -11,6 +11,17 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Leaving native fullscreen puts the window back in its slot even when the
+  window server orders it in last.** Coming out of a fullscreen video in Zen,
+  the window server ordered the window out, moved it home, moved the display
+  home, and only then ordered it back in. The inventory taken in between left
+  the window out, the space change that would have re-tiled it had come and
+  gone, and the window sat floating over the layout until the next switch to
+  that space. The order-in now puts a window with a fullscreen slot waiting
+  back where it was.
+
 ## [0.5.5-plus.2] - 2026-09-06
 
 Against upstream `v0.5.5`.

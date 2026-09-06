@@ -2282,6 +2282,7 @@ impl Reactor {
                 if let Some(wid) = self.state.windows.tracked_window_id(wsid) {
                     if visible {
                         self.state.windows.mark_window_visible(wsid);
+                        self.restore_ordered_in_window_after_fullscreen(wid);
                     } else {
                         self.state.windows.mark_window_hidden(wsid);
                         // Being ordered out is not proof of anything on its own:
