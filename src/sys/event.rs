@@ -31,9 +31,7 @@ const RIFT_SYNTHETIC_EVENT_MARKER: i64 = 0x5249_4654;
 const KEYCODE_W: u16 = 0x0d;
 
 impl From<MouseState> for u8 {
-    fn from(state: MouseState) -> u8 {
-        state as u8
-    }
+    fn from(state: MouseState) -> u8 { state as u8 }
 }
 
 impl TryFrom<u8> for MouseState {
@@ -48,9 +46,7 @@ impl TryFrom<u8> for MouseState {
     }
 }
 
-pub fn set_mouse_state(state: MouseState) {
-    MOUSE_STATE.store(state.into(), Ordering::Relaxed);
-}
+pub fn set_mouse_state(state: MouseState) { MOUSE_STATE.store(state.into(), Ordering::Relaxed); }
 
 static LAST_MOUSE_UP_WAS_LEFT: AtomicBool = AtomicBool::new(false);
 
@@ -79,6 +75,40 @@ pub fn last_mouse_up_was_left() -> bool {
         return left;
     }
     LAST_MOUSE_UP_WAS_LEFT.load(Ordering::Relaxed)
+}
+
+static KEY_PRESSED_SINCE_MOUSE_UP: AtomicBool = AtomicBool::new(false);
+
+/// Whether the keyboard has spoken since the button last came up. A focus
+/// change that lands shortly after a click is normally the click's own doing,
+/// but not when a key was pressed in between: cmd-tab, cmd-`, a hotkey. The
+/// tap flips this on at every real key press and off at every release of a
+/// button, so it reflects the physical order of events however far behind
+/// the reactor is in reading them.
+pub fn note_key_pressed() { KEY_PRESSED_SINCE_MOUSE_UP.store(true, Ordering::Relaxed); }
+
+pub fn note_mouse_up() { KEY_PRESSED_SINCE_MOUSE_UP.store(false, Ordering::Relaxed); }
+
+#[cfg(test)]
+thread_local! {
+    static TEST_KEY_PRESSED_SINCE_MOUSE_UP: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Makes `key_pressed_since_mouse_up` answer `pressed` on this thread, for tests.
+#[cfg(test)]
+pub fn set_key_pressed_since_mouse_up_override(pressed: Option<bool>) {
+    TEST_KEY_PRESSED_SINCE_MOUSE_UP.with(|cell| cell.set(pressed));
+}
+
+pub fn key_pressed_since_mouse_up() -> bool {
+    #[cfg(test)]
+    if let Some(pressed) = TEST_KEY_PRESSED_SINCE_MOUSE_UP.with(|cell| cell.get()) {
+        return pressed;
+    }
+    crate::sys::trace::observe("key_since_mouse_up", (), || {
+        KEY_PRESSED_SINCE_MOUSE_UP.load(Ordering::Relaxed)
+    })
 }
 
 #[cfg(test)]
@@ -112,13 +142,9 @@ pub fn warp_mouse(point: CGPoint) -> Result<(), CGError> {
     res
 }
 
-pub fn hide_mouse() -> Result<(), CGError> {
-    cg_ok(CGDisplayHideCursor(kCGNullDirectDisplay))
-}
+pub fn hide_mouse() -> Result<(), CGError> { cg_ok(CGDisplayHideCursor(kCGNullDirectDisplay)) }
 
-pub fn show_mouse() -> Result<(), CGError> {
-    cg_ok(CGDisplayShowCursor(kCGNullDirectDisplay))
-}
+pub fn show_mouse() -> Result<(), CGError> { cg_ok(CGDisplayShowCursor(kCGNullDirectDisplay)) }
 
 /// Ask an application to handle its standard Command-W action.
 ///
@@ -156,7 +182,8 @@ pub fn is_rift_synthetic_event(event: &CGEvent) -> bool {
 /// rift-synthetic so the event tap passes it through untouched.
 pub fn post_synthetic_left_mouse_up(pid: crate::sys::app::pid_t, at: CGPoint) -> bool {
     use objc2_core_graphics::{CGEventType, CGMouseButton};
-    let Some(up) = CGEvent::new_mouse_event(None, CGEventType::LeftMouseUp, at, CGMouseButton::Left)
+    let Some(up) =
+        CGEvent::new_mouse_event(None, CGEventType::LeftMouseUp, at, CGMouseButton::Left)
     else {
         return false;
     };

@@ -199,9 +199,7 @@ unsafe fn drop_mouse_ctx(ptr: *mut std::ffi::c_void) {
 
 impl EventTap {
     #[inline]
-    fn stack_line_hover_enabled(&self, state: &State) -> bool {
-        state.stack_line_enabled
-    }
+    fn stack_line_hover_enabled(&self, state: &State) -> bool { state.stack_line_enabled }
 
     #[inline]
     fn focus_follows_mouse_handler_enabled(state: &State) -> bool {
@@ -571,14 +569,10 @@ impl EventTap {
     }
 
     #[inline]
-    fn reset_mouse_move_sample_gate(&self) {
-        self.mouse_move_last_timestamp.set(None);
-    }
+    fn reset_mouse_move_sample_gate(&self) { self.mouse_move_last_timestamp.set(None); }
 
     #[inline]
-    fn reset_mouse_window(&self) {
-        self.mouse_window.set(MouseWindow::default());
-    }
+    fn reset_mouse_window(&self) { self.mouse_window.set(MouseWindow::default()); }
 
     fn reconcile_after_tap_reenabled(&self) {
         let mut state = self.state.borrow_mut();
@@ -675,8 +669,7 @@ impl EventTap {
                             .find(|(id, _, _)| *id == wsid.as_u32())
                             .map(|&(id, pid, _)| (id, pid));
                         if let Some((id, pid)) = float
-                            && let Some(frame) =
-                                crate::sys::window_server::live_window_frame(wsid)
+                            && let Some(frame) = crate::sys::window_server::live_window_frame(wsid)
                             && loc.x >= frame.origin.x
                             && loc.x < frame.origin.x + frame.size.width
                             && loc.y >= frame.origin.y
@@ -701,6 +694,7 @@ impl EventTap {
             CGEventType::LeftMouseUp | CGEventType::RightMouseUp => {
                 set_mouse_state(MouseState::Up);
                 event::set_last_mouse_up_was_left(event_type == CGEventType::LeftMouseUp);
+                event::note_mouse_up();
                 // Swallow the release that closes a drag we swallowed the press
                 // for, so the application never sees half a click. The reactor
                 // still has to hear it: left believing the drag was on, it read
@@ -1007,6 +1001,13 @@ impl EventTap {
         let flags = CGEvent::flags(Some(event));
         state.current_flags = flags;
 
+        // Synthetic keys were filtered out before this point, so this is the
+        // user's hand on the keyboard — what tells a cmd-tab that follows a
+        // click apart from the click itself.
+        if event_type == CGEventType::KeyDown {
+            event::note_key_pressed();
+        }
+
         if let Some(key_code) = key_code_opt {
             match event_type {
                 CGEventType::KeyDown => state.note_key_down(key_code),
@@ -1170,13 +1171,9 @@ impl State {
             .and_then(|(_, space)| self.layout_mode_by_space.get(space).copied())
     }
 
-    fn note_key_down(&mut self, key_code: KeyCode) {
-        self.pressed_keys.insert(key_code);
-    }
+    fn note_key_down(&mut self, key_code: KeyCode) { self.pressed_keys.insert(key_code); }
 
-    fn note_key_up(&mut self, key_code: KeyCode) {
-        self.pressed_keys.remove(&key_code);
-    }
+    fn note_key_up(&mut self, key_code: KeyCode) { self.pressed_keys.remove(&key_code); }
 
     fn note_flags_changed(&mut self, key_code: KeyCode) {
         if !is_modifier_key(key_code) {
@@ -1255,9 +1252,7 @@ impl State {
     }
 
     #[inline]
-    fn reset_mouse_sampling(&mut self) {
-        self.last_stack_line_hit = None;
-    }
+    fn reset_mouse_sampling(&mut self) { self.last_stack_line_hit = None; }
 }
 
 #[inline]

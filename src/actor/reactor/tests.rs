@@ -6435,6 +6435,28 @@ mod mouse_follows_focus {
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
+    /// A click followed by a key press — triple-click a paragraph, cmd-tab
+    /// to the other app — is a focus change the keyboard made. The click was
+    /// merely recent, and the pointer goes where focus went.
+    #[test]
+    fn focus_change_from_the_keyboard_right_after_a_click_warps() {
+        let (_apps, mut reactor, _a, b) = two_apps_focused_on_first();
+        reactor.handle_event(Event::MouseUp);
+        crate::sys::event::set_key_pressed_since_mouse_up_override(Some(true));
+        reactor.handle_event(Event::ApplicationDeactivated(1));
+        reactor.handle_event(Event::ApplicationGloballyActivated(2));
+        reactor.handle_event(Event::ApplicationActivated(2, Quiet::No));
+        assert_eq!(reactor.main_window(), Some(b));
+        let b_center = reactor.live_frame_for(b).unwrap().mid();
+        assert_eq!(
+            reactor.test_mouse_warps,
+            vec![b_center],
+            "a cmd-tab right after a click still takes the pointer along"
+        );
+        crate::sys::event::set_key_pressed_since_mouse_up_override(None);
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
     /// A click on a Dock tile is a click, but it is the one that means "take
     /// me there": the pointer is on the Dock, and the window it summons is
     /// somewhere else entirely.

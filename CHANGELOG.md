@@ -11,6 +11,18 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mouse_follows_focus` follows a cmd-tab that comes right after a click.**
+  A focus change within half a second of a mouse release is taken to be the
+  click's own doing — into a window, on another display's menu bar, to dismiss
+  a popover — and the pointer is left where the user put it. That grace also
+  swallowed a cmd-tab (or cmd-`, or a hotkey) pressed straight after a click,
+  such as selecting text with a triple-click and switching apps to paste it:
+  focus moved and the pointer stayed behind. A key pressed after the release
+  now marks the change as the keyboard's, and the pointer follows. Clicks
+  alone behave as before.
+
 ## [0.5.3-plus.1] - 2026-09-03
 
 First tagged release of the fork, against upstream `v0.5.3`.

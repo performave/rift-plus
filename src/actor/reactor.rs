@@ -5249,11 +5249,17 @@ impl Reactor {
     /// status-item popover — the pointer is where the user put it, and
     /// moving it to the centre of whatever became frontmost is never what
     /// they meant.
+    ///
+    /// Unless a key was pressed after that click. Select a paragraph with a
+    /// triple-click and cmd-tab straight to the other app: the focus change
+    /// lands well inside the grace, but the keyboard made it, and the click
+    /// only happened to be recent. Every pointer interaction above ends with
+    /// a release and no key, so the key is what tells them apart.
     fn focus_change_is_pointer_driven(&self) -> bool {
         crate::sys::event::get_mouse_state() == Some(crate::sys::event::MouseState::Down)
-            || self.last_mouse_up.is_some_and(|at| {
+            || (self.last_mouse_up.is_some_and(|at| {
                 crate::sys::trace::now().saturating_duration_since(at) < Self::CLICK_FOCUS_GRACE
-            })
+            }) && !crate::sys::event::key_pressed_since_mouse_up())
     }
 
     /// yabai skips the warp when the pointer already sits inside the window
