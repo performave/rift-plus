@@ -18,6 +18,11 @@ named against `v0.5.3` by mistake; the base number is corrected here.
 
 ### Added
 
+- **rift can say which version it is.** `rift --version` prints the build,
+  `rift query metrics` carries the version of the rift that is running, and
+  `rift status` names it in the window manager row — adding a note to restart
+  when it is not the version of the binary asking, which is the state every
+  upgrade leaves behind until the service restarts.
 - **rift notices when the passwordless `sa load` rule no longer matches it.**
   The sudoers rule is pinned to the digest of the binary that installed it, so
   every upgrade, rebuild or move silently turns `sudo rift sa load` into a

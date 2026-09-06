@@ -13,7 +13,7 @@ use rift_wm::cli::{self, ClientCommand};
 use rift_wm::sys::service::{ServiceCommands, handle_service_command};
 
 #[derive(Parser)]
-#[command(name = "rift-cli")]
+#[command(name = "rift-cli", version)]
 #[command(about = "Command-line interface for rift window manager")]
 #[command(
     long_about = "Command-line interface for the rift window manager.\n\nThe `rift` binary accepts these same subcommands (`rift query windows`); \

@@ -113,7 +113,7 @@ fn window_manager() -> Check {
         Ok(metrics) => Check {
             name: WINDOW_MANAGER,
             health: Health::Ok,
-            detail: summarize_metrics(&metrics),
+            detail: summarize_metrics(&metrics, env!("CARGO_PKG_VERSION")),
         },
         Err(error) => Check {
             name: WINDOW_MANAGER,
@@ -123,14 +123,30 @@ fn window_manager() -> Check {
     }
 }
 
-fn summarize_metrics(metrics: &Value) -> String {
+/// Names the version that is running, and says so when it is not the one
+/// asking: after an upgrade the new binary answers `rift status` while the old
+/// one keeps running until the service restarts, and nothing else tells them
+/// apart.
+fn summarize_metrics(metrics: &Value, own_version: &str) -> String {
     let count = |key: &str| metrics.get(key).and_then(Value::as_u64);
-    match (count("windows_managed"), count("workspaces"), count("screens")) {
-        (Some(windows), Some(workspaces), Some(screens)) => {
-            format!("running — {windows} windows, {workspaces} workspaces, {screens} screens")
-        }
-        _ => "running".to_string(),
+    let mut summary = match metrics.get("version").and_then(Value::as_str) {
+        Some(version) => format!("running {version}"),
+        None => "running".to_string(),
+    };
+    if let (Some(windows), Some(workspaces), Some(screens)) =
+        (count("windows_managed"), count("workspaces"), count("screens"))
+    {
+        summary.push_str(&format!(
+            " — {windows} windows, {workspaces} workspaces, {screens} screens"
+        ));
     }
+    // A rift from before the version was reported is necessarily older than
+    // this binary, so its silence is a mismatch too.
+    let running = metrics.get("version").and_then(Value::as_str);
+    if running != Some(own_version) {
+        summary.push_str(&format!("; restart rift to run {own_version}"));
+    }
+    summary
 }
 
 fn launchd_service() -> Check {
@@ -263,16 +279,39 @@ mod tests {
     #[test]
     fn metrics_summary_falls_back_when_fields_are_missing() {
         assert_eq!(
-            summarize_metrics(&serde_json::json!({
-                "windows_managed": 10,
-                "workspaces": 7,
-                "screens": 2
-            })),
-            "running — 10 windows, 7 workspaces, 2 screens"
+            summarize_metrics(
+                &serde_json::json!({
+                    "version": "1.0.0",
+                    "windows_managed": 10,
+                    "workspaces": 7,
+                    "screens": 2
+                }),
+                "1.0.0"
+            ),
+            "running 1.0.0 — 10 windows, 7 workspaces, 2 screens"
         );
         assert_eq!(
-            summarize_metrics(&serde_json::json!({ "windows_managed": 10 })),
-            "running"
+            summarize_metrics(
+                &serde_json::json!({ "version": "1.0.0", "windows_managed": 10 }),
+                "1.0.0"
+            ),
+            "running 1.0.0"
+        );
+    }
+
+    #[test]
+    fn metrics_summary_names_the_binary_when_the_running_rift_is_another() {
+        assert_eq!(
+            summarize_metrics(&serde_json::json!({ "version": "1.0.0" }), "1.1.0"),
+            "running 1.0.0; restart rift to run 1.1.0"
+        );
+        // A rift too old to report a version at all.
+        assert_eq!(
+            summarize_metrics(
+                &serde_json::json!({ "windows_managed": 10, "workspaces": 7, "screens": 2 }),
+                "1.1.0"
+            ),
+            "running — 10 windows, 7 workspaces, 2 screens; restart rift to run 1.1.0"
         );
     }
 }

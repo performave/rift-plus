@@ -42,7 +42,7 @@ use tokio::join;
 embed_plist::embed_info_plist!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/Info.plist"));
 
 #[derive(Parser)]
-#[command(name = "rift")]
+#[command(name = "rift", version)]
 #[command(about = "The rift tiling window manager")]
 #[command(
     long_about = "The rift tiling window manager.\n\nWith no subcommand rift runs the window \
