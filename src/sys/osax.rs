@@ -57,13 +57,8 @@ pub enum SaCommands {
     Load,
     /// Write the scripting addition to disk without injecting (requires root)
     Install,
-    /// Remove the scripting addition from disk (requires root)
-    Uninstall {
-        /// Also remove the sudoers rule: everything `rift sa` put outside
-        /// Homebrew's prefix, which `brew uninstall` cannot reach
-        #[arg(long)]
-        all: bool,
-    },
+    /// Remove the scripting addition and its sudoers rule from disk (requires root)
+    Uninstall,
     /// Allow passwordless `sudo rift sa load` for the invoking user
     InstallSudoers,
     /// Remove the passwordless `sudo rift sa load` rule
@@ -82,7 +77,11 @@ pub fn handle_sa_command(cmd: &SaCommands) -> Result<String, String> {
                 "scripting addition v{OSAX_VERSION} installed at {OSAX_BASE_DIR}"
             ))
         }
-        SaCommands::Uninstall { all } => {
+        // Everything `rift sa` put outside Homebrew's prefix, which
+        // `brew uninstall` cannot reach: the bundle and the sudoers rule. A
+        // rule that only authorizes loading a bundle just removed on purpose
+        // is not worth keeping.
+        SaCommands::Uninstall => {
             require_root("uninstalled")?;
             let mut report = if is_installed() {
                 remove().map_err(|error| format!("failed to remove {OSAX_BASE_DIR}: {error}"))?;
@@ -90,15 +89,13 @@ pub fn handle_sa_command(cmd: &SaCommands) -> Result<String, String> {
             } else {
                 format!("no scripting addition installed at {OSAX_BASE_DIR}")
             };
-            if *all {
-                report.push('\n');
-                report.push_str(&uninstall_sudoers()?);
-                // Nothing here unloads the payload: it belongs to Dock once
-                // injected, and only Dock going away takes it with it.
-                report.push_str(
-                    "\na payload already inside Dock stays until Dock restarts ('killall Dock')",
-                );
-            }
+            report.push('\n');
+            report.push_str(&uninstall_sudoers()?);
+            // Nothing here unloads the payload: it belongs to Dock once
+            // injected, and only Dock going away takes it with it.
+            report.push_str(
+                "\na payload already inside Dock stays until Dock restarts ('killall Dock')",
+            );
             Ok(report)
         }
         SaCommands::InstallSudoers => install_sudoers(),

@@ -21,8 +21,8 @@ Entries describe this fork's changes relative to
   rule on a second line, and rift warns in its log at startup when
   `run_on_start` loads the addition through sudo and the rule is missing or
   pinned to another build. Both name the fix: `sudo rift sa install-sudoers`.
-- **`rift sa uninstall --all`** removes the sudoers rule along with the
-  bundle: everything `rift sa` leaves outside Homebrew's prefix, which
+- **`rift sa uninstall` removes the sudoers rule along with the bundle**:
+  everything `rift sa` leaves outside Homebrew's prefix, which
   `brew uninstall` cannot reach. Documented under "Uninstalling" in
   `docs/scripting-addition.md`.
 
@@ -59,6 +59,12 @@ Entries describe this fork's changes relative to
   the user rearranged it meanwhile, and only a change of window order counted
   as rearranging: stacking or tiling a desktop keeps the order, so the return
   quietly put the old mode back. A changed mode now counts too.
+- **An unplug the Mac sleeps through right after is finished at wake.** Closing
+  the lid straight after unplugging leaves Dock asleep before it has carried
+  out what rift asked of it — the desktop for the merged windows, the moves
+  onto it. The first whole display report after a wake now checks the
+  outcome and does again whatever was not done: a window that never reached
+  its made desktop is sent again, a desktop never made is made.
 - **A desktop rift made at an unplug is only destroyed once its windows have
   somewhere to go.** When the returning display brings no fresh desktop for
   the survivor, the made one is its desktop now and stays, windows and all.

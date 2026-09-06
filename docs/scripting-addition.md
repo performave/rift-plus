@@ -88,7 +88,7 @@ runs on uninstall. Take them out first, while the binary is still there to do
 it:
 
 ```sh
-sudo rift sa uninstall --all   # the bundle and the sudoers rule
+sudo rift sa uninstall   # the bundle and the sudoers rule
 brew services stop rift-plus
 brew uninstall rift-plus
 ```
@@ -103,8 +103,7 @@ does (`killall Dock`), and is harmless until then.
 | `rift sa status` | no | handshakes with the payload inside Dock; reports the sudoers rule |
 | `rift sa load` | yes | installs if needed, injects, reports health |
 | `rift sa install` | yes | writes the bundle without injecting |
-| `rift sa uninstall` | yes | removes `/Library/ScriptingAdditions/rift.osax` |
-| `rift sa uninstall --all` | yes | that, and the sudoers rule: everything outside Homebrew's prefix |
+| `rift sa uninstall` | yes | removes `/Library/ScriptingAdditions/rift.osax` and the sudoers rule |
 | `rift sa install-sudoers` | yes | passwordless `sudo rift sa load` |
 | `rift sa uninstall-sudoers` | yes | removes that rule |
 
