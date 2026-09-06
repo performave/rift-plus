@@ -1,6 +1,6 @@
 [package]
 name = "rift-wm"
-version = "0.5.3-plus.2"
+version = "0.5.5-plus.1"
 edition = "2024"
 build = "build.rs"
 
