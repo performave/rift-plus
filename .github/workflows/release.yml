@@ -30,7 +30,20 @@ env:
 
 jobs:
   release:
-    runs-on: macos-14
+    # macos-14 is deprecated: brownouts through October 2026, unsupported from
+    # November 2nd (actions/runner-images#13518).
+    #
+    # Pinned to 26 rather than macos-latest so the SDK a release is linked
+    # against never moves on its own. It is worth pinning deliberately because
+    # macOS reads the `sdk` field of LC_BUILD_VERSION to choose a process's
+    # appearance: below 26 it gets the pre-Tahoe look for standard AppKit
+    # controls, and that applies to a bare binary like rift with no bundle.
+    # Nothing rift draws was measurably affected -- the menu bar, alerts and
+    # panels come out the same either way, and the drop overlay is exempt
+    # because it asks for NSGlassEffectView by name at run time -- but building
+    # on the same SDK `just dev` uses keeps releases and local builds on the
+    # same side of that switch rather than relying on it staying harmless.
+    runs-on: macos-26
     steps:
       # Everything downstream is named from this tag, so a malformed one has to
       # stop the run here rather than produce an archive nobody can install.
