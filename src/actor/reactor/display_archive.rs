@@ -74,6 +74,10 @@ pub(super) struct DisplayArchive {
     /// taken from this, never from a report like that. See
     /// `note_display_set`.
     pub(super) whole_displays: Option<Vec<super::display_record::RecordedDisplay>>,
+    /// The Mac has woken since the record was last settled: Dock may have
+    /// gone to sleep before carrying the settle out, so the first whole
+    /// display report after a wake runs it again.
+    pub(super) recheck_after_wake: bool,
 }
 
 /// The window server starts moving windows the moment a display goes, and
@@ -363,7 +367,8 @@ impl Reactor {
         &mut self,
         screens: &[ScreenInfo],
         display_space_ids: &HashMap<String, Vec<SpaceId>>,
-    ) {
+    ) -> EventOutcome {
+        let mut outcome = EventOutcome::default();
         let whole = !screens.is_empty()
             && screens.iter().all(|screen| screen.space.is_some())
             && display_space_ids
@@ -386,7 +391,17 @@ impl Reactor {
             if let Some(pre) = self.display_archive.pre_churn.as_mut() {
                 pre.pinned = false;
             }
-            return;
+            if self.display_archive.recheck_after_wake
+                && self
+                    .display_archive
+                    .record
+                    .as_ref()
+                    .is_some_and(|record| record.destination_free())
+            {
+                self.display_archive.recheck_after_wake = false;
+                outcome.absorb(self.settle_after_departure(screens));
+            }
+            return outcome;
         }
         if self.display_archive.fresh_pre_churn().is_none() {
             self.capture_pre_churn_layout();
@@ -397,6 +412,7 @@ impl Reactor {
             }
             pre.pinned = true;
         }
+        outcome
     }
 
     /// Called with the new display set before the engine forgets the displays

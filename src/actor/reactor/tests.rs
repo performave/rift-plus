@@ -9566,6 +9566,86 @@ mod display_archive {
         );
         spaces_cleanup(&f, &[]);
     }
+
+    #[test]
+    fn a_settle_that_sleep_cut_short_is_done_again_at_wake() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        let survivor_layout = test_layout(&mut f.reactor, space1(), screen1());
+        let made = SpaceId::new(23);
+        sa::set_next_created_space(Some(made.get()));
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged = everyone(&f, space2(), space2());
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra(), made],
+            merged,
+        );
+        assert_eq!(sa::window_moves(), vec![(survivor_wsid.as_u32(), made.get())]);
+
+        // The lid closes before Dock moves the window. The deadline passes
+        // with it still on the visitors' desktop; then the Mac wakes.
+        f.reactor.handle_event(Event::DisplayHomingDeadline(
+            super::display_record::RECORD_DEADLINE_KEY.to_string(),
+        ));
+        assert!(f.reactor.display_archive.record().is_some());
+        f.reactor.handle_event(Event::SystemWoke);
+
+        // The first whole report after the wake changes nothing about the
+        // displays; the window is still where the window server merged it.
+        managed(vec![("test-display-0", vec![made, space2(), space2_extra()])]);
+        let on_visitors = everyone(&f, space2(), space2());
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(made)],
+            move |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![
+                    made,
+                    space2(),
+                    space2_extra(),
+                ]);
+                for (wsid, space) in on_visitors {
+                    state.active_window_spaces.insert(wsid, space);
+                }
+            },
+        ));
+        assert_eq!(
+            sa::window_moves(),
+            vec![
+                (survivor_wsid.as_u32(), made.get()),
+                (survivor_wsid.as_u32(), made.get())
+            ],
+            "the window is sent to the made desktop again"
+        );
+        assert_eq!(
+            sa::space_creations().len(),
+            1,
+            "the made desktop is not made again"
+        );
+
+        set_window_spaces(&[survivor_wsid], made);
+        let on_made = everyone(&f, made, space2());
+        f.reactor.handle_event(topology_event(
+            vec![screen1()],
+            vec![Some(made)],
+            vec![(survivor_wsid, space2(), made)],
+            on_made,
+        ));
+        assert_eq!(f.reactor.assigned_space_for_window_id(f.survivor), Some(made));
+        assert_eq!(
+            test_layout(&mut f.reactor, made, screen1()),
+            survivor_layout,
+            "the survivor's layout is on its made desktop"
+        );
+        spaces_cleanup(&f, &[]);
+    }
 }
 
 /// A window on a desktop that is not being shown cannot change desktops by

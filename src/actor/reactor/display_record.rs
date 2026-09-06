@@ -157,6 +157,9 @@ impl DisplayRecord {
         self.pass.as_ref().and_then(|pass| pass.waiting.get(&wid).copied())
     }
 
+    /// Whether no pass is in flight, so a settle can run.
+    pub(super) fn destination_free(&self) -> bool { self.pass.is_none() }
+
     /// Where the record wants `wid`: where the user put it while away, else
     /// where it was at departure.
     fn desired(&self, wid: WindowId) -> Option<SpaceId> {
@@ -169,6 +172,20 @@ impl DisplayRecord {
     /// The desktop made to stand in for `lost`, if one was.
     fn stopgap_for(&self, lost: SpaceId) -> Option<SpaceId> {
         self.stopgaps.iter().find(|(_, l)| *l == lost).map(|(made, _)| *made)
+    }
+
+    /// Every window the record wants on `space`.
+    fn windows_desired_on(&self, space: SpaceId) -> Vec<WindowId> {
+        let mut wids: Vec<WindowId> = self
+            .windows
+            .keys()
+            .chain(self.placed.keys())
+            .copied()
+            .filter(|wid| self.desired(*wid) == Some(space))
+            .collect();
+        wids.sort_unstable();
+        wids.dedup();
+        wids
     }
 
     #[cfg(test)]
@@ -311,7 +328,9 @@ impl Reactor {
     /// survivor's own desktops are put ahead of the visitors; and the
     /// survivor is switched back to the desktop it was showing. Run again
     /// at every later departure, for the desktop that one destroys — a
-    /// made one included: its windows get another.
+    /// made one included: its windows get another — and after a wake, in
+    /// case the Mac went to sleep before Dock had carried out the previous
+    /// settle: whatever it did not do is done again.
     pub(super) fn settle_after_departure(&mut self, screens: &[ScreenInfo]) -> EventOutcome {
         let outcome = EventOutcome::default();
         let Some(record) = self.display_archive.record.as_mut() else {
@@ -358,13 +377,33 @@ impl Reactor {
             .flat_map(|d| d.desktops.iter().copied())
             .filter(|s| on_survivor.contains(s))
             .collect();
+        // Windows a previous settle sent to a made desktop that never got
+        // there, by the window server's word: sent again below.
+        let astray: Vec<(WindowId, WindowServerId)> = record
+            .stopgaps
+            .iter()
+            .filter(|(made, _)| listed_all.contains(made))
+            .flat_map(|(made, lost)| {
+                record.windows_desired_on(*lost).into_iter().map(move |wid| (wid, *made))
+            })
+            .filter_map(|(wid, made)| {
+                let state = self.state.windows.window(wid)?;
+                let wsid = state.info.sys_id?;
+                let actual = crate::sys::window_server::window_space(wsid)
+                    .or_else(|| self.assigned_space_for_window_id(wid));
+                (actual != Some(made)).then_some((wid, wsid))
+            })
+            .collect();
         // A later departure that destroyed nothing of the survivor's is not
         // a reason to reorder its desktops or switch what it shows.
-        if record.settled && destroyed.is_empty() {
+        if record.settled && destroyed.is_empty() && astray.is_empty() {
             let record = self.display_archive.record.as_mut().expect("checked above");
             record.seen.extend(listed_all);
             return outcome;
         }
+        // Only a desktop lost or made is a reason to reorder the survivor's
+        // desktops and switch what it shows; windows sent again are not.
+        let reshuffled = !record.settled || !destroyed.is_empty();
         let survivor = survivor.clone();
 
         // A desktop for the destroyed desktop's windows. macOS lists the
@@ -398,7 +437,7 @@ impl Reactor {
         own.extend(kept.iter().copied());
         let desired: Vec<SpaceId> = own.iter().chain(visitors.iter()).copied().collect();
         let mut desktop_moves = 0usize;
-        if addition && !own.is_empty() {
+        if addition && reshuffled && !own.is_empty() {
             let mut order: Vec<SpaceId> = now.get(&survivor.uuid).cloned().unwrap_or_default();
             let mut anchor: Option<SpaceId> = None;
             for space in desired {
@@ -462,6 +501,27 @@ impl Reactor {
             }
             restores.push((lost, made));
         }
+        for (wid, wsid) in &astray {
+            let Some(made) = record
+                .desired(*wid)
+                .and_then(|lost| record.stopgap_for(lost))
+                .filter(|made| listed_all.contains(made))
+            else {
+                continue;
+            };
+            if scripting_addition::move_window_to_space(wsid.as_u32(), made.get()) {
+                sent.push((*wid, *wsid));
+                waiting.insert(*wid, made);
+                if !restores.contains(&(record.desired(*wid).expect("checked"), made)) {
+                    restores.push((record.desired(*wid).expect("checked"), made));
+                }
+            } else {
+                warn!(
+                    ?wid,
+                    "Could not move a window to the survivor's made desktop again"
+                );
+            }
+        }
 
         // Back to the desktop it was showing; the made one stands in for
         // the destroyed one.
@@ -475,6 +535,7 @@ impl Reactor {
             .find(|screen| screen.display_uuid == survivor.uuid)
             .and_then(|screen| screen.space);
         if let Some(shown) = shown
+            && reshuffled
             && now.get(&survivor.uuid).is_some_and(|listed| listed.contains(&shown))
             && showing != Some(shown)
             && addition
@@ -492,6 +553,7 @@ impl Reactor {
             made = ?stopgap.map(|(made, _, _)| made.get()),
             desktop_moves,
             windows_moved = sent.len(),
+            sent_again = astray.len(),
             "Settled the survivor while the other display is away"
         );
         crate::sys::trace::act("settle", &(desktop_moves, sent.len()));

@@ -1529,6 +1529,7 @@ impl Reactor {
             Event::SystemWoke => {
                 self.refresh_quarantine_manager.sleeping = true;
                 self.refresh_quarantine_manager.awaiting_post_wake_snapshot = true;
+                self.display_archive.recheck_after_wake = true;
                 self.refresh_quarantine_manager.suppress_auto_workspace_switch_until_input = true;
                 let outcome = system_workflow::handle_system_woke()?;
                 self.defer_window_inventory_refresh();
@@ -3543,11 +3544,6 @@ impl Reactor {
         self.space_state.has_seen_display_set = has_seen_display_set;
         self.space_state.fullscreen_spaces = fullscreen_spaces;
         self.space_state.active_spaces = active_spaces;
-        if command_space_only_update {
-            self.space_state.menu_bar_space = menu_bar_space;
-            self.space_state.command_space = command_space;
-            return Ok(outcome);
-        }
         if display_set_changed {
             let active_displays: Vec<String> =
                 screens.iter().map(|screen| screen.display_uuid.clone()).collect();
@@ -3558,7 +3554,15 @@ impl Reactor {
             ));
             self.layout_manager.layout_engine.prune_display_state(&active_displays);
         }
-        self.note_display_set(&screens, &display_space_ids);
+        // Before the short-cut below: the first report after a wake can be
+        // one that changes nothing, and it is still the one that re-checks
+        // a settle the sleep may have cut short.
+        outcome.absorb(self.note_display_set(&screens, &display_space_ids));
+        if command_space_only_update {
+            self.space_state.menu_bar_space = menu_bar_space;
+            self.space_state.command_space = command_space;
+            return Ok(outcome);
+        }
         self.space_state.menu_bar_space = menu_bar_space;
         self.space_state.command_space = command_space;
         self.space_state.display_space_ids = display_space_ids;
