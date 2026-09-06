@@ -175,37 +175,48 @@ struct IOHIDVelocityEventData {
 /// accept the next one, so steps are spaced well clear of that pair.
 const K_SPACE_STEP_DELAY_NS: i64 = 90 * 1_000_000;
 
-/// Switches to a macOS space by its position on the active display, 1-based to
-/// match the way macOS numbers desktops.
+/// What a call to [`switch_to_space_index`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceSwitch {
+    /// The switch was issued on the display holding that space.
+    Issued,
+    /// That display was already showing the space, so there was nothing to
+    /// switch. Only the caller can finish this one: a display showing the
+    /// space asked for is where the user wanted to be, and if it is not the
+    /// display they are on, arriving there is the rest of the command.
+    AlreadyShowing(SpaceId),
+    /// No such space, or rift could not tell which display holds it.
+    Unavailable,
+}
+
+/// Switches to space `index`, numbered across all displays in Mission
+/// Control order, 1-based to match the way macOS numbers desktops. A space
+/// on another display is switched on that display: by the scripting addition
+/// when it is available, otherwise by moving the pointer there and swiping,
+/// since the Dock swipes the display under the pointer.
 ///
 /// yabai had `space --focus N`; rift's own workspaces are a separate concept
 /// that hides windows offscreen, so this is the command for people who want
-/// their native spaces and keep rift for tiling within them. Nothing happens if
-/// the index is out of range or already active.
-/// Switches to space `index`, numbered across all displays in Mission
-/// Control order. A space on another display is switched on that display:
-/// by the scripting addition when it is available, otherwise by moving the
-/// pointer there and swiping, since the Dock swipes the display under the
-/// pointer.
-pub unsafe fn switch_to_space_index(index: usize, method: SpaceSwitchMethod) {
+/// their native spaces and keep rift for tiling within them.
+pub unsafe fn switch_to_space_index(index: usize, method: SpaceSwitchMethod) -> SpaceSwitch {
     let Some(target) = space_at_index(index) else {
-        return;
+        return SpaceSwitch::Unavailable;
     };
     let Some(display) = display_holding_space(target) else {
-        return;
+        return SpaceSwitch::Unavailable;
     };
     let Some(current) = crate::sys::screen::current_space_for_display_uuid(&display.display_uuid)
     else {
-        return;
+        return SpaceSwitch::Unavailable;
     };
     if current == target {
-        return;
+        return SpaceSwitch::AlreadyShowing(target);
     }
     if teleport_to_space(target, method) {
-        return;
+        return SpaceSwitch::Issued;
     }
     let Some(steps) = steps_between(&display.spaces, current, target) else {
-        return;
+        return SpaceSwitch::Unavailable;
     };
     if active_space() != current
         && let Some(frame) = crate::sys::screen::display_frame_for_uuid(&display.display_uuid)
@@ -221,6 +232,7 @@ pub unsafe fn switch_to_space_index(index: usize, method: SpaceSwitchMethod) {
         Direction::Left
     };
     unsafe { switch_space_repeated(direction, steps.unsigned_abs()) };
+    SpaceSwitch::Issued
 }
 
 /// The display whose space list contains `space`.

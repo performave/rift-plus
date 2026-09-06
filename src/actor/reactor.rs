@@ -2564,20 +2564,22 @@ impl Reactor {
                 return command_workflow::handle_switch_native_space(direction);
             }
             Event::Command(Command::Reactor(ReactorCommand::SwitchToSpace(index))) => {
-                unsafe {
+                let switch = unsafe {
                     crate::sys::space_switch::switch_to_space_index(
                         index,
                         self.config.settings.space_switch_method,
                     )
                 };
+                if let crate::sys::space_switch::SpaceSwitch::AlreadyShowing(space) = switch {
+                    return Ok(self.arrive_on_already_shown_space(space, None));
+                }
                 return Ok(EventOutcome::default());
             }
             Event::Command(Command::Reactor(ReactorCommand::MoveWindowToSpace {
                 index,
                 follow,
             })) => {
-                self.move_focused_window_to_space(index, follow);
-                return Ok(EventOutcome::default());
+                return Ok(self.move_focused_window_to_space(index, follow));
             }
             Event::Command(Command::Reactor(ReactorCommand::CreateSpace)) => {
                 self.create_space_after_active();
@@ -3717,12 +3719,26 @@ impl Reactor {
             return;
         }
 
-        if let Some(wid) = self.visible_focus_candidate_in_active_workspace(space, None) {
-            debug!(
-                ?wid,
-                space = space.get(),
-                "Following a space switch onto another display"
-            );
+        self.arrive_on_space(space, frame, None, outcome);
+    }
+
+    /// Land on the display showing `space`, the way a space switch on the
+    /// active display leaves you: focused on the window last used there,
+    /// which pulls the pointer with it like any focus does. When the space
+    /// has nothing rift knows of there is no window to focus, so focus its
+    /// desktop and put the pointer in the middle of the display instead —
+    /// but only when `mouse_follows_focus` is on and the pointer is not on
+    /// that display already, the two things a focus-driven warp checks for
+    /// itself.
+    fn arrive_on_space(
+        &mut self,
+        space: SpaceId,
+        frame: CGRect,
+        preferred: Option<WindowId>,
+        outcome: &mut EventOutcome,
+    ) {
+        if let Some(wid) = self.visible_focus_candidate_in_active_workspace(space, preferred) {
+            debug!(?wid, space = space.get(), "Arriving on another display");
             self.handle_layout_response(
                 layout::EventResponse {
                     focus_window: Some(wid),
@@ -3732,12 +3748,39 @@ impl Reactor {
             );
             return;
         }
-        debug!(
-            space = space.get(),
-            "Following a space switch onto another display's empty space"
-        );
+        debug!(space = space.get(), "Arriving on another display's empty space");
         self.focus_desktop_if_active_workspace_empty(space);
-        *outcome = std::mem::take(outcome).with_mouse_warp(frame.mid());
+        if self.config.settings.mouse_follows_focus
+            && !window_server::current_cursor_location().is_ok_and(|point| frame.contains(point))
+        {
+            *outcome = std::mem::take(outcome).with_mouse_warp(frame.mid());
+        }
+    }
+
+    /// Finishes a `switch-to-space` whose display was already showing the
+    /// space asked for. macOS switched nothing, so focus and the pointer
+    /// stayed on whatever display they were on — and with one desktop on the
+    /// laptop and the rest on the external, that made the command that names
+    /// the laptop's desktop do nothing at all. yabai's `space --focus` puts
+    /// you on the space it names, so arrive there.
+    fn arrive_on_already_shown_space(
+        &mut self,
+        space: SpaceId,
+        preferred: Option<WindowId>,
+    ) -> EventOutcome {
+        let mut outcome = EventOutcome::default();
+        if self.active_display_space() == Some(space)
+            || self.is_mission_control_active()
+            || self.is_in_drag()
+            || self.modifier_drag.is_some()
+        {
+            return outcome;
+        }
+        let Some(frame) = self.space_state.screen_by_space(space).map(|screen| screen.frame) else {
+            return outcome;
+        };
+        self.arrive_on_space(space, frame, preferred, &mut outcome);
+        outcome
     }
 
     fn try_apply_pending_space_change(&mut self) {
@@ -5214,20 +5257,20 @@ impl Reactor {
     /// unprivileged way to do it — see `sys::scripting_addition`. The window
     /// server tells rift where the window went, so nothing here has to update
     /// the model by hand.
-    fn move_focused_window_to_space(&mut self, index: usize, follow: bool) {
+    fn move_focused_window_to_space(&mut self, index: usize, follow: bool) -> EventOutcome {
         let Some(space) = crate::sys::space_switch::space_at_index(index) else {
             self.fail_command(format!("there is no macOS space {index}"));
-            return;
+            return EventOutcome::default();
         };
         let Some(wid) = self.main_window().or_else(|| self.window_id_under_cursor()) else {
             self.fail_command("there is no focused window to move");
-            return;
+            return EventOutcome::default();
         };
         let Some(window_server_id) =
             self.state.windows.window(wid).and_then(|window| window.info.sys_id)
         else {
             self.fail_command("that window has no window-server id, so it cannot be moved");
-            return;
+            return EventOutcome::default();
         };
 
         if !crate::sys::scripting_addition::move_window_to_space(
@@ -5235,17 +5278,24 @@ impl Reactor {
             space.get(),
         ) {
             self.fail_command(SA_REQUIRED_MOVE);
-            return;
+            return EventOutcome::default();
         }
         self.note_window_sent_to_space(window_server_id);
         if follow {
-            unsafe {
+            let switch = unsafe {
                 crate::sys::space_switch::switch_to_space_index(
                     index,
                     self.config.settings.space_switch_method,
                 )
             };
+            // Following a window onto a display that was already showing the
+            // space it went to switches nothing, so arriving is all there is
+            // to do — and the window just sent there is the one to arrive on.
+            if let crate::sys::space_switch::SpaceSwitch::AlreadyShowing(space) = switch {
+                return self.arrive_on_already_shown_space(space, Some(wid));
+            }
         }
+        EventOutcome::default()
     }
 
     /// Whether the pointer is what changed focus: the button is down, or

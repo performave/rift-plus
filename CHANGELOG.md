@@ -11,6 +11,19 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switching to a space the display holding it already shows now takes you
+  to that display.** With every desktop but one on an external monitor, the
+  space number that names the laptop's only desktop had nothing to switch:
+  the laptop was already showing it, so rift returned without a switch, macOS
+  activated nothing, and neither focus nor the pointer left the external
+  display — the key did nothing at all. Rift now finishes such a command the
+  way a switch that did change a display ends, by focusing the window last
+  used on that space, or its desktop and the middle of the display when the
+  space is empty. `move-window-to-space --follow` follows the window across
+  the same way.
+
 ## [0.5.5-plus.1] - 2026-09-06
 
 Against upstream `v0.5.5`. The previous release was already built on it and

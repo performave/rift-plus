@@ -6787,6 +6787,87 @@ mod mouse_follows_focus {
         assert!(raise_manager_rx.try_recv().is_err());
         crate::sys::window_server::set_cursor_location_override(None);
     }
+
+    /// `switch-to-space` naming a space the other display is already showing
+    /// — the one desktop a laptop keeps beside an external, say — switches
+    /// nothing at all, so no space change ever arrives to be followed.
+    /// The command finishes here instead: the space's window is focused and
+    /// the pointer goes to it.
+    #[test]
+    fn switching_to_a_space_the_other_display_already_shows_arrives_on_it() {
+        let (_apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+        let b = WindowId::new(1, 2);
+
+        let outcome = reactor.arrive_on_already_shown_space(SpaceId::new(2), None);
+        reactor.apply_event_outcome(outcome);
+
+        let msg = raise_manager_rx.try_recv().expect("the command focuses the space's window").1;
+        let raise_manager::Event::RaiseRequest(RaiseRequest { focus_window, .. }) = msg else {
+            panic!("unexpected raise manager event: {msg:?}");
+        };
+        let b_center = reactor.live_frame_for(b).unwrap().mid();
+        assert_eq!(
+            focus_window,
+            Some((b, Some(b_center))),
+            "the window last used on the space is focused, with the pointer warped onto it"
+        );
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// The same command aimed at the space the user is already on has
+    /// nothing to do: macOS is showing it on the display they are looking at.
+    #[test]
+    fn switching_to_the_space_already_under_the_user_arrives_nowhere() {
+        let (_apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+
+        let outcome = reactor.arrive_on_already_shown_space(SpaceId::new(1), None);
+        reactor.apply_event_outcome(outcome);
+
+        assert!(reactor.test_mouse_warps.is_empty());
+        assert!(raise_manager_rx.try_recv().is_err());
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// An already-shown space with nothing on it takes the pointer to the
+    /// middle of its display, the same as a switch that did change one.
+    #[test]
+    fn arriving_on_an_already_shown_empty_space_warps_to_its_display() {
+        let (_apps, mut reactor, _raise_manager_rx) = two_displays_focused_on_left();
+        let right = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        switch_right_display_to(&mut reactor, SpaceId::new(3));
+        reactor.test_mouse_warps.clear();
+
+        let outcome = reactor.arrive_on_already_shown_space(SpaceId::new(3), None);
+        reactor.apply_event_outcome(outcome);
+
+        assert_eq!(reactor.test_mouse_warps, vec![right.mid()]);
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// That centre warp is the pointer following focus, so it obeys the
+    /// setting and stays put when the pointer is on that display already.
+    #[test]
+    fn arriving_on_an_already_shown_empty_space_leaves_the_pointer_alone() {
+        let (_apps, mut reactor, _raise_manager_rx) = two_displays_focused_on_left();
+        let right = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        switch_right_display_to(&mut reactor, SpaceId::new(3));
+        reactor.test_mouse_warps.clear();
+        reactor.config.settings.mouse_follows_focus = false;
+
+        let outcome = reactor.arrive_on_already_shown_space(SpaceId::new(3), None);
+        reactor.apply_event_outcome(outcome);
+        assert!(reactor.test_mouse_warps.is_empty(), "the setting is off");
+
+        reactor.config.settings.mouse_follows_focus = true;
+        crate::sys::window_server::set_cursor_location_override(Some(right.mid()));
+        let outcome = reactor.arrive_on_already_shown_space(SpaceId::new(3), None);
+        reactor.apply_event_outcome(outcome);
+        assert!(
+            reactor.test_mouse_warps.is_empty(),
+            "the pointer is on that display already"
+        );
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
 }
 
 mod floating_placement {
