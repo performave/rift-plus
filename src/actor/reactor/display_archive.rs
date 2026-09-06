@@ -37,7 +37,7 @@ use super::{Event, LayoutEvent, Reactor};
 use crate::actor::app::WindowId;
 use crate::actor::reactor::events::EventOutcome;
 use crate::common::collections::{HashMap, HashSet};
-use crate::common::config::DisplacedWindows;
+use crate::common::config::{DisplacedWindows, LayoutMode};
 use crate::layout_engine::{RestoreRequest, RestoreScope, RestoreSource};
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::screen::{ScreenInfo, SpaceId};
@@ -67,6 +67,13 @@ pub(super) struct DisplayArchive {
     /// The last record's layout, kept after its return for
     /// `RestoreDepartureLayout`.
     pub(super) last_departure: Option<super::display_record::DepartureSnapshot>,
+    /// The displays as the window server last reported them whole — every
+    /// screen showing a desktop, every managed display one of the screens.
+    /// Mid-reshuffle it reports neither: a screen with no desktop, or the
+    /// desktops filed under a display that is no screen at all. A record is
+    /// taken from this, never from a report like that. See
+    /// `note_display_set`.
+    pub(super) whole_displays: Option<Vec<super::display_record::RecordedDisplay>>,
 }
 
 /// The window server starts moving windows the moment a display goes, and
@@ -83,7 +90,14 @@ pub(super) struct PreChurn {
     pub(super) layout: String,
     /// The windows of every space, in layout order, as the trees had them.
     pub(super) members: HashMap<SpaceId, Vec<WindowId>>,
+    /// The layout mode of every space's workspaces, in order.
+    pub(super) modes: HashMap<SpaceId, Vec<LayoutMode>>,
     taken: Instant,
+    /// Kept past the TTL: the display set went incoherent after this was
+    /// taken and has not come back whole since, so the display change that
+    /// consumes it is still to come — after a sleep, possibly. See
+    /// `note_display_set`.
+    pinned: bool,
 }
 
 pub(super) struct ArchivedDisplay {
@@ -170,7 +184,16 @@ impl DisplayArchive {
     }
 
     pub(super) fn fresh_pre_churn(&self) -> Option<&PreChurn> {
-        self.pre_churn.as_ref().filter(|pre| pre.taken.elapsed() < PRE_CHURN_TTL)
+        self.pre_churn
+            .as_ref()
+            .filter(|pre| pre.pinned || pre.taken.elapsed() < PRE_CHURN_TTL)
+    }
+
+    #[cfg(test)]
+    pub(super) fn backdate_pre_churn(&mut self, by: Duration) {
+        if let Some(pre) = self.pre_churn.as_mut() {
+            pre.taken -= by;
+        }
     }
 
     fn any_homing(&self) -> bool { self.entries.values().any(|entry| entry.homing.is_some()) }
@@ -257,11 +280,14 @@ impl Reactor {
             return;
         }
         let engine = &mut self.layout_manager.layout_engine;
-        let members: HashMap<SpaceId, Vec<WindowId>> = engine
-            .virtual_workspace_manager()
-            .initialized_spaces()
-            .into_iter()
-            .map(|space| (space, engine.windows_on_space_in_layout_order(space)))
+        let spaces = engine.virtual_workspace_manager().initialized_spaces();
+        let members: HashMap<SpaceId, Vec<WindowId>> = spaces
+            .iter()
+            .map(|space| (*space, engine.windows_on_space_in_layout_order(*space)))
+            .collect();
+        let modes: HashMap<SpaceId, Vec<LayoutMode>> = spaces
+            .iter()
+            .map(|space| (*space, engine.layout_modes_on_space(*space)))
             .collect();
         match engine.snapshot_current_layout_lightly(&self.state.windows) {
             Ok(layout) => {
@@ -269,7 +295,9 @@ impl Reactor {
                 self.display_archive.pre_churn = Some(PreChurn {
                     layout,
                     members,
+                    modes,
                     taken: crate::sys::trace::now(),
+                    pinned: false,
                 });
             }
             Err(error) => debug!(%error, "Could not take a pre-churn layout snapshot"),
@@ -323,6 +351,54 @@ impl Reactor {
             .snapshot_current_layout(&self.state.windows, Some(space))
     }
 
+    /// Every authoritative snapshot passes through here, after any departure
+    /// in it has been dealt with. One that reports the displays whole is
+    /// remembered as the state a record can be taken from. One that does not
+    /// is the window server mid-reshuffle — a lid closing, a display half
+    /// gone — and the display change that ends it may only arrive after a
+    /// sleep: the pre-churn snapshot in hand (taken now if there is none) is
+    /// pinned until the displays are whole again, so the record still gets
+    /// the trees from before the reshuffle.
+    pub(super) fn note_display_set(
+        &mut self,
+        screens: &[ScreenInfo],
+        display_space_ids: &HashMap<String, Vec<SpaceId>>,
+    ) {
+        let whole = !screens.is_empty()
+            && screens.iter().all(|screen| screen.space.is_some())
+            && display_space_ids
+                .keys()
+                .all(|uuid| screens.iter().any(|screen| &screen.display_uuid == uuid));
+        if whole {
+            self.display_archive.whole_displays = Some(
+                screens
+                    .iter()
+                    .map(|screen| super::display_record::RecordedDisplay {
+                        uuid: screen.display_uuid.clone(),
+                        desktops: display_space_ids
+                            .get(&screen.display_uuid)
+                            .cloned()
+                            .unwrap_or_else(|| screen.space.into_iter().collect()),
+                        shown: screen.space,
+                    })
+                    .collect(),
+            );
+            if let Some(pre) = self.display_archive.pre_churn.as_mut() {
+                pre.pinned = false;
+            }
+            return;
+        }
+        if self.display_archive.fresh_pre_churn().is_none() {
+            self.capture_pre_churn_layout();
+        }
+        if let Some(pre) = self.display_archive.pre_churn.as_mut() {
+            if !pre.pinned {
+                crate::sys::trace::act("pre_churn_pinned", &pre.members.len());
+            }
+            pre.pinned = true;
+        }
+    }
+
     /// Called with the new display set before the engine forgets the displays
     /// missing from it. Archives each departed display's layout and readies
     /// its windows for life on the surviving display.
@@ -344,8 +420,8 @@ impl Reactor {
                 .filter(|uuid| is_stable_display_uuid(uuid))
                 .collect();
             if !departed.is_empty() {
-                self.record_departure(departed);
-                outcome.absorb(self.settle_after_departure());
+                self.record_departure(departed, active_displays);
+                outcome.absorb(self.settle_after_departure(screens));
             }
             self.display_archive.pre_churn = None;
             return outcome;

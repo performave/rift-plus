@@ -3558,6 +3558,7 @@ impl Reactor {
             ));
             self.layout_manager.layout_engine.prune_display_state(&active_displays);
         }
+        self.note_display_set(&screens, &display_space_ids);
         self.space_state.menu_bar_space = menu_bar_space;
         self.space_state.command_space = command_space;
         self.space_state.display_space_ids = display_space_ids;

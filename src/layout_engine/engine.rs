@@ -1371,6 +1371,20 @@ impl LayoutEngine {
         departed
     }
 
+    /// The layout mode of each of `space`'s workspaces, in workspace order:
+    /// with `windows_on_space_in_layout_order`, what tells a desktop the user
+    /// rearranged from one they did not.
+    pub fn layout_modes_on_space(&self, space: SpaceId) -> Vec<LayoutMode> {
+        self.virtual_workspace_manager
+            .existing_workspaces(space)
+            .into_iter()
+            .filter_map(|(workspace, _)| {
+                self.virtual_workspace_manager.workspace_info(space, workspace)
+            })
+            .map(|workspace| workspace.layout_mode())
+            .collect()
+    }
+
     /// Every tiled window on `space`, in tree order, across all of the space's
     /// workspaces; floating windows follow. The order is what a graft of these
     /// windows into another tree should reproduce.

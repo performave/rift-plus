@@ -11,7 +11,57 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Added
+
+- **rift notices when the passwordless `sa load` rule no longer matches it.**
+  The sudoers rule is pinned to the digest of the binary that installed it, so
+  every upgrade, rebuild or move silently turns `sudo rift sa load` into a
+  password prompt that launchd cannot answer, and the scripting addition is
+  simply gone after the next Dock restart. `rift sa status` now reports the
+  rule on a second line, and rift warns in its log at startup when
+  `run_on_start` loads the addition through sudo and the rule is missing or
+  pinned to another build. Both name the fix: `sudo rift sa install-sudoers`.
+- **`rift sa uninstall --all`** removes the sudoers rule along with the
+  bundle: everything `rift sa` leaves outside Homebrew's prefix, which
+  `brew uninstall` cannot reach. Documented under "Uninstalling" in
+  `docs/scripting-addition.md`.
+
 ### Fixed
+
+- **An unplug no longer stops being put right after a display that is not
+  coming back.** In `displaced_windows = "spaces"` mode the record taken when
+  a display departs is reconciled once every display it waits for is back.
+  Every later departure used to add its display to that list — a monitor at
+  another desk that came and went, or the stand-in display macOS reports
+  while a lid is closing, which is never a screen — and since the return
+  needed all of them back at once, one such display held the record for
+  good: from then on every unplug left the survivor's windows merged in
+  among the visitors' with no desktop of their own, and every replug
+  restored nothing. The record now waits only for the displays that were
+  there when it was taken; a display that arrives and leaves meanwhile is
+  neither recorded nor waited for.
+- **The survivor gets a desktop for its merged windows at every departure,
+  not only the first.** Each unplug costs the display that stays its first
+  desktop — the one rift made at the previous unplug included — and its
+  windows are merged into the leaving display's desktop. Only the first
+  unplug used to be settled; the survivor is now settled again whenever a
+  departure destroys one of its desktops.
+- **A record taken at wake is taken from before the lid closed.** Closing the
+  lid on an external display reshuffles the desktops before the Mac sleeps,
+  and the display's departure is only seen on waking, minutes later. The
+  layout snapshot from before the reshuffle used to expire after ten seconds,
+  and the display list used to be read from the half-reported state, so the
+  record had the already-merged trees and no display it could settle. The
+  snapshot and the last whole display set are now held across the
+  reshuffle until the displays are reported whole again.
+- **A layout mode switched while a display was away survives the return.**
+  The return puts each desktop's tree back the way it was at departure unless
+  the user rearranged it meanwhile, and only a change of window order counted
+  as rearranging: stacking or tiling a desktop keeps the order, so the return
+  quietly put the old mode back. A changed mode now counts too.
+- **A desktop rift made at an unplug is only destroyed once its windows have
+  somewhere to go.** When the returning display brings no fresh desktop for
+  the survivor, the made one is its desktop now and stays, windows and all.
 
 - **`mouse_follows_focus` follows a cmd-tab that comes right after a click.**
   A focus change within half a second of a mouse release is taken to be the

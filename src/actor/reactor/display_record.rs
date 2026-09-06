@@ -21,16 +21,23 @@
 //!    of their own, made for the purpose, with their tree; the survivor's
 //!    own desktops go first; and the survivor is switched back to the
 //!    desktop it was showing. The record notes the desktop it made as its
-//!    own, so nothing later mistakes it for the user's.
-//! 2. When the departed display is back and the topology is quiet, the
-//!    record is diffed against what the window server reports and the
+//!    own, so nothing later mistakes it for the user's. A later departure
+//!    while the record stands — another display that came and went — costs
+//!    the survivor its first desktop all over again, and settles it again
+//!    the same way.
+//! 2. When every display of the record is back and the topology is quiet,
+//!    the record is diffed against what the window server reports and the
 //!    differences are put right, once: destroyed desktops are paired with
-//!    the fresh ones that replaced them, strayed desktops are sent back,
+//!    the fresh ones minted for the return, strayed desktops are sent back,
 //!    strayed windows are sent back, each desktop's tree is restored by
-//!    name, and the desktop made at departure is destroyed. Why a window is
-//!    somewhere else does not matter.
+//!    name, and a desktop made at departure whose windows have somewhere to
+//!    go is destroyed. Why a window is somewhere else does not matter.
 //!
-//! In between, only what the user does edits the record.
+//! In between, only what the user does edits the record. The record is
+//! about the displays that were there when it was taken: one that arrives
+//! and leaves while it stands is neither recorded nor waited for, or a
+//! display that never comes back — a monitor at another desk — would hold
+//! everything else up for good.
 
 use std::time::{Duration, Instant};
 
@@ -41,8 +48,9 @@ use super::{LayoutEvent, Reactor};
 use crate::actor::app::WindowId;
 use crate::actor::reactor::events::EventOutcome;
 use crate::common::collections::{HashMap, HashSet};
+use crate::common::config::LayoutMode;
 use crate::layout_engine::{RestoreRequest, RestoreScope, RestoreSource};
-use crate::sys::screen::SpaceId;
+use crate::sys::screen::{ScreenInfo, SpaceId};
 use crate::sys::scripting_addition;
 use crate::sys::window_server::WindowServerId;
 
@@ -50,7 +58,7 @@ use crate::sys::window_server::WindowServerId;
 /// record's apart from a display uuid.
 pub(super) const RECORD_DEADLINE_KEY: &str = "record";
 
-/// How long after departure a window's appearance on another desktop is
+/// How long after a reshuffle a window's appearance on another desktop is
 /// still the window server's doing and not the user's.
 const CHURN_SETTLE: Duration = Duration::from_secs(10);
 
@@ -65,13 +73,33 @@ pub(super) struct DisplayRecord {
     /// Every desktop's windows at departure, in layout order: what tells
     /// a desktop the user rearranged while away from one they did not.
     members: HashMap<SpaceId, Vec<WindowId>>,
+    /// Every desktop's workspaces' layout modes at departure: a mode
+    /// switched while away is as much a rearrangement as a reordering, and
+    /// leaves the order alone.
+    modes: HashMap<SpaceId, Vec<LayoutMode>>,
     /// Where every window belongs.
     windows: HashMap<WindowId, SpaceId>,
+    /// Where the user put a window while a display was away, and when it
+    /// was seen there. The window server's reshuffles are seen only after
+    /// the windows have moved, so a placement younger than `CHURN_SETTLE`
+    /// when one is seen was its doing, and is dropped then.
+    placed: HashMap<WindowId, (SpaceId, Instant)>,
     displays: Vec<RecordedDisplay>,
-    /// The displays whose return the record waits for.
-    departed: Vec<String>,
+    /// The display that stayed: its desktops go ahead of the visitors, and
+    /// whatever the user makes while the others are away is its.
+    survivor: String,
+    /// Every desktop the window server has listed since the record was
+    /// taken. One it lists at the return that is not here was minted for
+    /// the return, and stands in for a destroyed one; one that is here came
+    /// along with some display in the meantime and stands in for nothing.
+    seen: HashSet<SpaceId>,
+    /// When the window server was last seen reshuffling: the record's
+    /// taking, and every settle since.
+    churn_seen: Instant,
+    settled: bool,
     /// Desktops rift made at departure for the windows of a destroyed one:
-    /// `(made, destroyed)`. Not the user's, and not to outlive the return.
+    /// `(made, destroyed)`. Not the user's, and not to outlive the return
+    /// when the return gives their windows somewhere to go.
     stopgaps: Vec<(SpaceId, SpaceId)>,
     /// Windows rift itself has sent somewhere; their arrival is not the
     /// user's doing.
@@ -79,15 +107,14 @@ pub(super) struct DisplayRecord {
     pass: Option<Pass>,
 }
 
-struct RecordedDisplay {
-    uuid: String,
+#[derive(Clone, Debug)]
+pub(super) struct RecordedDisplay {
+    pub(super) uuid: String,
     /// The display's desktops in order.
-    desktops: Vec<SpaceId>,
-    shown: Option<SpaceId>,
+    pub(super) desktops: Vec<SpaceId>,
+    pub(super) shown: Option<SpaceId>,
 }
 
-/// A pass in flight: windows sent somewhere, trees to restore once they
-/// have arrived or the deadline has passed.
 /// The layout from the last departure, kept after the return: a desktop
 /// the user rearranged while away keeps the rearrangement, and this is
 /// what puts it back on demand.
@@ -97,6 +124,8 @@ pub(super) struct DepartureSnapshot {
     then: HashMap<SpaceId, SpaceId>,
 }
 
+/// A pass in flight: windows sent somewhere, trees to restore once they
+/// have arrived or the deadline has passed.
 struct Pass {
     stage: Stage,
     /// Each desktop's id now → its id in the record's layout.
@@ -107,6 +136,9 @@ struct Pass {
     /// (desktop id in the record, desktop id now) for every desktop whose
     /// tree is put back.
     restores: Vec<(SpaceId, SpaceId)>,
+    /// Made desktops whose windows the pass sends elsewhere: destroyed
+    /// once the pass is over and nothing shows them.
+    retire: Vec<SpaceId>,
     started: Instant,
 }
 
@@ -125,43 +157,110 @@ impl DisplayRecord {
         self.pass.as_ref().and_then(|pass| pass.waiting.get(&wid).copied())
     }
 
-    #[cfg(test)]
-    pub(super) fn backdate(&mut self, by: Duration) { self.taken -= by; }
+    /// Where the record wants `wid`: where the user put it while away, else
+    /// where it was at departure.
+    fn desired(&self, wid: WindowId) -> Option<SpaceId> {
+        self.placed
+            .get(&wid)
+            .map(|(space, _)| *space)
+            .or_else(|| self.windows.get(&wid).copied())
+    }
+
+    /// The desktop made to stand in for `lost`, if one was.
+    fn stopgap_for(&self, lost: SpaceId) -> Option<SpaceId> {
+        self.stopgaps.iter().find(|(_, l)| *l == lost).map(|(made, _)| *made)
+    }
 
     #[cfg(test)]
-    pub(super) fn recorded_desktop(&self, wid: WindowId) -> Option<SpaceId> {
-        self.windows.get(&wid).copied()
+    pub(super) fn backdate(&mut self, by: Duration) {
+        self.taken -= by;
+        self.churn_seen -= by;
+    }
+
+    #[cfg(test)]
+    pub(super) fn recorded_desktop(&self, wid: WindowId) -> Option<SpaceId> { self.desired(wid) }
+
+    #[cfg(test)]
+    pub(super) fn display_uuids(&self) -> Vec<&str> {
+        self.displays.iter().map(|d| d.uuid.as_str()).collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn made_desktops(&self) -> Vec<SpaceId> {
+        self.stopgaps.iter().map(|(made, _)| *made).collect()
     }
 }
 
 impl Reactor {
     /// Takes the record, from the pre-churn snapshot when there is one: the
     /// window server starts moving windows before it reports the display
-    /// change, and the snapshot is from before that. A second departure
-    /// while one is already recorded adds to the displays waited for and
-    /// keeps the record; the state from before the first departure is the
-    /// one to go back to.
-    pub(super) fn record_departure(&mut self, departed: Vec<String>) {
-        if let Some(record) = self.display_archive.record.as_mut() {
-            for uuid in departed {
-                if !record.departed.contains(&uuid) {
-                    record.departed.push(uuid);
-                }
-            }
+    /// change, and the snapshot is from before that. The displays are the
+    /// last whole set the window server reported, for the same reason.
+    /// A departure while a record already stands changes nothing: the
+    /// state from before the first departure is the one to go back to, and
+    /// the record waits for its own displays, whichever else come and go.
+    pub(super) fn record_departure(&mut self, departed: Vec<String>, active_displays: &[String]) {
+        if self.display_archive.record.is_some() {
+            debug!(
+                ?departed,
+                "A display departed while a record stands; the record stands"
+            );
             return;
         }
-        let (layout, members) = match self.display_archive.fresh_pre_churn() {
-            Some(pre) => (pre.layout.clone(), pre.members.clone()),
+        let displays: Vec<RecordedDisplay> = match self.display_archive.whole_displays.as_ref() {
+            Some(whole) => whole.clone(),
+            // The display set from before the change: the reactor's own
+            // state is only updated after this runs.
+            None => self
+                .space_state
+                .display_space_ids
+                .iter()
+                .map(|(uuid, desktops)| RecordedDisplay {
+                    uuid: uuid.clone(),
+                    desktops: desktops.clone(),
+                    shown: self
+                        .space_state
+                        .screens
+                        .iter()
+                        .find(|screen| &screen.display_uuid == uuid)
+                        .and_then(|screen| screen.space),
+                })
+                .collect(),
+        };
+        let departed: Vec<String> = departed
+            .into_iter()
+            .filter(|uuid| displays.iter().any(|d| &d.uuid == uuid))
+            .collect();
+        if departed.is_empty() {
+            debug!("The departed display was not in the last whole display set; nothing to record");
+            return;
+        }
+        let Some(survivor) = displays
+            .iter()
+            .find(|d| active_displays.contains(&d.uuid) && !departed.contains(&d.uuid))
+            .map(|d| d.uuid.clone())
+        else {
+            debug!(
+                ?departed,
+                "No display of the last whole set stayed; nothing to record"
+            );
+            return;
+        };
+        let (layout, members, modes) = match self.display_archive.fresh_pre_churn() {
+            Some(pre) => (pre.layout.clone(), pre.members.clone(), pre.modes.clone()),
             None => {
                 let engine = &mut self.layout_manager.layout_engine;
-                let members: HashMap<SpaceId, Vec<WindowId>> = engine
-                    .virtual_workspace_manager()
-                    .initialized_spaces()
-                    .into_iter()
-                    .map(|space| (space, engine.windows_on_space_in_layout_order(space)))
+                let spaces = engine.virtual_workspace_manager().initialized_spaces();
+                let members: HashMap<SpaceId, Vec<WindowId>> = spaces
+                    .iter()
+                    .map(|space| (*space, engine.windows_on_space_in_layout_order(*space)))
+                    .collect();
+                let modes: HashMap<SpaceId, Vec<LayoutMode>> = spaces
+                    .iter()
+                    .map(|space| (*space, engine.layout_modes_on_space(*space)))
                     .collect();
                 match engine.snapshot_current_layout_lightly(&self.state.windows) {
-                    Ok(layout) => (layout, members),
+                    Ok(layout) => (layout, members, modes),
                     Err(error) => {
                         warn!(%error, "Could not record the layout at departure");
                         return;
@@ -177,57 +276,60 @@ impl Reactor {
                 }
             }
         }
-        // The display set from before the change: the reactor's own state
-        // is only updated after this runs.
-        let displays: Vec<RecordedDisplay> = self
-            .space_state
-            .display_space_ids
-            .iter()
-            .map(|(uuid, desktops)| RecordedDisplay {
-                uuid: uuid.clone(),
-                desktops: desktops.clone(),
-                shown: self
-                    .space_state
-                    .screens
-                    .iter()
-                    .find(|screen| &screen.display_uuid == uuid)
-                    .and_then(|screen| screen.space),
-            })
-            .collect();
+        let seen: HashSet<SpaceId> =
+            displays.iter().flat_map(|d| d.desktops.iter().copied()).collect();
         info!(
             ?departed,
+            %survivor,
             windows = windows.len(),
             displays = ?displays.iter().map(|d| (d.uuid.as_str(), &d.desktops, d.shown)).collect::<Vec<_>>(),
             "Display departed; recorded where everything was, to be put back when it returns"
         );
         crate::sys::trace::act("record", &(windows.len(), displays.len()));
+        let now = crate::sys::trace::now();
         self.display_archive.record = Some(DisplayRecord {
-            taken: crate::sys::trace::now(),
+            taken: now,
             layout,
             members,
+            modes,
             windows,
+            placed: HashMap::default(),
             displays,
-            departed,
+            survivor,
+            seen,
+            churn_seen: now,
+            settled: false,
             stopgaps: Vec::new(),
             own_moves: HashSet::default(),
             pass: None,
         });
     }
 
-    /// Right after departure: the survivor gets its own state back as far
-    /// as it can while the other display is away. The windows of the
-    /// desktop macOS destroyed get a desktop made for them, with their
-    /// tree; the survivor's own desktops are put ahead of the visitors; and
-    /// the survivor is switched back to the desktop it was showing.
-    pub(super) fn settle_after_departure(&mut self) -> EventOutcome {
+    /// Right after a departure: the survivor gets its own state back as far
+    /// as it can while a display is away. The windows of the desktop macOS
+    /// destroyed get a desktop made for them, with their tree; the
+    /// survivor's own desktops are put ahead of the visitors; and the
+    /// survivor is switched back to the desktop it was showing. Run again
+    /// at every later departure, for the desktop that one destroys — a
+    /// made one included: its windows get another.
+    pub(super) fn settle_after_departure(&mut self, screens: &[ScreenInfo]) -> EventOutcome {
         let outcome = EventOutcome::default();
-        let Some(record) = self.display_archive.record.as_ref() else {
+        let Some(record) = self.display_archive.record.as_mut() else {
             return outcome;
         };
-        if record.pass.is_some() || !record.stopgaps.is_empty() {
+        if record.pass.is_some() {
             return outcome;
         }
-        let Some(survivor) = record.displays.iter().find(|d| !record.departed.contains(&d.uuid))
+        // Whatever turned up somewhere else just before this reshuffle was
+        // seen was the window server's doing, not the user's.
+        record.placed.retain(|_, (_, at)| at.elapsed() >= CHURN_SETTLE);
+        let record = self.display_archive.record.as_ref().expect("checked above");
+        let on_screen: Vec<&str> = screens.iter().map(|s| s.display_uuid.as_str()).collect();
+        let Some(survivor) = record
+            .displays
+            .iter()
+            .find(|d| d.uuid == record.survivor && on_screen.contains(&d.uuid.as_str()))
+            .or_else(|| record.displays.iter().find(|d| on_screen.contains(&d.uuid.as_str())))
         else {
             return outcome;
         };
@@ -235,23 +337,41 @@ impl Reactor {
         let mut now = self.display_space_ids_now();
         let listed_all: HashSet<SpaceId> = now.values().flatten().copied().collect();
         let on_survivor: Vec<SpaceId> = now.get(&survivor.uuid).cloned().unwrap_or_default();
-        let destroyed: Vec<SpaceId> =
-            survivor.desktops.iter().copied().filter(|s| !listed_all.contains(s)).collect();
-        let kept: Vec<SpaceId> =
-            survivor.desktops.iter().copied().filter(|s| on_survivor.contains(s)).collect();
+        // The survivor's own desktops, by the id each has now: a destroyed
+        // one is represented by the desktop made for it.
+        let own_now: Vec<(SpaceId, SpaceId)> = survivor
+            .desktops
+            .iter()
+            .map(|then| (record.stopgap_for(*then).unwrap_or(*then), *then))
+            .collect();
+        let destroyed: Vec<(SpaceId, SpaceId)> =
+            own_now.iter().copied().filter(|(now, _)| !listed_all.contains(now)).collect();
+        let kept: Vec<SpaceId> = own_now
+            .iter()
+            .map(|(now, _)| *now)
+            .filter(|now| on_survivor.contains(now))
+            .collect();
         let visitors: Vec<SpaceId> = record
             .displays
             .iter()
-            .filter(|d| record.departed.contains(&d.uuid))
+            .filter(|d| d.uuid != survivor.uuid)
             .flat_map(|d| d.desktops.iter().copied())
             .filter(|s| on_survivor.contains(s))
             .collect();
+        // A later departure that destroyed nothing of the survivor's is not
+        // a reason to reorder its desktops or switch what it shows.
+        if record.settled && destroyed.is_empty() {
+            let record = self.display_archive.record.as_mut().expect("checked above");
+            record.seen.extend(listed_all);
+            return outcome;
+        }
+        let survivor = survivor.clone();
 
         // A desktop for the destroyed desktop's windows. macOS lists the
         // visitors first; the new one goes after the last of them, and the
         // walk below puts it first.
-        let mut stopgap: Option<(SpaceId, SpaceId)> = None;
-        if let Some(lost) = destroyed.first().copied() {
+        let mut stopgap: Option<(SpaceId, SpaceId, SpaceId)> = None;
+        if let Some((gone, lost)) = destroyed.first().copied() {
             if destroyed.len() > 1 {
                 warn!(
                     ?destroyed,
@@ -261,9 +381,9 @@ impl Reactor {
             let anchor = visitors.last().or(on_survivor.last()).copied();
             match anchor.filter(|_| addition).and_then(scripting_addition::create_space_after) {
                 Some(made) => {
-                    info!(display = %survivor.uuid, lost = lost.get(), made = made.get(), "Made the survivor a desktop for the windows of the one macOS destroyed");
+                    info!(display = %survivor.uuid, lost = lost.get(), gone = gone.get(), made = made.get(), "Made the survivor a desktop for the windows of the one macOS destroyed");
                     now.entry(survivor.uuid.clone()).or_default().push(made);
-                    stopgap = Some((made, lost));
+                    stopgap = Some((made, gone, lost));
                 }
                 None => {
                     warn!(display = %survivor.uuid, lost = lost.get(), scripting_addition = addition, "Could not make the survivor a desktop; its windows stay merged in among the visitors until the other display is back")
@@ -274,7 +394,7 @@ impl Reactor {
         // The survivor's own desktops first — the made one, then the kept
         // ones — and the visitors behind them, each moved behind the
         // previous only when it is not there already.
-        let mut own: Vec<SpaceId> = stopgap.iter().map(|(made, _)| *made).collect();
+        let mut own: Vec<SpaceId> = stopgap.iter().map(|(made, _, _)| *made).collect();
         own.extend(kept.iter().copied());
         let desired: Vec<SpaceId> = own.iter().chain(visitors.iter()).copied().collect();
         let mut desktop_moves = 0usize;
@@ -318,11 +438,13 @@ impl Reactor {
         let mut waiting: HashMap<WindowId, SpaceId> = HashMap::default();
         let mut restores = Vec::new();
         let mut sent: Vec<(WindowId, WindowServerId)> = Vec::new();
-        if let Some((made, lost)) = stopgap {
+        if let Some((made, _, lost)) = stopgap {
             let merged: Vec<(WindowId, Option<WindowServerId>)> = record
                 .windows
                 .iter()
-                .filter(|(_, desktop)| **desktop == lost)
+                .filter(|(wid, desktop)| {
+                    record.desired(**wid) == Some(**desktop) && **desktop == lost
+                })
                 .filter_map(|(wid, _)| {
                     self.state.windows.window(*wid).map(|state| (*wid, state.info.sys_id))
                 })
@@ -343,19 +465,17 @@ impl Reactor {
 
         // Back to the desktop it was showing; the made one stands in for
         // the destroyed one.
-        let shown = survivor.shown.map(|s| match stopgap {
-            Some((made, lost)) if s == lost => made,
-            _ => s,
-        });
-        let survivor_uuid = survivor.uuid.clone();
-        let showing = self
-            .space_state
-            .screens
+        let stands_in = |s: SpaceId| match stopgap {
+            Some((made, _, lost)) if s == lost => made,
+            _ => record.stopgap_for(s).unwrap_or(s),
+        };
+        let shown = survivor.shown.map(stands_in);
+        let showing = screens
             .iter()
-            .find(|screen| screen.display_uuid == survivor_uuid)
+            .find(|screen| screen.display_uuid == survivor.uuid)
             .and_then(|screen| screen.space);
         if let Some(shown) = shown
-            && now.get(&survivor_uuid).is_some_and(|listed| listed.contains(&shown))
+            && now.get(&survivor.uuid).is_some_and(|listed| listed.contains(&shown))
             && showing != Some(shown)
             && addition
             && !scripting_addition::focus_space(shown.get())
@@ -367,29 +487,36 @@ impl Reactor {
         }
 
         info!(
-            display = %survivor_uuid,
-            ?destroyed,
-            made = ?stopgap.map(|(made, _)| made.get()),
+            display = %survivor.uuid,
+            destroyed = ?destroyed.iter().map(|(now, _)| now.get()).collect::<Vec<_>>(),
+            made = ?stopgap.map(|(made, _, _)| made.get()),
             desktop_moves,
             windows_moved = sent.len(),
             "Settled the survivor while the other display is away"
         );
         crate::sys::trace::act("settle", &(desktop_moves, sent.len()));
 
-        if let Some((made, lost)) = stopgap {
+        if let Some((made, gone, _)) = stopgap {
             self.layout_manager
                 .layout_engine
-                .remap_space(&mut self.state.windows, lost, made);
+                .remap_space(&mut self.state.windows, gone, made);
             self.layout_manager
                 .layout_engine
-                .update_space_display(made, Some(survivor_uuid.clone()));
+                .update_space_display(made, Some(survivor.uuid.clone()));
         }
         for (_, wsid) in &sent {
             self.note_window_sent_to_space(*wsid);
         }
         let immediate = waiting.is_empty();
         let record = self.display_archive.record.as_mut().expect("checked above");
-        record.stopgaps.extend(stopgap);
+        record.settled = true;
+        record.churn_seen = crate::sys::trace::now();
+        record.seen.extend(listed_all);
+        if let Some((made, gone, lost)) = stopgap {
+            record.stopgaps.retain(|(m, _)| *m != gone);
+            record.stopgaps.push((made, lost));
+            record.seen.insert(made);
+        }
         record.own_moves.extend(sent.iter().map(|(wid, _)| *wid));
         if restores.is_empty() {
             return outcome;
@@ -399,6 +526,7 @@ impl Reactor {
             ids: HashMap::default(),
             waiting,
             restores,
+            retire: Vec::new(),
             started: crate::sys::trace::now(),
         });
         if immediate {
@@ -427,15 +555,19 @@ impl Reactor {
             return;
         }
         if record.pass.is_some()
-            || record.taken.elapsed() < CHURN_SETTLE
-            || record.departed.iter().any(|uuid| on_screen.contains(&uuid.as_str()))
+            || record.churn_seen.elapsed() < CHURN_SETTLE
+            || record.displays.iter().all(|d| on_screen.contains(&d.uuid.as_str()))
         {
             return;
         }
         if record.windows.get(&wid) == Some(&space) {
+            record.placed.remove(&wid);
             return;
         }
-        record.windows.insert(wid, space);
+        if record.placed.get(&wid).is_some_and(|(there, _)| *there == space) {
+            return;
+        }
+        record.placed.insert(wid, (space, crate::sys::trace::now()));
         info!(
             ?wid,
             space = space.get(),
@@ -444,8 +576,8 @@ impl Reactor {
         crate::sys::trace::act("record_edit", &(wid.idx.get(), space.get()));
     }
 
-    /// Once every departed display is back: diff the record against what
-    /// the window server reports and put the differences right.
+    /// Once every display of the record is back: diff the record against
+    /// what the window server reports and put the differences right.
     pub(super) fn reconcile_record(&mut self) -> EventOutcome {
         let mut outcome = EventOutcome::default();
         let Some(record) = self.display_archive.record.as_ref() else {
@@ -457,7 +589,7 @@ impl Reactor {
             .iter()
             .map(|screen| screen.display_uuid.clone())
             .collect();
-        if !record.departed.iter().all(|uuid| on_screen.contains(uuid)) {
+        if !record.displays.iter().all(|d| on_screen.contains(&d.uuid)) {
             return outcome;
         }
         match record.pass.as_ref().map(|pass| pass.stage) {
@@ -473,14 +605,17 @@ impl Reactor {
         let recorded_all: HashSet<SpaceId> =
             record.displays.iter().flat_map(|d| d.desktops.iter().copied()).collect();
         let stopgaps: HashMap<SpaceId, SpaceId> = record.stopgaps.iter().copied().collect();
+        let stand_in: HashMap<SpaceId, SpaceId> =
+            record.stopgaps.iter().map(|(made, lost)| (*lost, *made)).collect();
         let retiring: Vec<SpaceId> =
             self.display_archive.retiring.iter().map(|(space, _)| *space).collect();
 
         // A destroyed desktop is one the record has that is listed nowhere
-        // now; a fresh one is listed under a display now and recorded
-        // nowhere, and not one rift made. macOS lists the replacement first,
-        // so they pair in order. Fresh desktops beyond the destroyed ones
-        // were made by the user.
+        // now; a fresh one is listed under a display now, recorded nowhere,
+        // not one rift made, and not seen before the return — one that came
+        // along with some other display meanwhile stands in for nothing.
+        // macOS lists the replacement first, so they pair in order. Fresh
+        // desktops beyond the destroyed ones were made by the user.
         let mut subst: HashMap<SpaceId, SpaceId> = HashMap::default();
         let mut paired: HashSet<SpaceId> = HashSet::default();
         for d in &record.displays {
@@ -491,19 +626,30 @@ impl Reactor {
                 .into_iter()
                 .flatten()
                 .copied()
-                .filter(|s| !recorded_all.contains(s) && !stopgaps.contains_key(s))
+                .filter(|s| {
+                    !recorded_all.contains(s)
+                        && !stopgaps.contains_key(s)
+                        && !record.seen.contains(s)
+                })
                 .collect();
             for (old, new) in destroyed.into_iter().zip(fresh) {
                 subst.insert(old, new);
                 paired.insert(new);
             }
         }
-        let map = |space: SpaceId| subst.get(&space).copied().unwrap_or(space);
+        // A destroyed desktop is represented by its replacement, else by the
+        // desktop made for it at departure, which then stays as it is.
+        let map = |space: SpaceId| {
+            subst
+                .get(&space)
+                .copied()
+                .or_else(|| stand_in.get(&space).copied())
+                .unwrap_or(space)
+        };
         // Whatever is listed anywhere that the record does not know, no
         // destroyed desktop accounts for and rift did not make was made by
-        // the user while the display was away, and belongs to the display
-        // that stayed.
-        let survivor = record.displays.iter().find(|d| !record.departed.contains(&d.uuid));
+        // the user (or left behind by a display that came and went) while
+        // the display was away, and belongs to the display that stayed.
         let unknown: Vec<SpaceId> = record
             .displays
             .iter()
@@ -522,21 +668,19 @@ impl Reactor {
         // display as the user left it. Rearranged means its windows are
         // not in the order the record has — counting only the windows the
         // record has on it and that are on it now, so nothing the churn
-        // moved on or off it counts.
-        let now_id = |x: SpaceId| {
-            record
-                .stopgaps
-                .iter()
-                .find(|(_, lost)| *lost == x)
-                .map(|(made, _)| *made)
-                .unwrap_or(x)
-        };
+        // moved on or off it counts — or a workspace's layout mode is not
+        // the one the record has.
         let touched: HashSet<SpaceId> = record
             .displays
             .iter()
             .flat_map(|d| d.desktops.iter().copied())
             .filter(|x| {
-                let here = now_id(*x);
+                // Where the desktop's tree lives now: on the desktop made
+                // for it, if it was destroyed and one was.
+                let here = record.stopgap_for(*x).unwrap_or(*x);
+                if !listed_all.contains(&map(*x)) {
+                    return false;
+                }
                 // Recorded on this desktop, and on it now: what the user
                 // could have rearranged.
                 let counts = |w: &WindowId| {
@@ -559,7 +703,14 @@ impl Reactor {
                     .into_iter()
                     .filter(counts)
                     .collect();
-                listed_all.contains(&map(here)) && then != now
+                if then != now {
+                    return true;
+                }
+                let modes_now = self.layout_manager.layout_engine.layout_modes_on_space(here);
+                record
+                    .modes
+                    .get(x)
+                    .is_some_and(|then| !modes_now.is_empty() && *then != modes_now)
             })
             .collect();
 
@@ -568,12 +719,7 @@ impl Reactor {
         // up on the fresh desktop, assignments included. A tree that went to
         // a made desktop at departure comes from there.
         for (old, new) in &subst {
-            let from = record
-                .stopgaps
-                .iter()
-                .find(|(_, lost)| lost == old)
-                .map(|(made, _)| *made)
-                .unwrap_or(*old);
+            let from = record.stopgap_for(*old).unwrap_or(*old);
             self.layout_manager
                 .layout_engine
                 .remap_space(&mut self.state.windows, from, *new);
@@ -605,7 +751,7 @@ impl Reactor {
         let mut now = now;
         for d in &record.displays {
             let mut desired: Vec<SpaceId> = d.desktops.iter().map(|s| map(*s)).collect();
-            if survivor.is_some_and(|s| s.uuid == d.uuid) {
+            if d.uuid == record.survivor {
                 desired.extend(unknown.iter().copied());
             }
             let on_d: Vec<SpaceId> = now.get(&d.uuid).cloned().unwrap_or_default();
@@ -647,8 +793,11 @@ impl Reactor {
         let mut moved = 0usize;
         let mut refused = 0usize;
         let mut sent: Vec<(WindowId, WindowServerId)> = Vec::new();
-        for (wid, desired) in &record.windows {
-            let desired = map(*desired);
+        for wid in record.windows.keys().chain(record.placed.keys()) {
+            let Some(desired) = record.desired(*wid) else {
+                continue;
+            };
+            let desired = map(desired);
             if !listed_all.contains(&desired) {
                 continue;
             }
@@ -722,6 +871,15 @@ impl Reactor {
             .map(|(now, then)| (*then, *now))
             .filter(|(from, _)| !touched.contains(from))
             .collect();
+        // A made desktop is done with once its windows have a replacement
+        // desktop to go to; one whose destroyed desktop got no replacement
+        // keeps its windows and stays.
+        let retire: Vec<SpaceId> = record
+            .stopgaps
+            .iter()
+            .filter(|(_, lost)| subst.contains_key(lost))
+            .map(|(made, _)| *made)
+            .collect();
         if refused > 0 {
             warn!(
                 refused,
@@ -736,6 +894,7 @@ impl Reactor {
             windows_waited_for = waiting.len(),
             restores = restores.len(),
             rearranged_while_away = ?touched,
+            kept_made = ?record.stopgaps.iter().filter(|(made, _)| !retire.contains(made)).map(|(made, _)| made.get()).collect::<Vec<_>>(),
             "Displays back; put everything where the record has it"
         );
         crate::sys::trace::act(
@@ -749,12 +908,16 @@ impl Reactor {
         for desired in record.windows.values_mut() {
             *desired = map(*desired);
         }
+        for (desired, _) in record.placed.values_mut() {
+            *desired = map(*desired);
+        }
         record.own_moves.extend(sent.iter().map(|(wid, _)| *wid));
         record.pass = Some(Pass {
             stage: Stage::Back,
             ids,
             waiting,
             restores,
+            retire,
             started: crate::sys::trace::now(),
         });
         if immediate {
@@ -920,8 +1083,8 @@ impl Reactor {
     }
 
     /// Restores the pass's trees. After the return, the record is done and
-    /// the desktop made at departure — empty by now, its windows having
-    /// gone back — is destroyed once nothing shows it.
+    /// the desktops made at departure whose windows went back — empty by
+    /// now — are destroyed once nothing shows them.
     fn finish_pass(&mut self) -> EventOutcome {
         let Some(record) = self.display_archive.record.as_mut() else {
             return EventOutcome::default();
@@ -961,7 +1124,7 @@ impl Reactor {
         crate::sys::trace::act("pass_done", &(format!("{:?}", pass.stage), pass.restores.len()));
         if pass.stage == Stage::Back {
             let record = self.display_archive.record.take().expect("taken above");
-            for (made, _) in record.stopgaps {
+            for made in pass.retire {
                 self.display_archive.retiring.push((made, crate::sys::trace::now()));
             }
             self.display_archive.last_departure = Some(DepartureSnapshot {
