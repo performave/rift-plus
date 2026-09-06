@@ -50,17 +50,37 @@ _install profile:
         chmod 555 "$prefix/$bin"
     done
 
+# Two services can run rift: the per-user launchd agent that
+# `rift service install` writes (`git.acsandmann.rift`), and Homebrew's own.
+# Only one of them holds the process, so when the agent is loaded it is the
+# rift serving your code — and `brew services restart` then restarts the
+# *other* one, which starts, finds rift already up, exits 1, and says nothing.
+# The binaries are swapped, the running rift is untouched, and the build just
+# made never runs: the silent way `just dev` appears to do nothing at all.
+#
+# Restart whichever service is actually running rift.
 restart:
-    brew services restart {{formula}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if launchctl print "gui/$UID/git.acsandmann.rift" >/dev/null 2>&1; then
+        "$(brew --prefix {{formula}})/bin/rift" service restart
+    else
+        brew services restart {{formula}}
+    fi
 
 stop:
-    brew services stop {{formula}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if launchctl print "gui/$UID/git.acsandmann.rift" >/dev/null 2>&1; then
+        "$(brew --prefix {{formula}})/bin/rift" service stop
+    else
+        brew services stop {{formula}}
+    fi
 
 # Is everything actually up? Service, payload, and the last errors.
 status:
     #!/usr/bin/env bash
-    brew services list | grep -E "^(rift|{{formula}})" || echo "service: not registered"
-    rift sa status || true
+    rift status || true
     tail -n 5 "/tmp/rift_${USER}.err.log" 2>/dev/null || true
 
 # Re-inject the scripting addition. Needed after a Dock restart or a reboot.
