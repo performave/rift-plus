@@ -224,13 +224,10 @@ fn quarantines_window_space_events_during_sleep_before_churn_begins() {
     actor.handle_event(Event::SpaceCreated(SpaceId::new(5)));
     actor.handle_event(Event::SpaceDestroyed(SpaceId::new(6)));
 
-    assert_eq!(
-        actor.state.quarantine_stats,
-        QuarantineStats {
-            appeared_dropped: 1,
-            destroyed_dropped: 1
-        }
-    );
+    assert_eq!(actor.state.quarantine_stats, QuarantineStats {
+        appeared_dropped: 1,
+        destroyed_dropped: 1
+    });
     assert!(!actor.state.visible_window_spaces.contains_key(&appeared));
     assert_eq!(
         actor.state.visible_window_spaces.get(&existing),
@@ -790,11 +787,156 @@ fn wake_transient_cannot_steal_another_displays_space_history() {
     ));
     match recv_wm(&mut wm_rx) {
         wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
-            assert_eq!(
-                state.space_remaps,
-                vec![(external_space_before_sleep, external_space_after_wake)]
-            );
+            assert_eq!(state.space_remaps, vec![(
+                external_space_before_sleep,
+                external_space_after_wake
+            )]);
             assert!(!state.space_remaps.contains(&(builtin_space, external_space_after_wake)));
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
+fn seed_display_desktops(actor: &mut SpacesActor, desktops: &[(&str, &[SpaceId])]) {
+    let mut listed: HashMap<String, Vec<SpaceId>> = HashMap::default();
+    for (display_uuid, spaces) in desktops {
+        listed.insert((*display_uuid).to_string(), spaces.to_vec());
+    }
+    actor.state.test_display_space_ids = Some(listed);
+}
+
+#[test]
+fn desktop_replaced_during_sleep_is_remapped_without_a_topology_change() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let builtin_before_sleep = SpaceId::new(155);
+    let builtin_after_wake = SpaceId::new(257);
+    let builtin_other = SpaceId::new(5);
+    let external_shown = SpaceId::new(143);
+
+    let screens = |builtin_space: SpaceId| {
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(builtin_space)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(external_shown)),
+        ]
+    };
+
+    seed_display_desktops(&mut actor, &[
+        ("builtin", &[builtin_before_sleep, builtin_other]),
+        ("external", &[
+            SpaceId::new(215),
+            external_shown,
+            SpaceId::new(136),
+        ]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        screens(builtin_before_sleep),
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // Both displays stayed attached across the sleep; macOS simply destroyed
+    // the desktop the built-in was showing and put a new one in its place.
+    seed_display_desktops(&mut actor, &[
+        ("builtin", &[builtin_after_wake, builtin_other]),
+        ("external", &[
+            SpaceId::new(215),
+            external_shown,
+            SpaceId::new(136),
+        ]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        screens(builtin_after_wake),
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert!(!state.topology_changed);
+            assert!(!state.should_force_refresh_layout);
+            assert!(!state.allow_space_remap);
+            assert_eq!(state.space_remaps, vec![(
+                builtin_before_sleep,
+                builtin_after_wake
+            )]);
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
+#[test]
+fn switching_to_another_listed_desktop_is_not_a_replacement() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let shown_first = SpaceId::new(155);
+    let shown_next = SpaceId::new(5);
+
+    seed_display_desktops(&mut actor, &[("builtin", &[shown_first, shown_next])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_first),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_next),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert!(state.space_remaps.is_empty());
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
+#[test]
+fn a_snapshot_that_does_not_list_the_display_cannot_claim_a_replacement() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let shown_first = SpaceId::new(155);
+    let shown_next = SpaceId::new(257);
+
+    seed_display_desktops(&mut actor, &[("builtin", &[shown_first, SpaceId::new(5)])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_first),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // WindowServer has not answered for the display yet. The old desktop being
+    // absent from the list says nothing while the list itself is missing.
+    seed_display_desktops(&mut actor, &[]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_next),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert!(state.space_remaps.is_empty());
         }
         other => panic!("unexpected wm event: {other:?}"),
     }
@@ -874,11 +1016,9 @@ fn topology_window_delta_is_emitted_when_windows_leave_space_during_churn_withou
     let _ = recv_wm(&mut wm_rx);
 
     crate::sys::window_server::set_space_window_list_for_space_override(space.get(), Some(vec![]));
-    actor.synthesize_topology_window_delta(
-        9,
-        actor.state.display_churn_flags,
-        &[make_screen(Some(space))],
-    );
+    actor.synthesize_topology_window_delta(9, actor.state.display_churn_flags, &[make_screen(
+        Some(space),
+    )]);
     crate::sys::window_server::set_space_window_list_for_space_override(space.get(), None);
     actor.forward_screen_parameters(
         vec![make_screen(Some(space))],
@@ -955,14 +1095,10 @@ fn topology_window_delta_treats_same_window_space_move_as_remove_then_add() {
         new_space.get(),
         Some(vec![wsid.as_u32()]),
     );
-    actor.synthesize_topology_window_delta(
-        10,
-        actor.state.display_churn_flags,
-        &[
-            make_screen_with(1, "display-left", 0.0, 1000.0, Some(old_space)),
-            make_screen_with(2, "display-right", 1000.0, 1000.0, Some(new_space)),
-        ],
-    );
+    actor.synthesize_topology_window_delta(10, actor.state.display_churn_flags, &[
+        make_screen_with(1, "display-left", 0.0, 1000.0, Some(old_space)),
+        make_screen_with(2, "display-right", 1000.0, 1000.0, Some(new_space)),
+    ]);
     crate::sys::window_server::set_space_window_list_for_space_override(old_space.get(), None);
     crate::sys::window_server::set_space_window_list_for_space_override(new_space.get(), None);
     actor.forward_screen_parameters(

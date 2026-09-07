@@ -189,6 +189,11 @@ pub struct AuthorityState {
     pre_churn_visible_window_spaces: HashMap<WindowServerId, SpaceId>,
     pending_topology_window_delta: Option<TopologyWindowDelta>,
     timers_enabled: bool,
+    /// Stands in for `managed_display_space_ids`, which tests have no way to
+    /// answer. Without it a test display owns exactly the desktop it is
+    /// showing, and a replaced desktop is indistinguishable from a switched one.
+    #[cfg(test)]
+    test_display_space_ids: Option<HashMap<String, Vec<SpaceId>>>,
 }
 
 impl Default for AuthorityState {
@@ -219,6 +224,8 @@ impl Default for AuthorityState {
             pre_churn_visible_window_spaces: HashMap::default(),
             pending_topology_window_delta: None,
             timers_enabled: true,
+            #[cfg(test)]
+            test_display_space_ids: None,
         }
     }
 }
@@ -641,17 +648,19 @@ impl SpacesActor {
                     display_space_ids.entry(screen.display_uuid.clone()).or_default().push(space);
                 }
             }
-            self.state.display_space_ids = display_space_ids;
+            self.state.display_space_ids =
+                self.state.test_display_space_ids.clone().unwrap_or(display_space_ids);
         }
         #[cfg(not(test))]
         {
             self.state.display_space_ids = managed_display_space_ids();
         }
 
-        let allow_space_remap = should_force_refresh_layout
-            && !has_duplicate_spaces
-            && screens.iter().all(|screen| screen.space.is_some());
-        let space_remaps = self.compute_space_remaps(&screens, allow_space_remap);
+        let snapshot_is_coherent =
+            !has_duplicate_spaces && screens.iter().all(|screen| screen.space.is_some());
+        let allow_space_remap = should_force_refresh_layout && snapshot_is_coherent;
+        let space_remaps =
+            self.compute_space_remaps(&screens, allow_space_remap, snapshot_is_coherent);
         let menu_bar_space = self.resolve_menu_bar_space(&screens);
         #[cfg(not(test))]
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
@@ -790,6 +799,7 @@ impl SpacesActor {
         &mut self,
         screens: &[ScreenInfo],
         allow_space_remap: bool,
+        snapshot_is_coherent: bool,
     ) -> Vec<(SpaceId, SpaceId)> {
         let mut remaps = Vec::new();
         let mut seen_displays: HashSet<String> = HashSet::default();
@@ -845,7 +855,22 @@ impl SpacesActor {
                     .values()
                     .flatten()
                     .any(|listed| *listed == previous_space);
-                if allow_space_remap
+                // Sleep can replace a desktop without touching the display
+                // set, and `allow_space_remap` — which waits for a topology
+                // change — never fires for that, so the replacement comes back
+                // with no layout at all. `source_still_exists` already tells
+                // the two apart, but it can only be read from a snapshot that
+                // lists this display's desktops; an incomplete list makes every
+                // desktop switch look like a replacement. The list naming the
+                // desktop the display is showing is what says it arrived whole.
+                let display_owns_shown_space = self
+                    .state
+                    .display_space_ids
+                    .get(display_uuid)
+                    .is_some_and(|listed| listed.contains(&space));
+                let snapshot_can_be_trusted =
+                    allow_space_remap || (snapshot_is_coherent && display_owns_shown_space);
+                if snapshot_can_be_trusted
                     && !source_is_now_owned_by_another_display
                     && !source_still_exists
                 {

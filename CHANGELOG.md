@@ -13,6 +13,17 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A desktop macOS replaces during sleep keeps its layout.** With both
+  displays still attached across a sleep, macOS can destroy the desktop a
+  display is showing and put a new one in its place. The remap that carries
+  the old desktop's layout onto its replacement only ran when the display
+  topology changed, which a sleep does not do, so the new desktop arrived
+  with the default layout — a stacked space came back tiled — and the layout
+  it should have inherited was left orphaned in `layout.ron`. That remap now
+  runs on an unchanged topology too, from any snapshot that lists the
+  display's own desktops; that list is what tells a replaced desktop apart
+  from one you merely switched away from, so a snapshot arriving without it
+  still stands aside.
 - **Destroying a desktop while a display is away no longer comes back to
   haunt the next wake.** With `displaced_windows = "spaces"`, rift makes a
   stand-in desktop for the one macOS destroys when a display goes. Destroy
