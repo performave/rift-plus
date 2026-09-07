@@ -13,6 +13,17 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A modal no longer knocks the window it covers out of the layout.** Open a
+  JetBrains modal — Push Commits on Cmd+Shift+K, Confirm Exit — and the IDE
+  re-reports its own document window as an `AXDialog` for as long as the modal
+  is up. rift believed it: the same window, same id, still a resizable root
+  `AXWindow`, was retired from its tree, everything tiled beside it reflowed to
+  fill the gap, and only some later inventory — seconds away — put it back. A
+  window rift has already admitted now keeps its place when a report still
+  describes a root `AXWindow`; that report's identity is dropped whole rather
+  than in half, since it also blanks the app id the layout is matched by. A
+  promotion still counts, and a window that has genuinely changed shape is
+  still retired.
 - **A desktop macOS replaces during sleep keeps its layout.** With both
   displays still attached across a sleep, macOS can destroy the desktop a
   display is showing and put a new one in its place. The remap that carries

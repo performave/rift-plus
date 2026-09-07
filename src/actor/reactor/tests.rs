@@ -7456,6 +7456,76 @@ mod admission {
         reactor.send_layout_event(LayoutEvent::WindowAdded(space, panel));
         assert!(!has_window_in_layout(&mut reactor, space, screen, panel));
     }
+
+    /// A JetBrains IDE re-reports its document window as `AXDialog` for as
+    /// long as one of its own modals is up. Believing that took the IDE out
+    /// of its tree at every Cmd+Shift+K (Push Commits) and reflowed whatever
+    /// was tiled beside it — the window next door jumped to full width and
+    /// back seconds later (jetbrains-modal.trace).
+    #[test]
+    fn a_modal_does_not_retire_the_window_it_covers() {
+        let mut reactor = test_reactor();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let space = SpaceId::new(1);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        reactor.add_test_app_with_info(1, "com.jetbrains.PhpStorm", "PhpStorm");
+        reactor.add_test_app_with_info(2, "com.anthropic.claudefordesktop", "Claude");
+
+        let ide = WindowId::new(1, 1);
+        let neighbour = WindowId::new(2, 1);
+        let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(720., 900.));
+        reactor.add_test_window(ide, WindowServerId::new(101), Some(space), frame);
+        reactor.add_test_window(neighbour, WindowServerId::new(102), Some(space), frame);
+        let workspace = reactor.test_workspace(space, 0);
+        assert!(reactor.assign_test_window_to_workspace(space, ide, workspace));
+        assert!(reactor.assign_test_window_to_workspace(space, neighbour, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(space, ide));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(space, neighbour));
+        {
+            let window = reactor.state.windows.window_mut(ide).unwrap();
+            window.info.bundle_id = Some("com.jetbrains.PhpStorm".into());
+            window.info.ax_role = Some("AXWindow".into());
+            window.info.ax_subrole = Some("AXStandardWindow".into());
+        }
+        let before = test_layout(&mut reactor, space, screen);
+
+        // The modal opens: the IDE's own window comes back described as a
+        // dialog, with the bundle id `WindowInfo` drops for a window it
+        // thinks is not standard.
+        let mut shadowed =
+            make_window_info(frame, Some(WindowServerId::new(101)), "Convoy – Local", None);
+        shadowed.is_standard = false;
+        shadowed.ax_role = Some("AXWindow".into());
+        shadowed.ax_subrole = Some("AXDialog".into());
+        let modal = WindowId::new(1, 2);
+        let modal_frame = CGRect::new(CGPoint::new(320., 180.), CGSize::new(800., 530.));
+        let modal_info = make_window_info(
+            modal_frame,
+            Some(WindowServerId::new(103)),
+            "Push Commits to panel",
+            Some("com.jetbrains.PhpStorm"),
+        );
+        reactor
+            .discover_test_windows(1, vec![(modal, modal_info), (ide, shadowed)], vec![modal, ide]);
+
+        assert!(
+            has_window_in_layout(&mut reactor, space, screen, ide),
+            "the window under the modal must keep its place in the tree"
+        );
+        assert_eq!(
+            test_layout(&mut reactor, space, screen),
+            before,
+            "nothing tiled beside it may move"
+        );
+        let window = reactor.state.windows.window(ide).unwrap();
+        assert!(window.is_manageable);
+        assert_eq!(
+            window.info.bundle_id.as_deref(),
+            Some("com.jetbrains.PhpStorm"),
+            "the report's blanked identity must not be copied over"
+        );
+        assert_eq!(window.info.ax_subrole.as_deref(), Some("AXStandardWindow"));
+    }
 }
 
 mod child_window_focus {
