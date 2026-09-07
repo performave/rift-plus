@@ -375,6 +375,7 @@ impl Reactor {
                 .keys()
                 .all(|uuid| screens.iter().any(|screen| &screen.display_uuid == uuid));
         if whole {
+            self.forget_desktops_destroyed_while_away(screens, display_space_ids);
             self.display_archive.whole_displays = Some(
                 screens
                     .iter()
@@ -413,6 +414,61 @@ impl Reactor {
             pre.pinned = true;
         }
         outcome
+    }
+
+    /// A desktop in the last whole report and not in this one, with the same
+    /// displays on screen and no reshuffle under way, is gone for good: the
+    /// user destroyed it, or macOS did on its own. The record forgets it
+    /// (see `DisplayRecord::forget_destroyed_desktop`), or else the next
+    /// settle — the one after a wake included — takes a desktop the user
+    /// removed for one macOS destroyed, makes another in its place, sends
+    /// windows the user had put elsewhere onto it and reorders around it.
+    /// A made desktop Dock never got to list is not in the last whole report
+    /// and is not forgotten here, so that settle still makes it again.
+    fn forget_desktops_destroyed_while_away(
+        &mut self,
+        screens: &[ScreenInfo],
+        display_space_ids: &HashMap<String, Vec<SpaceId>>,
+    ) {
+        if self.refresh_quarantine_manager.display_churn_active {
+            return;
+        }
+        let Some(previous) = self.display_archive.whole_displays.as_ref() else {
+            return;
+        };
+        let same_displays = previous.len() == screens.len()
+            && previous.iter().all(|d| screens.iter().any(|s| s.display_uuid == d.uuid));
+        if !same_displays {
+            return;
+        }
+        let listed: HashSet<SpaceId> = display_space_ids.values().flatten().copied().collect();
+        let gone: Vec<SpaceId> = previous
+            .iter()
+            .flat_map(|d| d.desktops.iter().copied())
+            .filter(|s| !listed.contains(s))
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        let Some(record) = self.display_archive.record.as_mut() else {
+            return;
+        };
+        if !record.destination_free() {
+            return;
+        }
+        for space in gone {
+            let (forgotten, windows) = record.forget_destroyed_desktop(space);
+            if forgotten.is_empty() {
+                continue;
+            }
+            info!(
+                desktop = space.get(),
+                forgotten = ?forgotten.iter().map(|s| s.get()).collect::<Vec<_>>(),
+                windows = windows.len(),
+                "A desktop was destroyed while a display is away; the record forgets it, and its windows are filed wherever they next turn up"
+            );
+            crate::sys::trace::act("record_forget", &(space.get(), windows.len()));
+        }
     }
 
     /// Called with the new display set before the engine forgets the displays

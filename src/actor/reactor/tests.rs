@@ -9814,6 +9814,99 @@ mod display_archive {
         );
         spaces_cleanup(&f, &[]);
     }
+
+    /// The user destroys the desktop rift made — `destroy_space`, Mission
+    /// Control — and the window server drops its window on a visitor
+    /// desktop. The record forgets both, so the wake that re-checks the
+    /// settle has nothing to do: no desktop made again, no window sent
+    /// anywhere, no desktop reordered. (Seen 2026-09-06: every wake made a
+    /// desktop, pulled Discord onto it and walked the desktops around.)
+    #[test]
+    fn a_made_desktop_the_user_destroys_is_forgotten_and_not_made_again_at_wake() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        let made = SpaceId::new(23);
+        takeover_and_settle(&mut f, made);
+        assert_eq!(sa::space_creations().len(), 1);
+        let space_moves = sa::space_moves().len();
+
+        // Same displays, no reshuffle: the made desktop is simply gone from
+        // the list, and its window is where the window server dropped it.
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .backdate(std::time::Duration::from_secs(30));
+        set_window_spaces(&[survivor_wsid], space2());
+        managed(vec![("test-display-0", vec![space2(), space2_extra()])]);
+        let dropped = everyone(&f, space2(), space2());
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(space2())],
+            move |state| {
+                state.has_seen_display_set = true;
+                state
+                    .display_space_ids
+                    .insert("test-display-0".to_string(), vec![space2(), space2_extra()]);
+                for (wsid, space) in dropped {
+                    state.active_window_spaces.insert(wsid, space);
+                }
+            },
+        ));
+        let record = f.reactor.display_archive.record().expect("the record stands");
+        assert!(
+            record.made_desktops().is_empty(),
+            "the made desktop is forgotten"
+        );
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let record = f.reactor.display_archive.record().expect("the record stands");
+        assert_eq!(
+            record.recorded_desktop(f.survivor),
+            Some(space2()),
+            "the window is filed where it turned up"
+        );
+
+        // The Mac sleeps and wakes; the first whole report changes nothing.
+        f.reactor.handle_event(Event::SystemWoke);
+        let dropped = everyone(&f, space2(), space2());
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(space2())],
+            move |state| {
+                state.has_seen_display_set = true;
+                state
+                    .display_space_ids
+                    .insert("test-display-0".to_string(), vec![space2(), space2_extra()]);
+                for (wsid, space) in dropped {
+                    state.active_window_spaces.insert(wsid, space);
+                }
+            },
+        ));
+        assert_eq!(
+            sa::space_creations().len(),
+            1,
+            "no desktop is made again at wake"
+        );
+        assert_eq!(
+            sa::window_moves().len(),
+            1,
+            "the window stays where the user left it"
+        );
+        assert_eq!(
+            sa::space_moves().len(),
+            space_moves,
+            "no desktop is reordered at wake"
+        );
+        assert!(
+            f.reactor.display_archive.record().is_some(),
+            "the record still waits for the display"
+        );
+        spaces_cleanup(&f, &[]);
+    }
 }
 
 /// A window on a desktop that is not being shown cannot change desktops by

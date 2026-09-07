@@ -33,7 +33,10 @@
 //!    name, and a desktop made at departure whose windows have somewhere to
 //!    go is destroyed. Why a window is somewhere else does not matter.
 //!
-//! In between, only what the user does edits the record. The record is
+//! In between, only what the user does edits the record: a window they
+//! place is filed where they put it, and a desktop they destroy — one rift
+//! made, or one of their own — is forgotten along with the windows filed
+//! on it, which are filed again wherever they next turn up. The record is
 //! about the displays that were there when it was taken: one that arrives
 //! and leaves while it stands is neither recorded nor waited for, or a
 //! display that never comes back — a monitor at another desk — would hold
@@ -192,6 +195,62 @@ impl DisplayRecord {
     pub(super) fn backdate(&mut self, by: Duration) {
         self.taken -= by;
         self.churn_seen -= by;
+    }
+
+    /// A desktop the window server listed after the record was taken and
+    /// lists no longer, with the displays as they were: the user destroyed
+    /// it (Mission Control, `destroy_space`), or macOS did outside any
+    /// reshuffle, and either way nothing brings it back. The record forgets
+    /// it — a made desktop together with the one it stood in for, so no
+    /// later settle makes another — and every window filed on it: the
+    /// window server has put those somewhere, and where each next turns up
+    /// is where it belongs (`note_window_placed_while_away`). Returns the
+    /// desktops forgotten and the windows let go.
+    pub(super) fn forget_destroyed_desktop(
+        &mut self,
+        space: SpaceId,
+    ) -> (Vec<SpaceId>, Vec<WindowId>) {
+        let mut forgotten = vec![space];
+        if let Some(at) = self.stopgaps.iter().position(|(made, _)| *made == space) {
+            let (_, lost) = self.stopgaps.remove(at);
+            forgotten.push(lost);
+        }
+        // One the record never heard of, with nothing filed on it — made
+        // and unmade by the user — is no business of the record's.
+        let known = forgotten.len() > 1
+            || self.displays.iter().any(|d| d.desktops.contains(&space))
+            || self.windows.values().any(|s| *s == space)
+            || self.placed.values().any(|(s, _)| *s == space);
+        if !known {
+            return (Vec::new(), Vec::new());
+        }
+        for display in &mut self.displays {
+            display.desktops.retain(|s| !forgotten.contains(s));
+            if display.shown.is_some_and(|s| forgotten.contains(&s)) {
+                display.shown = None;
+            }
+        }
+        let mut windows: Vec<WindowId> = Vec::new();
+        self.windows.retain(|wid, s| {
+            let keep = !forgotten.contains(s);
+            if !keep {
+                windows.push(*wid);
+            }
+            keep
+        });
+        self.placed.retain(|wid, (s, _)| {
+            let keep = !forgotten.contains(s);
+            if !keep && !windows.contains(wid) {
+                windows.push(*wid);
+            }
+            keep
+        });
+        // Their next arrival is the user's placement, not the tail of a
+        // move of rift's.
+        for wid in &windows {
+            self.own_moves.remove(wid);
+        }
+        (forgotten, windows)
     }
 
     #[cfg(test)]

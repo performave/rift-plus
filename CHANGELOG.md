@@ -13,15 +13,16 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
-- **Leaving native fullscreen puts the window back in its slot even when the
-  window server orders it in last.** Coming out of a fullscreen video in Zen,
-  the window server ordered the window out, moved it home, moved the display
-  home, and only then ordered it back in. The inventory taken in between left
-  the window out, the space change that would have re-tiled it had come and
-  gone, and the window sat floating over the layout until the next switch to
-  that space. The order-in now puts a window with a fullscreen slot waiting
-  back where it was.
-
+- **Destroying a desktop while a display is away no longer comes back to
+  haunt the next wake.** With `displaced_windows = "spaces"`, rift makes a
+  stand-in desktop for the one macOS destroys when a display goes. Destroy
+  that stand-in yourself (`destroy_space`, Mission Control) and the record
+  taken at departure still expected it: every later settle — the one after a
+  wake included — made another, pulled the windows you had moved elsewhere
+  onto it, switched to it and reordered the desktops around it. A desktop
+  gone from the list with the same displays on screen and no reshuffle under
+  way is now forgotten, together with the desktop it stood in for and the
+  windows filed on either, which are filed again wherever they next turn up.
 ## [0.5.5-plus.2] - 2026-09-06
 
 Against upstream `v0.5.5`.
