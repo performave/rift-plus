@@ -58,11 +58,17 @@ _install profile:
 # The binaries are swapped, the running rift is untouched, and the build just
 # made never runs: the silent way `just dev` appears to do nothing at all.
 #
-# Restart whichever service is actually running rift.
+# Restart whichever service is actually running rift. When both are loaded —
+# the agent installed and `brew services start` run too — the loser respawns
+# every ten seconds into the same log; the agent is the one this file keeps.
 restart:
     #!/usr/bin/env bash
     set -euo pipefail
     if launchctl print "gui/$UID/git.acsandmann.rift" >/dev/null 2>&1; then
+        if launchctl print "gui/$UID/sh.brew.{{formula}}" >/dev/null 2>&1; then
+            echo "just: Homebrew's {{formula}} service is loaded beside the agent; stopping it" >&2
+            brew services stop {{formula}}
+        fi
         "$(brew --prefix {{formula}})/bin/rift" service restart
     else
         brew services restart {{formula}}

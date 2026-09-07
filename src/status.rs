@@ -162,6 +162,20 @@ fn launchd_service() -> Check {
     };
 
     match (state.running.as_deref(), state.own_plist_installed) {
+        // Two jobs loaded at once — `rift service install` and `brew services
+        // start` both done — means the loser respawns into the log every ten
+        // seconds and `just dev` restarts whichever it finds first. Name the
+        // extra one and the command that removes it.
+        (Some(label), _) if !state.also_loaded.is_empty() => Check {
+            name: LAUNCHD_SERVICE,
+            health: Health::Degraded,
+            detail: format!(
+                "running as {label}, but also loaded as {}; only one job can hold rift, the \
+                 other respawns every 10s into the log (`brew services stop rift-plus` or \
+                 `rift service uninstall`, keeping one)",
+                state.also_loaded.join(", ")
+            ),
+        },
         // A Homebrew install runs under Homebrew's label, which `rift service`
         // does not manage. Naming the label is the whole point: it tells you
         // which one `rift service restart` would actually act on.

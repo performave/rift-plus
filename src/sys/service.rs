@@ -234,23 +234,38 @@ fn spawn_launchctl(args: &[&str]) -> io::Result<()> {
 /// `rift service` owns the first one, but a Homebrew install is started by
 /// `brew services` under Homebrew's own label instead — so looking only at
 /// rift's label reports a perfectly healthy install as "not installed".
-const KNOWN_LABELS: &[&str] = &[RIFT_PLIST, "homebrew.mxcl.rift-plus", "homebrew.mxcl.rift"];
+///
+/// Homebrew renamed its labels from `homebrew.mxcl.*` to `sh.brew.*`; both
+/// are still out there.
+const KNOWN_LABELS: &[&str] = &[
+    RIFT_PLIST,
+    "sh.brew.rift-plus",
+    "sh.brew.rift",
+    "homebrew.mxcl.rift-plus",
+    "homebrew.mxcl.rift",
+];
 
 /// What launchd is doing with rift, for `rift status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceStatus {
     /// The label rift is loaded under, if launchd is running it at all.
     pub running: Option<String>,
+    /// Every other known label loaded at the same time. Only one job can
+    /// hold the process; each of the others starts, finds rift running,
+    /// exits, and is respawned by launchd every ten seconds, and all of them
+    /// write into the same log.
+    pub also_loaded: Vec<String>,
     /// Whether the plist `rift service` manages is installed.
     pub own_plist_installed: bool,
 }
 
 pub fn service_state() -> io::Result<ServiceStatus> {
+    let mut loaded = KNOWN_LABELS.iter().filter(|label| job_is_running(label));
+    let running = loaded.next().map(|label| (*label).to_string());
+    let also_loaded = loaded.map(|label| (*label).to_string()).collect();
     Ok(ServiceStatus {
-        running: KNOWN_LABELS
-            .iter()
-            .find(|label| job_is_running(label))
-            .map(|label| (*label).to_string()),
+        running,
+        also_loaded,
         own_plist_installed: plist_path()?.is_file(),
     })
 }

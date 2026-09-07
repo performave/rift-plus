@@ -23,6 +23,22 @@ Entries describe this fork's changes relative to
   gone from the list with the same displays on screen and no reshuffle under
   way is now forgotten, together with the desktop it stood in for and the
   windows filed on either, which are filed again wherever they next turn up.
+- **`rift status` notices when two launchd jobs are loaded for rift.** The
+  agent `rift service install` writes and Homebrew's `brew services` job can
+  both be loaded; one holds the process and the other starts, finds rift
+  running, exits, and is respawned every ten seconds into the same log.
+  `rift status` now recognises Homebrew's current `sh.brew.*` label, reports
+  the extra job as degraded and names the command that removes it, and `just
+  restart` stops Homebrew's job when the agent is the one it keeps.
+- **Leaving native fullscreen puts the window back in its slot even when the
+  window server orders it in last.** Coming out of a fullscreen video in Zen,
+  the window server ordered the window out, moved it home, moved the display
+  home, and only then ordered it back in. The inventory taken in between left
+  the window out, the space change that would have re-tiled it had come and
+  gone, and the window sat floating over the layout until the next switch to
+  that space. The order-in now puts a window with a fullscreen slot waiting
+  back where it was.
+
 ## [0.5.5-plus.2] - 2026-09-06
 
 Against upstream `v0.5.5`.
