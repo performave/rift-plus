@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub(super) const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 fn legacy_schema_version() -> u32 { 0 }
 
@@ -79,19 +79,27 @@ impl PersistedLayout {
     /// The live engine is never pruned: it lays the space out on exposure,
     /// and so will the restored one.
     pub(super) fn prune_spaces_without_layout_state(&mut self) {
-        let unexposed: Vec<SpaceId> = self
-            .virtual_workspace_manager
-            .initialized_spaces()
-            .into_iter()
-            .filter(|space| {
-                self.virtual_workspace_manager.existing_workspaces(*space).iter().any(
-                    |(workspace, _)| !self.workspace_layouts.contains_workspace(*space, *workspace),
-                )
-            })
-            .collect();
+        let unexposed: Vec<SpaceId> =
+            self.virtual_workspace_manager
+                .initialized_spaces()
+                .into_iter()
+                .filter(|space| {
+                    self.virtual_workspace_manager.existing_workspaces(*space).iter().any(
+                        |(workspace, _)| !self.workspace_layouts.contains_workspace(*workspace),
+                    )
+                })
+                .collect();
         for space in unexposed {
+            // Collected before the store forgets the space, which is what
+            // knows the space's workspaces.
+            let workspaces: Vec<_> = self
+                .virtual_workspace_manager
+                .existing_workspaces(space)
+                .into_iter()
+                .map(|(workspace, _)| workspace)
+                .collect();
             self.virtual_workspace_manager.forget_space(space);
-            self.workspace_layouts.remove_space(space);
+            self.workspace_layouts.remove_workspaces(workspaces);
             self.floating_positions.remove_space(space);
             self.space_display_map.remove(&space);
             self.display_last_space.retain(|_, candidate| *candidate != space);

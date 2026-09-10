@@ -77,17 +77,11 @@ impl VirtualWorkspace {
         }
     }
 
-    pub fn tree(&self) -> &LayoutSystemKind {
-        &self.layout_system
-    }
+    pub fn tree(&self) -> &LayoutSystemKind { &self.layout_system }
 
-    pub fn tree_mut(&mut self) -> &mut LayoutSystemKind {
-        &mut self.layout_system
-    }
+    pub fn tree_mut(&mut self) -> &mut LayoutSystemKind { &mut self.layout_system }
 
-    pub fn layout_mode(&self) -> LayoutMode {
-        self.layout_mode
-    }
+    pub fn layout_mode(&self) -> LayoutMode { self.layout_mode }
 
     pub fn create_layout_system(mode: LayoutMode, settings: &LayoutSettings) -> LayoutSystemKind {
         match mode {
@@ -129,9 +123,7 @@ impl VirtualWorkspace {
         self.last_focused = window_id;
     }
 
-    pub fn last_focused(&self) -> Option<WindowId> {
-        self.last_focused
-    }
+    pub fn last_focused(&self) -> Option<WindowId> { self.last_focused }
 }
 
 /// Owns the virtual workspace topology for each native macOS space.
@@ -172,9 +164,7 @@ pub struct WorkspaceStore {
 }
 
 impl Default for WorkspaceStore {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl WorkspaceStore {
@@ -388,6 +378,8 @@ impl WorkspaceStore {
             return;
         }
 
+        let ids = self.workspaces_by_space.remove(&old_space).unwrap_or_default();
+
         // Remove any auto-created state for the target space; the migrated state
         // should be authoritative.
         let mut deleted_target_workspace_ids = Vec::new();
@@ -403,21 +395,6 @@ impl WorkspaceStore {
         }
         self.active_workspace_per_space.remove(&new_space);
 
-        if !deleted_target_workspace_ids.is_empty() {
-            let stale_windows: Vec<_> = window_store
-                .iter_workspace_assignments()
-                .filter_map(|(window_id, assignment)| {
-                    deleted_target_workspace_ids
-                        .contains(&assignment.workspace_id)
-                        .then_some(window_id)
-                })
-                .collect();
-            for window_id in stale_windows {
-                let _ = window_store.remove_window_assignment(window_id);
-            }
-        }
-
-        let ids = self.workspaces_by_space.remove(&old_space).unwrap_or_default();
         for ws_id in &ids {
             if let Some(ws) = self.workspaces.get_mut(*ws_id) {
                 ws.space = new_space;
@@ -432,6 +409,38 @@ impl WorkspaceStore {
         }
 
         window_store.remap_space(old_space, new_space);
+        // The window server puts windows on a desktop before rift is told the
+        // desktop replaced another, so some are already assigned to the
+        // workspaces just deleted. Dropping those assignments outright — which
+        // is what this did — leaves the window on no desktop at all, and the
+        // restore that follows a display's return then finds nothing to match
+        // its saved tree against and discards it. Each goes to the migrated
+        // workspace in the same position instead, so a window keeps both its
+        // desktop and which workspace of it it was on.
+        if !deleted_target_workspace_ids.is_empty() {
+            let stale_windows: Vec<_> = window_store
+                .iter_workspace_assignments()
+                .filter_map(|(window_id, assignment)| {
+                    deleted_target_workspace_ids
+                        .iter()
+                        .position(|deleted| *deleted == assignment.workspace_id)
+                        .map(|ordinal| (window_id, ordinal))
+                })
+                .collect();
+            for (window_id, ordinal) in stale_windows {
+                match ids.get(ordinal).or_else(|| ids.last()) {
+                    Some(successor) => {
+                        window_store.assign_window_to_workspace(window_id, WindowWorkspaceInfo {
+                            space: new_space,
+                            workspace_id: *successor,
+                        });
+                    }
+                    None => {
+                        let _ = window_store.remove_window_assignment(window_id);
+                    }
+                }
+            }
+        }
     }
 
     pub fn create_workspace(
@@ -562,9 +571,7 @@ impl WorkspaceStore {
         })
     }
 
-    pub fn workspace_auto_back_and_forth(&self) -> bool {
-        self.workspace_auto_back_and_forth
-    }
+    pub fn workspace_auto_back_and_forth(&self) -> bool { self.workspace_auto_back_and_forth }
 
     pub fn set_active_workspace(
         &mut self,
@@ -1174,11 +1181,10 @@ impl WorkspaceStore {
             existing_assignment,
             preserve_existing,
         )?;
-        if !self.ensure_window_assignment(
-            window_store,
-            window_id,
-            WindowWorkspaceInfo { space, workspace_id },
-        ) {
+        if !self.ensure_window_assignment(window_store, window_id, WindowWorkspaceInfo {
+            space,
+            workspace_id,
+        }) {
             error!("Failed to apply window workspace assignment");
             return Err(WorkspaceError::AssignmentFailed);
         }
@@ -1355,14 +1361,12 @@ mod tests {
             Some(ws2_id)
         );
 
-        assert_eq!(
-            manager.workspace_windows(&window_store, space, ws1_id),
-            vec![window1]
-        );
-        assert_eq!(
-            manager.workspace_windows(&window_store, space, ws2_id),
-            vec![window2]
-        );
+        assert_eq!(manager.workspace_windows(&window_store, space, ws1_id), vec![
+            window1
+        ]);
+        assert_eq!(manager.workspace_windows(&window_store, space, ws2_id), vec![
+            window2
+        ]);
     }
 
     #[test]
@@ -1379,10 +1383,9 @@ mod tests {
             manager.workspace_for_window(&window_store, space, window),
             Some(ws1_id)
         );
-        assert_eq!(
-            manager.workspace_windows(&window_store, space, ws1_id),
-            vec![window]
-        );
+        assert_eq!(manager.workspace_windows(&window_store, space, ws1_id), vec![
+            window
+        ]);
 
         assert!(manager.assign_window_to_workspace(&mut window_store, space, window, ws2_id));
         assert_eq!(
@@ -1390,10 +1393,9 @@ mod tests {
             Some(ws2_id)
         );
         assert!(manager.workspace_windows(&window_store, space, ws1_id).is_empty());
-        assert_eq!(
-            manager.workspace_windows(&window_store, space, ws2_id),
-            vec![window]
-        );
+        assert_eq!(manager.workspace_windows(&window_store, space, ws2_id), vec![
+            window
+        ]);
     }
 
     #[test]
@@ -1417,8 +1419,13 @@ mod tests {
         );
     }
 
+    /// The target's transient workspaces go, but a window the window server had
+    /// already put there keeps a desktop: it moves to the migrated workspace in
+    /// the same position. Orphaning it — which is what this did — left the
+    /// restore after a display's return with nothing to match, and the window
+    /// was discarded from the layout.
     #[test]
-    fn remap_space_drops_assignments_to_deleted_target_workspaces() {
+    fn remap_space_rehomes_windows_of_deleted_target_workspaces() {
         let mut window_store = WindowStore::default();
         let mut manager = WorkspaceStore::new();
         let old_space = SpaceId::new(1);
@@ -1449,15 +1456,20 @@ mod tests {
             Some(migrated_ws)
         );
         assert_eq!(
-            manager.workspace_windows(&window_store, new_space, migrated_ws),
-            vec![migrated_window]
+            manager.workspace_for_window(&window_store, new_space, transient_window),
+            Some(migrated_ws),
+            "the window the window server had already placed keeps a desktop"
         );
-        assert_eq!(
-            manager.workspace_info_for_window_any(&window_store, transient_window),
-            None
-        );
+        let mut on_migrated = manager.workspace_windows(&window_store, new_space, migrated_ws);
+        on_migrated.sort();
+        let mut expected = vec![migrated_window, transient_window];
+        expected.sort();
+        assert_eq!(on_migrated, expected);
         assert!(manager.workspace_windows(&window_store, new_space, transient_ws).is_empty());
-        assert!(manager.workspace_info(new_space, transient_ws).is_none());
+        assert!(
+            manager.workspace_info(new_space, transient_ws).is_none(),
+            "the transient workspace is still gone, and nothing points at it"
+        );
     }
 
     #[test]

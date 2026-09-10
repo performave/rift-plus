@@ -54,7 +54,7 @@ impl LayoutEngine {
         tracing::info!(
             path = %path.display(),
             schema_version,
-            native_spaces = engine.workspace_layouts.spaces().len(),
+            native_spaces = engine.spaces_with_layout_state().len(),
             virtual_workspaces = engine.virtual_workspace_manager.workspaces.len(),
             saved_windows = engine.persistence.windows.len(),
             restore_candidates = engine.persistence.pending_len(),
@@ -89,7 +89,13 @@ impl LayoutEngine {
         let mut persisted = match PersistedLayout::deserialize(buf) {
             Ok(persisted) => persisted,
             Err(original_error) => {
-                let Some(migrated) = migrate_legacy_layout_system_tags(buf) else {
+                // Applied in sequence, not as alternatives: a file old enough
+                // to carry the legacy layout-system tags also carries the
+                // two-part layout keys.
+                let tags = migrate_legacy_layout_system_tags(buf);
+                let base = tags.as_deref().unwrap_or(buf);
+                let keys = migrate_workspace_layout_keys(base);
+                let Some(migrated) = keys.or(tags) else {
                     return Err(original_error.into());
                 };
                 PersistedLayout::deserialize(&migrated).map_err(|migration_error| {
@@ -115,14 +121,13 @@ impl LayoutEngine {
             for space in persisted.virtual_workspace_manager.initialized_spaces() {
                 for (workspace, _) in persisted.virtual_workspace_manager.existing_workspaces(space)
                 {
-                    if persisted.workspace_layouts.has_state(space, workspace) {
+                    if persisted.workspace_layouts.has_state(workspace) {
                         continue;
                     }
                     if let Some(info) =
                         persisted.virtual_workspace_manager.workspaces.get_mut(workspace)
                     {
                         persisted.workspace_layouts.ensure_active_for_workspace(
-                            space,
                             placeholder,
                             workspace,
                             &mut info.layout_system,
@@ -138,7 +143,7 @@ impl LayoutEngine {
         engine.normalize_loaded_workspace_focus();
         let fingerprinted: HashSet<_> = engine.persistence.windows.keys().copied().collect();
         let mut unmatchable = HashSet::default();
-        for (_, workspace, layout) in engine.workspace_layouts.all_layouts() {
+        for (workspace, layout) in engine.workspace_layouts.all_layouts() {
             unmatchable.extend(
                 engine
                     .workspace_tree(workspace)
@@ -294,7 +299,7 @@ impl LayoutEngine {
         // Never write an origin hint that has no corresponding saved layout. A stale native-space
         // observation is worse than no hint because it makes a portable file look unambiguous.
         self.persistence.set_saved_active_space(
-            active_space.filter(|space| self.workspace_layouts.spaces().contains(space)),
+            active_space.filter(|space| self.spaces_with_layout_state().contains(space)),
         );
         for (window, state) in window_store.iter_windows() {
             if self.floating.is_floating(window) {
@@ -395,7 +400,7 @@ impl LayoutEngine {
         }
         self.startup_restore_pending = false;
 
-        let saved_spaces = self.workspace_layouts.spaces();
+        let saved_spaces = self.spaces_with_layout_state();
         let mut remaps = Vec::new();
         for (current, display_uuid) in current_spaces {
             let Some(saved) = self.display_last_space.get(display_uuid).copied() else {
@@ -445,6 +450,40 @@ impl LayoutEngine {
         self.virtual_workspace_manager
             .update_settings(virtual_workspace_config, layout_settings);
     }
+}
+
+/// Schema 2 keyed layout state by `(native space, workspace)`. The space half
+/// was redundant — workspace ids come from one slot map shared by every space
+/// — and it was a key the window server owns and re-mints, so schema 3 drops
+/// it and keys by the workspace alone.
+///
+/// Scoped to the `workspace_layouts` map on purpose: `floating_positions` keys
+/// open with the same two elements before a third, and rewriting those would
+/// destroy every remembered floating position.
+pub(super) fn migrate_workspace_layout_keys(input: &str) -> Option<String> {
+    const MARKER: &str = "\"workspace_layouts\":(map:{";
+    let start = input.find(MARKER)? + MARKER.len();
+    let mut depth = 0usize;
+    let mut end = None;
+    for (offset, ch) in input[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' if depth == 0 => {
+                end = Some(start + offset);
+                break;
+            }
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    let end = end?;
+    let body = &input[start..end];
+    let keys = regex::Regex::new(r"\(\(\d+\),(\(idx:\d+,version:\d+\))\)").ok()?;
+    if !keys.is_match(body) {
+        return None;
+    }
+    let migrated = keys.replace_all(body, "$1");
+    Some(format!("{}{}{}", &input[..start], migrated, &input[end..]))
 }
 
 pub(super) fn migrate_legacy_layout_system_tags(input: &str) -> Option<String> {

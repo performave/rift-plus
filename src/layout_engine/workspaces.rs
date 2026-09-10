@@ -2,14 +2,22 @@ use objc2_core_foundation::CGSize;
 use serde::{Deserialize, Serialize};
 
 use super::{LayoutId, LayoutSystem};
-use crate::sys::screen::SpaceId;
 
+/// Every workspace's layout configurations, by workspace.
+///
+/// Keyed by `VirtualWorkspaceId` alone, and deliberately not by the native
+/// space the workspace sits on. Workspace ids come from one slot map shared by
+/// every space, so they are already unique on their own; the native space in
+/// the key was redundant, and worse, it was a key the window server owns and
+/// re-mints — destroying a desktop at an unplug and minting a fresh id for it
+/// at the replug. Every layout here then had to be carried from the dead id to
+/// the new one by hand, and a carry that missed left the tree stranded under an
+/// id nothing pointed at any more: a stacked desktop came back tiled. Keyed by
+/// the workspace, there is nothing to carry — the layout belongs to the
+/// workspace, and the workspace is what survives.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub(crate) struct WorkspaceLayouts {
-    map: crate::common::collections::HashMap<
-        (SpaceId, crate::model::VirtualWorkspaceId),
-        SpaceLayoutInfo,
-    >,
+    map: crate::common::collections::HashMap<crate::model::VirtualWorkspaceId, SpaceLayoutInfo>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,11 +53,10 @@ impl From<CGSize> for Size {
 impl WorkspaceLayouts {
     pub(crate) fn active_size(
         &self,
-        space: SpaceId,
         workspace: crate::model::VirtualWorkspaceId,
     ) -> Option<CGSize> {
         self.map
-            .get(&(space, workspace))
+            .get(&workspace)
             .map(|info| CGSize::new(info.active_size.width.into(), info.active_size.height.into()))
     }
 
@@ -57,19 +64,12 @@ impl WorkspaceLayouts {
         &self,
         workspaces: &crate::model::WorkspaceStore,
     ) -> Result<(), String> {
-        for (&(space, workspace), info) in &self.map {
+        for (&workspace, info) in &self.map {
             let Some(workspace_info) = workspaces.workspaces.get(workspace) else {
                 return Err(format!(
                     "layout state references missing workspace {workspace:?}"
                 ));
             };
-            if workspace_info.space != space {
-                return Err(format!(
-                    "layout for workspace {workspace:?} is stored under native space {} instead of {}",
-                    space.get(),
-                    workspace_info.space.get()
-                ));
-            }
             if info.configurations.is_empty() {
                 return Err(format!("workspace {workspace:?} has no layout configurations"));
             }
@@ -89,7 +89,7 @@ impl WorkspaceLayouts {
 
         for space in workspaces.initialized_spaces() {
             for (workspace, _) in workspaces.existing_workspaces(space) {
-                if !self.map.contains_key(&(space, workspace)) {
+                if !self.map.contains_key(&workspace) {
                     return Err(format!(
                         "workspace {workspace:?} on native space {} has no layout state",
                         space.get()
@@ -102,40 +102,32 @@ impl WorkspaceLayouts {
 
     pub(crate) fn snapshot_workspace(
         &self,
-        space: SpaceId,
         workspace: crate::model::VirtualWorkspaceId,
     ) -> Option<WorkspaceLayoutSnapshot> {
-        self.map.get(&(space, workspace)).cloned().map(WorkspaceLayoutSnapshot)
+        self.map.get(&workspace).cloned().map(WorkspaceLayoutSnapshot)
     }
 
     pub(crate) fn install_workspace_snapshot(
         &mut self,
-        space: SpaceId,
         workspace: crate::model::VirtualWorkspaceId,
         snapshot: WorkspaceLayoutSnapshot,
     ) {
-        self.map.insert((space, workspace), snapshot.0);
+        self.map.insert(workspace, snapshot.0);
     }
 
-    pub(crate) fn contains_workspace(
-        &self,
-        space: SpaceId,
-        workspace: crate::model::VirtualWorkspaceId,
-    ) -> bool {
-        self.map.contains_key(&(space, workspace))
+    pub(crate) fn contains_workspace(&self, workspace: crate::model::VirtualWorkspaceId) -> bool {
+        self.map.contains_key(&workspace)
     }
 
     pub(crate) fn ensure_active_for_space(
         &mut self,
-        space: SpaceId,
         size: CGSize,
         workspaces: impl IntoIterator<Item = crate::model::VirtualWorkspaceId>,
         tree: &mut impl LayoutSystem,
     ) {
         let size = Size::from(size);
         for workspace_id in workspaces {
-            let workspace_key = (space, workspace_id);
-            let (workspace_layout, previous_layout) = match self.map.entry(workspace_key) {
+            let (workspace_layout, previous_layout) = match self.map.entry(workspace_id) {
                 crate::common::collections::hash_map::Entry::Vacant(entry) => (
                     entry.insert(SpaceLayoutInfo {
                         active_size: size,
@@ -168,70 +160,36 @@ impl WorkspaceLayouts {
                 }
             };
 
-            tracing::debug!(
-                "Using layout {:?} for workspace {:?} on space {:?}",
-                layout,
-                workspace_id,
-                space
-            );
-        }
-    }
-
-    pub(crate) fn remap_space(&mut self, old_space: SpaceId, new_space: SpaceId) {
-        if old_space == new_space {
-            return;
-        }
-
-        let old_keys: Vec<_> =
-            self.map.keys().filter(|(space, _)| *space == old_space).cloned().collect();
-
-        if old_keys.is_empty() {
-            return;
-        }
-
-        // Prefer the migrated state over anything already associated with the
-        // new space (e.g. default layouts created after a reconnect).
-        self.map.retain(|(space, _), _| *space != new_space);
-
-        for (space, workspace_id) in old_keys {
-            if let Some(info) = self.map.remove(&(space, workspace_id)) {
-                self.map.insert((new_space, workspace_id), info);
-            }
+            tracing::debug!("Using layout {:?} for workspace {:?}", layout, workspace_id);
         }
     }
 
     pub(crate) fn active(
         &self,
-        space: SpaceId,
         workspace_id: crate::model::VirtualWorkspaceId,
     ) -> Option<LayoutId> {
-        self.map.get(&(space, workspace_id)).and_then(|l| l.active())
+        self.map.get(&workspace_id).and_then(|l| l.active())
     }
 
     pub(crate) fn mark_last_saved(
         &mut self,
-        space: SpaceId,
         workspace_id: crate::model::VirtualWorkspaceId,
         layout: LayoutId,
     ) {
-        if let Some(info) = self.map.get_mut(&(space, workspace_id)) {
+        if let Some(info) = self.map.get_mut(&workspace_id) {
             info.last_saved = Some(layout);
         }
     }
 
-    pub(crate) fn active_layouts_for_space(
+    /// The active layout of each of `workspaces` that has one, in workspace order.
+    pub(crate) fn active_layouts_for(
         &self,
-        space: SpaceId,
+        workspaces: impl IntoIterator<Item = crate::model::VirtualWorkspaceId>,
     ) -> Vec<(crate::model::VirtualWorkspaceId, LayoutId)> {
-        let mut layouts = self
-            .map
-            .iter()
-            .filter_map(|(&(sp, ws), info)| {
-                if sp == space {
-                    info.active().map(|l| (ws, l))
-                } else {
-                    None
-                }
+        let mut layouts = workspaces
+            .into_iter()
+            .filter_map(|workspace| {
+                self.map.get(&workspace).and_then(|info| info.active()).map(|l| (workspace, l))
             })
             .collect::<Vec<_>>();
         layouts.sort_unstable();
@@ -240,12 +198,12 @@ impl WorkspaceLayouts {
 
     /// Enumerate every serialized layout configuration, not only the currently active display
     /// size. Old-size configurations are restored later and therefore must be sanitized too.
-    pub(crate) fn all_layouts(&self) -> Vec<(SpaceId, crate::model::VirtualWorkspaceId, LayoutId)> {
+    pub(crate) fn all_layouts(&self) -> Vec<(crate::model::VirtualWorkspaceId, LayoutId)> {
         let mut layouts = Vec::new();
-        for (&(space, workspace), info) in &self.map {
-            layouts.extend(info.configurations.values().map(|layout| (space, workspace, *layout)));
+        for (&workspace, info) in &self.map {
+            layouts.extend(info.configurations.values().map(|layout| (workspace, *layout)));
             if let Some(layout) = info.last_saved {
-                layouts.push((space, workspace, layout));
+                layouts.push((workspace, layout));
             }
         }
         layouts.sort_unstable();
@@ -256,52 +214,45 @@ impl WorkspaceLayouts {
     #[cfg(test)]
     pub(crate) fn insert_layout_configuration_for_test(
         &mut self,
-        space: SpaceId,
         workspace: crate::model::VirtualWorkspaceId,
         size: CGSize,
         layout: LayoutId,
     ) {
         self.map
-            .get_mut(&(space, workspace))
+            .get_mut(&workspace)
             .expect("test workspace must be initialized")
             .configurations
             .insert(Size::from(size), layout);
     }
 
-    pub(crate) fn has_state(
-        &self,
-        space: SpaceId,
-        workspace_id: crate::model::VirtualWorkspaceId,
-    ) -> bool {
-        self.map.contains_key(&(space, workspace_id))
+    pub(crate) fn has_state(&self, workspace_id: crate::model::VirtualWorkspaceId) -> bool {
+        self.map.contains_key(&workspace_id)
     }
 
     pub(crate) fn ensure_active_for_workspace(
         &mut self,
-        space: SpaceId,
         size: CGSize,
         workspace_id: crate::model::VirtualWorkspaceId,
         tree: &mut impl LayoutSystem,
     ) {
-        self.ensure_active_for_space(space, size, std::iter::once(workspace_id), tree);
+        self.ensure_active_for_space(size, std::iter::once(workspace_id), tree);
     }
 
     pub(crate) fn replace_layouts_for_workspace(
         &mut self,
-        space: SpaceId,
         workspace_id: crate::model::VirtualWorkspaceId,
         new_layout: LayoutId,
     ) {
         let active_size = self
             .map
-            .get(&(space, workspace_id))
+            .get(&workspace_id)
             .map(|info| info.active_size)
             .unwrap_or_else(|| Size::from(CGSize::new(1000.0, 1000.0)));
 
         let mut configurations = crate::common::collections::HashMap::default();
         configurations.insert(active_size, new_layout);
 
-        self.map.insert((space, workspace_id), SpaceLayoutInfo {
+        self.map.insert(workspace_id, SpaceLayoutInfo {
             configurations,
             active_size,
             last_saved: Some(new_layout),
@@ -311,22 +262,26 @@ impl WorkspaceLayouts {
     /// Drops the layout bookkeeping for a destroyed workspace.
     ///
     /// The layout trees themselves live on the workspace and go away with it;
-    /// this is the side index, which would otherwise keep a (space, workspace)
-    /// entry pointing at a workspace id that no longer resolves.
-    pub(crate) fn remove_workspace(
+    /// this is the side index, which would otherwise keep an entry pointing at
+    /// a workspace id that no longer resolves.
+    pub(crate) fn remove_workspace(&mut self, workspace_id: crate::model::VirtualWorkspaceId) {
+        self.map.remove(&workspace_id);
+    }
+
+    /// Drops the layout bookkeeping of every workspace given.
+    pub(crate) fn remove_workspaces(
         &mut self,
-        space: SpaceId,
-        workspace_id: crate::model::VirtualWorkspaceId,
+        workspaces: impl IntoIterator<Item = crate::model::VirtualWorkspaceId>,
     ) {
-        self.map.remove(&(space, workspace_id));
+        for workspace in workspaces {
+            self.map.remove(&workspace);
+        }
     }
 
-    /// Drops every workspace's layout bookkeeping for a native space.
-    pub(crate) fn remove_space(&mut self, space: SpaceId) {
-        self.map.retain(|(candidate, _), _| *candidate != space);
-    }
-
-    pub(crate) fn spaces(&self) -> crate::common::collections::BTreeSet<SpaceId> {
-        self.map.keys().map(|(sp, _)| *sp).collect()
+    /// Every workspace that has layout state.
+    pub(crate) fn workspaces(
+        &self,
+    ) -> crate::common::collections::BTreeSet<crate::model::VirtualWorkspaceId> {
+        self.map.keys().copied().collect()
     }
 }

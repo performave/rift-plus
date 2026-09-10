@@ -40,7 +40,7 @@ fn identity_transfer_preserves_window_tree_position_and_fingerprint() {
     });
     engine.persistence.pending_windows.insert(old);
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
     let other_workspace = engine
         .virtual_workspace_manager
         .list_workspaces(space)
@@ -48,7 +48,7 @@ fn identity_transfer_preserves_window_tree_position_and_fingerprint() {
         .map(|(workspace, _)| workspace)
         .find(|candidate| *candidate != workspace)
         .unwrap();
-    let other_layout = engine.workspace_layouts.active(space, other_workspace).unwrap();
+    let other_layout = engine.workspace_layouts.active(other_workspace).unwrap();
     // Model a provisional live projection created before the restored identity is matched.
     engine
         .workspace_tree_mut(other_workspace)
@@ -104,7 +104,7 @@ fn restored_workspace_is_resolved_before_app_rule_assignment() {
         LayoutEvent::SpaceExposed(space, CGSize::new(1200.0, 800.0)),
     );
     let restored_workspace = engine.virtual_workspace_manager.list_workspaces(space)[1].0;
-    let restored_layout = engine.workspace_layouts.active(space, restored_workspace).unwrap();
+    let restored_layout = engine.workspace_layouts.active(restored_workspace).unwrap();
     engine
         .workspace_tree_mut(restored_workspace)
         .add_window_after_selection(restored_layout, window);
@@ -223,7 +223,7 @@ fn save_prunes_desktops_never_shown_and_the_file_loads() {
     // does; it creates the workspaces without laying the desktop out.
     let _ = engine.virtual_workspace_manager.list_workspaces(spare);
     let spare_workspace = engine.virtual_workspace_manager.existing_workspaces(spare)[0].0;
-    assert!(!engine.workspace_layouts.has_state(spare, spare_workspace));
+    assert!(!engine.workspace_layouts.has_state(spare_workspace));
 
     let path = std::env::temp_dir().join(format!(
         "rift-layout-restore-test-{}-{}.ron",
@@ -433,7 +433,7 @@ fn load_removes_serialized_window_state_without_a_fingerprint() {
     assert!(!engine.persistence.windows.contains_key(&ghost));
 
     let loaded = LayoutEngine::deserialize_from_str(&engine.serialize_to_string()).unwrap();
-    let layout = loaded.workspace_layouts.active(space, workspace).unwrap();
+    let layout = loaded.workspace_layouts.active(workspace).unwrap();
 
     assert!(!loaded.workspace_tree(workspace).contains_window(layout, ghost));
     assert!(!loaded.floating.is_floating(ghost));
@@ -473,7 +473,7 @@ fn startup_validation_preserves_stale_ids_when_the_app_can_still_fuzzy_match() {
         |app_id| app_id == format!("com.example.{}", restarted_app.pid),
     );
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
 
     assert_eq!(discarded, 1);
     assert!(!engine.workspace_tree(workspace).contains_window(layout, closed));
@@ -497,8 +497,8 @@ fn workspace_restore_discards_unmatched_scoped_windows_and_floating_state() {
     let workspaces = snapshot.virtual_workspace_manager.list_workspaces(space);
     let source_workspace = workspaces[0].0;
     let other_workspace = workspaces[1].0;
-    let source_layout = snapshot.workspace_layouts.active(space, source_workspace).unwrap();
-    let other_layout = snapshot.workspace_layouts.active(space, other_workspace).unwrap();
+    let source_layout = snapshot.workspace_layouts.active(source_workspace).unwrap();
+    let other_layout = snapshot.workspace_layouts.active(other_workspace).unwrap();
     snapshot
         .workspace_tree_mut(source_workspace)
         .add_window_after_selection(source_layout, tiled);
@@ -573,7 +573,7 @@ fn workspace_restore_keeps_current_windows_absent_from_snapshot() {
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
     let snapshot_workspace = snapshot.active_workspace(space).unwrap();
-    let snapshot_layout = snapshot.workspace_layouts.active(space, snapshot_workspace).unwrap();
+    let snapshot_layout = snapshot.workspace_layouts.active(snapshot_workspace).unwrap();
     snapshot
         .workspace_tree_mut(snapshot_workspace)
         .add_window_after_selection(snapshot_layout, saved);
@@ -644,7 +644,7 @@ fn workspace_restore_keeps_current_windows_absent_from_snapshot() {
         .unwrap();
     let _ = std::fs::remove_file(path);
 
-    let target_layout = engine.workspace_layouts.active(space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     assert!(engine.workspace_tree(target_workspace).contains_window(target_layout, live));
     assert!(!engine.workspace_tree(target_workspace).contains_window(target_layout, saved));
     assert_eq!(
@@ -686,7 +686,7 @@ fn restore_gives_the_saved_tiled_state_the_standing_of_a_manual_choice() {
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
     let snapshot_workspace = snapshot.active_workspace(space).unwrap();
-    let snapshot_layout = snapshot.workspace_layouts.active(space, snapshot_workspace).unwrap();
+    let snapshot_layout = snapshot.workspace_layouts.active(snapshot_workspace).unwrap();
     snapshot
         .workspace_tree_mut(snapshot_workspace)
         .add_window_after_selection(snapshot_layout, saved_tiled);
@@ -798,8 +798,7 @@ fn scoped_restore_does_not_consume_same_id_live_window_on_another_space() {
         LayoutEvent::SpaceExposed(target_space, size),
     );
     let snapshot_workspace = snapshot.active_workspace(target_space).unwrap();
-    let snapshot_layout =
-        snapshot.workspace_layouts.active(target_space, snapshot_workspace).unwrap();
+    let snapshot_layout = snapshot.workspace_layouts.active(snapshot_workspace).unwrap();
     snapshot
         .workspace_tree_mut(snapshot_workspace)
         .add_window_after_selection(snapshot_layout, reused_id);
@@ -823,8 +822,7 @@ fn scoped_restore_does_not_consume_same_id_live_window_on_another_space() {
         let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, size));
     }
     let external_workspace = engine.active_workspace(external_space).unwrap();
-    let external_layout =
-        engine.workspace_layouts.active(external_space, external_workspace).unwrap();
+    let external_layout = engine.workspace_layouts.active(external_workspace).unwrap();
     window_store.insert_window(reused_id, WindowState {
         info: WindowInfo {
             is_standard: true,
@@ -869,7 +867,7 @@ fn scoped_restore_does_not_consume_same_id_live_window_on_another_space() {
     let _ = std::fs::remove_file(path);
 
     let target_workspace = engine.active_workspace(target_space).unwrap();
-    let target_layout = engine.workspace_layouts.active(target_space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     assert!(
         engine
             .workspace_tree(external_workspace)
@@ -908,7 +906,7 @@ fn space_restore_uses_workspace_assignment_over_stale_window_server_space() {
         LayoutEvent::SpaceExposed(target_space, size),
     );
     let source_workspace = snapshot.active_workspace(target_space).unwrap();
-    let source_layout = snapshot.workspace_layouts.active(target_space, source_workspace).unwrap();
+    let source_layout = snapshot.workspace_layouts.active(source_workspace).unwrap();
     snapshot
         .workspace_tree_mut(source_workspace)
         .add_window_after_selection(source_layout, saved);
@@ -932,8 +930,7 @@ fn space_restore_uses_workspace_assignment_over_stale_window_server_space() {
         let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, size));
     }
     let external_workspace = engine.active_workspace(external_space).unwrap();
-    let external_layout =
-        engine.workspace_layouts.active(external_space, external_workspace).unwrap();
+    let external_layout = engine.workspace_layouts.active(external_workspace).unwrap();
     window_store.insert_window(live, WindowState {
         info: WindowInfo {
             is_standard: true,
@@ -978,7 +975,7 @@ fn space_restore_uses_workspace_assignment_over_stale_window_server_space() {
     let _ = std::fs::remove_file(path);
 
     let target_workspace = engine.active_workspace(target_space).unwrap();
-    let target_layout = engine.workspace_layouts.active(target_space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     assert_eq!(report.matched, 0);
     assert_eq!(report.unmatched, 1);
     assert_eq!(
@@ -1005,7 +1002,7 @@ fn workspace_restore_does_not_consume_live_window_from_sibling_workspace() {
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
     let source_workspace = snapshot.active_workspace(space).unwrap();
-    let source_layout = snapshot.workspace_layouts.active(space, source_workspace).unwrap();
+    let source_layout = snapshot.workspace_layouts.active(source_workspace).unwrap();
     snapshot
         .workspace_tree_mut(source_workspace)
         .add_window_after_selection(source_layout, saved);
@@ -1034,7 +1031,7 @@ fn workspace_restore_does_not_consume_live_window_from_sibling_workspace() {
         .map(|(workspace, _)| workspace)
         .find(|workspace| *workspace != target_workspace)
         .unwrap();
-    let sibling_layout = engine.workspace_layouts.active(space, sibling_workspace).unwrap();
+    let sibling_layout = engine.workspace_layouts.active(sibling_workspace).unwrap();
     window_store.insert_window(live, WindowState {
         info: WindowInfo {
             is_standard: true,
@@ -1076,7 +1073,7 @@ fn workspace_restore_does_not_consume_live_window_from_sibling_workspace() {
         .unwrap();
     let _ = std::fs::remove_file(path);
 
-    let target_layout = engine.workspace_layouts.active(space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     assert_eq!(report.matched, 0);
     assert_eq!(report.unmatched, 1);
     assert_eq!(
@@ -1102,7 +1099,7 @@ fn workspace_restore_preserves_live_window_when_saved_process_local_id_is_reused
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
     let source_workspace = snapshot.active_workspace(space).unwrap();
-    let source_layout = snapshot.workspace_layouts.active(space, source_workspace).unwrap();
+    let source_layout = snapshot.workspace_layouts.active(source_workspace).unwrap();
     snapshot
         .workspace_tree_mut(source_workspace)
         .add_window_after_selection(source_layout, reused);
@@ -1163,7 +1160,7 @@ fn workspace_restore_preserves_live_window_when_saved_process_local_id_is_reused
         .unwrap();
     let _ = std::fs::remove_file(path);
 
-    let target_layout = engine.workspace_layouts.active(space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     assert_eq!(report.matched, 0);
     assert_eq!(report.unmatched, 1);
     assert!(engine.workspace_tree(target_workspace).contains_window(target_layout, reused));
@@ -1216,7 +1213,7 @@ fn completed_app_discovery_discards_unmatched_startup_ghosts() {
     });
     engine.persistence.pending_windows.insert(inactive_ghost);
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
     engine.focused_window = Some(ghost);
     engine
         .virtual_workspace_manager
@@ -1249,17 +1246,56 @@ fn completed_app_discovery_discards_unmatched_startup_ghosts() {
 fn persisted_layout_schema_is_versioned_and_legacy_files_still_load() {
     let engine = test_engine();
     let serialized = engine.serialize_to_string();
-    assert!(serialized.contains("\"schema_version\":2"), "{serialized}");
+    assert!(serialized.contains("\"schema_version\":3"), "{serialized}");
 
-    let legacy = serialized.replacen("\"schema_version\":2,", "", 1);
+    let legacy = serialized.replacen("\"schema_version\":3,", "", 1);
     LayoutEngine::deserialize_from_str(&legacy).unwrap();
 
-    let future = serialized.replacen("\"schema_version\":2", "\"schema_version\":3", 1);
+    let future = serialized.replacen("\"schema_version\":3", "\"schema_version\":4", 1);
     let error = match LayoutEngine::deserialize_from_str(&future) {
         Ok(_) => panic!("future schema version should be rejected"),
         Err(error) => error,
     };
     assert!(error.to_string().contains("newer than supported"));
+}
+
+/// Schema 2 keyed layout state by `(native space, workspace)`. Such a file
+/// must still load — and `floating_positions`, whose keys open with the same
+/// two elements before a third, must come through untouched.
+#[test]
+fn a_schema_2_layout_file_migrates_its_workspace_keys() {
+    let mut engine = test_engine();
+    let mut window_store = WindowStore::default();
+    let space = SpaceId::new(440);
+    let _ = engine.handle_event(
+        &mut window_store,
+        LayoutEvent::SpaceExposed(space, CGSize::new(2501.0, 1409.0)),
+    );
+    let workspace = engine.virtual_workspace_manager().active_workspace(space).unwrap();
+    let before = engine.workspace_layouts.active(workspace).unwrap();
+
+    // Put the file back into the shape schema 2 wrote.
+    let current = engine.serialize_to_string();
+    let key = format!("{}", ron::ser::to_string(&workspace).unwrap());
+    let old_key = format!("(({}),{})", space.get(), key);
+    let marker = "\"workspace_layouts\":(map:{";
+    let start = current.find(marker).unwrap() + marker.len();
+    let legacy = format!(
+        "{}{}{}",
+        &current[..start],
+        current[start..].replacen(&key, &old_key, 1),
+        ""
+    )
+    .replacen("\"schema_version\":3", "\"schema_version\":2", 1);
+    assert!(legacy.contains(&old_key), "the legacy shape was rebuilt");
+
+    let loaded =
+        LayoutEngine::deserialize_from_str(&legacy).expect("a schema 2 layout file still loads");
+    assert_eq!(
+        loaded.workspace_layouts.active(workspace),
+        Some(before),
+        "the workspace keeps its layout across the key migration"
+    );
 }
 
 #[test]
@@ -1689,13 +1725,13 @@ fn startup_restore_remaps_saved_space_by_display_identity_once() {
     restored.reconcile_startup_spaces(&mut window_store, &[], 1);
     restored.reconcile_startup_spaces(&mut window_store, &[(current_space, display.clone())], 1);
 
-    assert!(!restored.workspace_layouts.spaces().contains(&saved_space));
-    assert!(restored.workspace_layouts.spaces().contains(&current_space));
+    assert!(!restored.spaces_with_layout_state().contains(&saved_space));
+    assert!(restored.spaces_with_layout_state().contains(&current_space));
 
     // The repair is startup-only. A later ordinary native-space switch must not migrate state.
     restored.reconcile_startup_spaces(&mut window_store, &[(later_space, display)], 1);
-    assert!(restored.workspace_layouts.spaces().contains(&current_space));
-    assert!(!restored.workspace_layouts.spaces().contains(&later_space));
+    assert!(restored.spaces_with_layout_state().contains(&current_space));
+    assert!(!restored.spaces_with_layout_state().contains(&later_space));
 }
 
 #[test]
@@ -1999,7 +2035,7 @@ fn rejected_fuzzy_candidate_is_removed_when_discovery_finishes() {
         ]),
     );
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
 
     assert!(!engine.workspace_tree(workspace).contains_window(layout, ghost));
     assert!(!engine.persistence.windows.contains_key(&ghost));
@@ -2027,7 +2063,7 @@ fn space_restore_rejects_workspace_count_mismatch_before_mutating_layouts() {
     let sentinel = WindowId::new(11, 1);
     let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, size));
     let target_workspace = engine.active_workspace(space).unwrap();
-    let target_layout = engine.workspace_layouts.active(space, target_workspace).unwrap();
+    let target_layout = engine.workspace_layouts.active(target_workspace).unwrap();
     engine
         .workspace_tree_mut(target_workspace)
         .add_window_after_selection(target_layout, sentinel);
@@ -2061,16 +2097,13 @@ fn runtime_restore_cleans_unmatched_windows_from_inactive_size_configurations() 
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, large));
     let workspace = snapshot.active_workspace(space).unwrap();
-    let large_layout = snapshot.workspace_layouts.active(space, workspace).unwrap();
+    let large_layout = snapshot.workspace_layouts.active(workspace).unwrap();
     let small_layout = snapshot.virtual_workspace_manager.workspaces[workspace]
         .layout_system
         .create_layout();
-    snapshot.workspace_layouts.insert_layout_configuration_for_test(
-        space,
-        workspace,
-        small,
-        small_layout,
-    );
+    snapshot
+        .workspace_layouts
+        .insert_layout_configuration_for_test(workspace, small, small_layout);
     assert_ne!(small_layout, large_layout);
     snapshot
         .workspace_tree_mut(workspace)
@@ -2104,7 +2137,7 @@ fn runtime_restore_cleans_unmatched_windows_from_inactive_size_configurations() 
     let _ = std::fs::remove_file(path);
 
     assert_eq!(report.unmatched, 1);
-    for (_, restored_workspace, layout) in engine.workspace_layouts.all_layouts() {
+    for (restored_workspace, layout) in engine.workspace_layouts.all_layouts() {
         assert!(
             !engine.workspace_tree(restored_workspace).contains_window(layout, ghost),
             "unmatched runtime-restore candidate survived in a dormant size configuration"
@@ -2199,7 +2232,7 @@ fn restored_window_server_id_cannot_cross_known_application_identity() {
     });
 
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
     let windows = engine.workspace_tree(workspace).visible_windows_in_layout(layout);
     assert!(!windows.contains(&titled_match));
     assert!(windows.contains(&live));
@@ -2222,8 +2255,8 @@ fn duplicate_window_server_fingerprints_choose_live_assignment_and_are_healed() 
     let workspaces = engine.virtual_workspace_manager.list_workspaces(space);
     let stale_workspace = workspaces[0].0;
     let preferred_workspace = workspaces[1].0;
-    let stale_layout = engine.workspace_layouts.active(space, stale_workspace).unwrap();
-    let preferred_layout = engine.workspace_layouts.active(space, preferred_workspace).unwrap();
+    let stale_layout = engine.workspace_layouts.active(stale_workspace).unwrap();
+    let preferred_layout = engine.workspace_layouts.active(preferred_workspace).unwrap();
     engine
         .workspace_tree_mut(stale_workspace)
         .add_window_after_selection(stale_layout, stale);
@@ -2276,8 +2309,8 @@ fn duplicate_restored_identity_prefers_live_workspace_assignment() {
     let workspaces = engine.virtual_workspace_manager.list_workspaces(space);
     let stale_workspace = workspaces[0].0;
     let preferred_workspace = workspaces[1].0;
-    let stale_layout = engine.workspace_layouts.active(space, stale_workspace).unwrap();
-    let preferred_layout = engine.workspace_layouts.active(space, preferred_workspace).unwrap();
+    let stale_layout = engine.workspace_layouts.active(stale_workspace).unwrap();
+    let preferred_layout = engine.workspace_layouts.active(preferred_workspace).unwrap();
     engine
         .workspace_tree_mut(stale_workspace)
         .add_window_after_selection(stale_layout, live);
@@ -2357,7 +2390,7 @@ fn restore_fallback_requires_title_and_size_within_known_app() {
     });
 
     let workspace = engine.active_workspace(space).unwrap();
-    let layout = engine.workspace_layouts.active(space, workspace).unwrap();
+    let layout = engine.workspace_layouts.active(workspace).unwrap();
     let windows = engine.workspace_tree(workspace).visible_windows_in_layout(layout);
     assert!(windows.contains(&title_match));
     assert!(!windows.contains(&live));
@@ -2408,13 +2441,9 @@ fn load_heals_disagreeing_tiled_and_floating_ownership() {
         1
     );
     assert!(
-        loaded
-            .workspace_layouts
-            .all_layouts()
-            .into_iter()
-            .all(|(_, workspace, layout)| {
-                !loaded.workspace_tree(workspace).contains_window(layout, agreed_floating)
-            })
+        loaded.workspace_layouts.all_layouts().into_iter().all(|(workspace, layout)| {
+            !loaded.workspace_tree(workspace).contains_window(layout, agreed_floating)
+        })
     );
     assert!(!loaded.floating.is_floating(frame_without_marker));
     assert!(loaded.floating_positions.locations_for_window(frame_without_marker).is_empty());

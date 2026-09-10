@@ -39,7 +39,7 @@ impl RestorePlan {
         engine: &LayoutEngine,
         request: RestoreRequest,
     ) -> anyhow::Result<SpaceId> {
-        let saved_spaces = snapshot.workspace_layouts.spaces();
+        let saved_spaces = snapshot.spaces_with_layout_state();
         if let Some(from) = request.from_space
             && saved_spaces.contains(&from)
         {
@@ -172,9 +172,7 @@ impl RestorePlan {
                 .virtual_workspace_manager
                 .workspaces
                 .contains_key(mapping.source_workspace)
-                || !snapshot
-                    .workspace_layouts
-                    .contains_workspace(mapping.source_space, mapping.source_workspace)
+                || !snapshot.workspace_layouts.contains_workspace(mapping.source_workspace)
             {
                 return Err(anyhow::anyhow!("saved workspace layout is incomplete"));
             }
@@ -242,8 +240,8 @@ impl RestorePlan {
                 .into_iter()
                 .map(|(window, _)| window)
                 .collect();
-            for (space, workspace, layout) in engine.workspace_layouts.all_layouts() {
-                if (space, workspace) == (mapping.target_space, mapping.target_workspace) {
+            for (workspace, layout) in engine.workspace_layouts.all_layouts() {
+                if workspace == mapping.target_workspace {
                     replaced_windows.extend(
                         engine
                             .workspace_tree(mapping.target_workspace)
@@ -271,7 +269,7 @@ impl RestorePlan {
             workspace.space = mapping.target_space;
             let layout = snapshot
                 .workspace_layouts
-                .snapshot_workspace(mapping.source_space, mapping.source_workspace)
+                .snapshot_workspace(mapping.source_workspace)
                 .expect("workspace layout sources were validated before extraction");
             if source_active == Some(mapping.source_workspace) {
                 target_active = Some(mapping.target_workspace);
@@ -485,10 +483,8 @@ impl LayoutEngine {
                 .workspace_layouts
                 .all_layouts()
                 .into_iter()
-                .filter(|(candidate_space, candidate_workspace, _)| {
-                    (*candidate_space, *candidate_workspace) == (space, workspace)
-                })
-                .flat_map(|(_, _, layout)| {
+                .filter(|(candidate_workspace, _)| *candidate_workspace == workspace)
+                .flat_map(|(_, layout)| {
                     self.workspace_tree(workspace).all_windows_in_layout(layout)
                 })
                 .collect::<HashSet<_>>();
@@ -646,11 +642,8 @@ impl LayoutEngine {
             self.persistence.forget_window(window);
         }
         self.virtual_workspace_manager.workspaces[state.target_workspace] = state.workspace;
-        self.workspace_layouts.install_workspace_snapshot(
-            state.target_space,
-            state.target_workspace,
-            state.layout,
-        );
+        self.workspace_layouts
+            .install_workspace_snapshot(state.target_workspace, state.layout);
         self.floating_positions.replace_workspace_positions(
             state.target_space,
             state.target_workspace,

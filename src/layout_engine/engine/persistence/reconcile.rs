@@ -142,7 +142,10 @@ impl LayoutEngine {
         // Runtime restore installs every display-size configuration. Candidate discovery must
         // inspect that same complete set; looking only at the active size lets unmatched nodes in
         // dormant configurations bypass pending cleanup and reappear after a resize.
-        for (space, workspace, layout) in self.workspace_layouts.all_layouts() {
+        for (workspace, layout) in self.workspace_layouts.all_layouts() {
+            let Some(space) = self.space_of_workspace(workspace) else {
+                continue;
+            };
             let location = (space, workspace);
             if !locations.contains(&location)
                 && self.workspace_tree(workspace).contains_window(layout, window)
@@ -150,8 +153,9 @@ impl LayoutEngine {
                 locations.push(location);
             }
         }
-        for space in self.workspace_layouts.spaces() {
-            for (workspace, _) in self.workspace_layouts.active_layouts_for_space(space) {
+        for space in self.spaces_with_layout_state() {
+            let ids = self.workspace_ids_on_space(space);
+            for (workspace, _) in self.workspace_layouts.active_layouts_for(ids) {
                 let location = (space, workspace);
                 if !locations.contains(&location)
                     && self
