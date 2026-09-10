@@ -369,8 +369,24 @@ impl Reactor {
         display_space_ids: &HashMap<String, Vec<SpaceId>>,
     ) -> EventOutcome {
         let mut outcome = EventOutcome::default();
+        // The desktops and the displays come from different places —
+        // SkyLight lists the first, the display list the second — and an
+        // unplug parts them: SkyLight hands the departing display's desktops
+        // to the survivor a moment before the display list has lost the
+        // display. Caught then, the two halves contradict each other, and
+        // the record they make has the survivor owning a desktop that is
+        // really the departing display's — which the return then dutifully
+        // drags there. So a display still showing a desktop SkyLight has
+        // already filed under another display means the reshuffle is under
+        // way, whatever the display list says.
         let whole = !screens.is_empty()
-            && screens.iter().all(|screen| screen.space.is_some())
+            && screens.iter().all(|screen| {
+                screen.space.is_some_and(|shown| {
+                    display_space_ids.iter().all(|(uuid, desktops)| {
+                        *uuid == screen.display_uuid || !desktops.contains(&shown)
+                    })
+                })
+            })
             && display_space_ids
                 .keys()
                 .all(|uuid| screens.iter().any(|screen| &screen.display_uuid == uuid));
@@ -381,6 +397,10 @@ impl Reactor {
                     .iter()
                     .map(|screen| super::display_record::RecordedDisplay {
                         uuid: screen.display_uuid.clone(),
+                        // SkyLight not listing this display at all is not
+                        // the contradiction rejected above — nothing else
+                        // claims what it shows — so the display list stands
+                        // in, as it does when SkyLight answers nothing.
                         desktops: display_space_ids
                             .get(&screen.display_uuid)
                             .cloned()

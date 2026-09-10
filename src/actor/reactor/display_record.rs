@@ -262,6 +262,15 @@ impl DisplayRecord {
     }
 
     #[cfg(test)]
+    pub(super) fn recorded_desktops(&self, uuid: &str) -> Vec<SpaceId> {
+        self.displays
+            .iter()
+            .find(|d| d.uuid == uuid)
+            .map(|d| d.desktops.clone())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
     pub(super) fn made_desktops(&self) -> Vec<SpaceId> {
         self.stopgaps.iter().map(|(made, _)| *made).collect()
     }
@@ -283,7 +292,8 @@ impl Reactor {
             );
             return;
         }
-        let displays: Vec<RecordedDisplay> = match self.display_archive.whole_displays.as_ref() {
+        let mut displays: Vec<RecordedDisplay> = match self.display_archive.whole_displays.as_ref()
+        {
             Some(whole) => whole.clone(),
             // The display set from before the change: the reactor's own
             // state is only updated after this runs.
@@ -322,6 +332,28 @@ impl Reactor {
             );
             return;
         };
+        // Belt and braces on top of the check in `note_display_set`: a
+        // desktop can only be one display's. If a departing display and one
+        // that stays both claim one, it is the departing display's — the
+        // survivor cannot have gained a desktop in the instant it left, and
+        // letting the claim stand would have the return drag the departing
+        // display's own desktop onto the survivor.
+        let taken: HashSet<SpaceId> = displays
+            .iter()
+            .filter(|d| departed.contains(&d.uuid))
+            .flat_map(|d| d.desktops.iter().copied())
+            .collect();
+        for d in displays.iter_mut().filter(|d| !departed.contains(&d.uuid)) {
+            let before = d.desktops.len();
+            d.desktops.retain(|space| !taken.contains(space));
+            if d.desktops.len() != before {
+                warn!(
+                    display = %d.uuid,
+                    "The window server had already given a departing display's desktops away; recording them as the departing display's"
+                );
+            }
+        }
+
         let (layout, members, modes) = match self.display_archive.fresh_pre_churn() {
             Some(pre) => (pre.layout.clone(), pre.members.clone(), pre.modes.clone()),
             None => {
@@ -1214,6 +1246,7 @@ impl Reactor {
             return EventOutcome::default();
         };
         let layout = record.layout.clone();
+        let modes = record.modes.clone();
         let layout_settings = self.config.settings.layout.clone();
         for (from, to) in &pass.restores {
             let request = RestoreRequest {
@@ -1237,8 +1270,28 @@ impl Reactor {
                 ),
                 // A desktop never shown has no tree to put back, and says
                 // so through a workspace-count mismatch; that is not news.
+                // The tree carries the layout mode, though, so a desktop
+                // that did have one is left tiled when it was stacked. The
+                // record has the modes; put those back on their own.
                 Err(error) => {
-                    debug!(from = from.get(), space = to.get(), %error, "Did not restore a desktop's layout")
+                    debug!(from = from.get(), space = to.get(), %error, "Did not restore a desktop's layout");
+                    let Some(modes) = modes.get(from) else {
+                        continue;
+                    };
+                    let put_back = self.layout_manager.layout_engine.adopt_layout_modes_on_space(
+                        &self.state.windows,
+                        *to,
+                        modes,
+                    );
+                    if put_back > 0 {
+                        warn!(
+                            from = from.get(),
+                            space = to.get(),
+                            workspaces = put_back,
+                            %error,
+                            "A desktop's tree could not be put back; its layout modes were"
+                        );
+                    }
                 }
             }
         }

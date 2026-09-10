@@ -9618,6 +9618,51 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// SkyLight files a departing display's desktops under the survivor a
+    /// moment before the display list loses the display. Recorded then, the
+    /// survivor owns a desktop that is really the departing display's, and
+    /// the return sends it there — which is how every desktop ends up piled
+    /// on the laptop and the display that came back gets a fresh empty one.
+    #[test]
+    fn a_desktop_the_window_server_has_already_given_away_stays_the_departing_displays() {
+        let mut f = spaces_fixture();
+
+        // Both displays still on screen and each still showing its own
+        // desktop, but SkyLight has already handed space2 to the survivor
+        // and dropped the main display.
+        let both = everyone(&f, space1(), space2());
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(space1()), Some(space2())],
+            move |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.clear();
+                state
+                    .display_space_ids
+                    .insert("test-display-0".to_string(), vec![space2(), space1()]);
+                for (wsid, space) in both {
+                    state.active_window_spaces.insert(wsid, space);
+                }
+            },
+        ));
+
+        // The display list catches up and the record is taken.
+        unplug(&mut f);
+
+        let record = f.reactor.display_archive.record().expect("the departure is seen");
+        assert_eq!(
+            record.recorded_desktops(DISPLAY2),
+            vec![space2(), space2_extra()],
+            "the desktops stay the departing display's"
+        );
+        assert_eq!(
+            record.recorded_desktops("test-display-0"),
+            vec![space1()],
+            "the survivor did not gain one in the instant the display left"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     #[test]
     fn the_record_is_taken_from_the_last_whole_display_set() {
         let mut f = spaces_fixture();

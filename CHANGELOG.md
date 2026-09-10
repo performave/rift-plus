@@ -13,6 +13,35 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A desktop whose tree cannot be put back no longer comes back tiled.** The
+  record taken at a display's departure keeps each desktop's workspaces' layout
+  modes, but only ever compared them, to tell a desktop the user rearranged
+  while away from one they did not. Putting a mode back was left to the tree
+  restore, which carries the mode along with the tree — so whenever that
+  restore failed, a stacked desktop came back on the default mode, and the
+  failure was logged at `debug`, which the shipped log level drops. The modes
+  the record holds are now put back on their own when the tree cannot be, and
+  a desktop that needed it says so at `warn` instead of vanishing into a log
+  level nobody runs.
+
+- **Replugging a display no longer piles every desktop onto one screen.** With
+  `displaced_windows = "spaces"`, rift records where each desktop lives when a
+  display departs and puts them back when it returns. The two halves of that
+  record come from different places — SkyLight lists each display's desktops,
+  the display list says which displays are on screen — and an unplug parts
+  them: SkyLight hands the departing display's desktops to the survivor a
+  moment before the display list has lost the display. Caught in that moment,
+  the record had the departing display owning a desktop *and* the survivor
+  owning the same one, because a display SkyLight had already dropped fell
+  back to being credited with whatever it was still showing. The return then
+  did as it was told and dragged the departing display's own desktop to the
+  survivor, taking every desktop filed behind it along — six desktops stacked
+  on the laptop, and the monitor that had just come back left with a single
+  empty one. A snapshot showing a display a desktop that SkyLight has already
+  filed under a different display is now read as the reshuffle it is, and the
+  record waits for one where the two agree; a desktop claimed by both a
+  departing display and one that stays is the departing display's, since the
+  survivor cannot have gained a desktop in the instant the other left.
 - **A modal no longer knocks the window it covers out of the layout.** Open a
   JetBrains modal — Push Commits on Cmd+Shift+K, Confirm Exit — and the IDE
   re-reports its own document window as an `AXDialog` for as long as the modal

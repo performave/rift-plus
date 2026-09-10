@@ -1374,6 +1374,32 @@ impl LayoutEngine {
     /// The layout mode of each of `space`'s workspaces, in workspace order:
     /// with `windows_on_space_in_layout_order`, what tells a desktop the user
     /// rearranged from one they did not.
+    /// Puts a desktop's workspaces back on the layout modes they had, in the
+    /// order `layout_modes_on_space` reports them, and answers how many had
+    /// to be changed. For a desktop whose tree could not be put back: the
+    /// tree carries the mode with it when it restores, and nothing else
+    /// does, so without this a stacked desktop comes back tiled.
+    pub fn adopt_layout_modes_on_space(
+        &mut self,
+        window_store: &WindowStore,
+        space: SpaceId,
+        modes: &[LayoutMode],
+    ) -> usize {
+        let workspaces: Vec<VirtualWorkspaceId> = self
+            .virtual_workspace_manager
+            .existing_workspaces(space)
+            .into_iter()
+            .map(|(workspace, _)| workspace)
+            .collect();
+        workspaces
+            .into_iter()
+            .zip(modes)
+            .filter(|(workspace, mode)| {
+                self.switch_workspace_layout_mode(window_store, space, *workspace, **mode)
+            })
+            .count()
+    }
+
     pub fn layout_modes_on_space(&self, space: SpaceId) -> Vec<LayoutMode> {
         self.virtual_workspace_manager
             .existing_workspaces(space)
@@ -3899,6 +3925,43 @@ mod tests {
             &LayoutSettings::default(),
             None,
         )
+    }
+
+    /// A desktop whose tree cannot be put back after a display returns is
+    /// left on whatever mode the fresh desktop was made with. The record
+    /// keeps the modes; this is what puts them back.
+    #[test]
+    fn adopting_layout_modes_puts_a_desktop_back_on_the_modes_it_had() {
+        let mut engine = test_engine();
+        let window_store = crate::model::WindowStore::default();
+        let space = SpaceId::new(1);
+        let workspaces: Vec<_> = engine
+            .virtual_workspace_manager_mut()
+            .list_workspaces(space)
+            .into_iter()
+            .map(|(workspace, _)| workspace)
+            .collect();
+        assert!(
+            workspaces.len() >= 2,
+            "the default space has workspaces to switch"
+        );
+
+        let mut modes = engine.layout_modes_on_space(space);
+        assert!(modes.iter().any(|mode| *mode != LayoutMode::Stack));
+        modes[0] = LayoutMode::Stack;
+
+        assert_eq!(
+            engine.adopt_layout_modes_on_space(&window_store, space, &modes),
+            1,
+            "only the workspace whose mode differs is switched"
+        );
+        assert_eq!(engine.layout_modes_on_space(space), modes);
+
+        assert_eq!(
+            engine.adopt_layout_modes_on_space(&window_store, space, &modes),
+            0,
+            "putting the same modes back again changes nothing"
+        );
     }
 
     #[test]
