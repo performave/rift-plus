@@ -761,6 +761,20 @@ impl Reactor {
         if self.window_inventory_manager.pending.remove(&pid) {
             self.request_window_inventory(pid);
         }
+        // A refresh that failed is the one that most needs repeating, and was
+        // the only one not queued again: `windows()` answers
+        // kAXErrorCannotComplete while an app is busy, which is what a display
+        // change makes every app at once. Dropped here, rift's idea of that
+        // app's windows stays as it was, and the restore after the display
+        // returns matches a saved tree against windows it no longer knows the
+        // whereabouts of — they go unmatched, and unmatched candidates are
+        // discarded, so they fall out of the layout for good. Queued rather
+        // than asked again now: an app too busy to answer this instant is
+        // still too busy the next, and the sweep after the churn settles is
+        // the moment that gets an answer.
+        if !successful {
+            self.window_inventory_manager.pending.insert(pid);
+        }
         accepted
     }
 

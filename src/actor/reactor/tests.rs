@@ -4927,6 +4927,68 @@ fn wake_gate_waits_for_fresh_space_snapshot_before_refresh() {
     );
 }
 
+/// An app too busy to answer `windows()` — which a display change makes every
+/// app at once — used to be dropped from the refresh queue outright, leaving
+/// rift's idea of its windows stale and the next layout restore matching a
+/// saved tree against windows it had lost track of.
+#[test]
+fn a_failed_window_inventory_is_queued_again() {
+    let mut reactor = test_reactor();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let pid = 92;
+    let (app_tx, mut app_rx) = actor::channel();
+
+    reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+    reactor.app_manager.apps.insert(pid, AppState {
+        info: AppInfo {
+            bundle_id: Some("com.test.busy-app".into()),
+            localized_name: Some("Busy App".into()),
+        },
+        handle: AppThreadHandle::new_for_test(app_tx),
+    });
+
+    reactor.request_window_inventory(pid);
+    let (_, Request::RefreshWindowInventory(token)) =
+        app_rx.try_recv().expect("the inventory should be requested")
+    else {
+        panic!("expected a window inventory request");
+    };
+
+    // The app answers that it could not enumerate its windows.
+    reactor.handle_event(Event::WindowsDiscovered {
+        pid,
+        token,
+        successful: false,
+        new: Vec::new(),
+        known_visible: Vec::new(),
+    });
+
+    assert!(
+        !reactor.window_inventory_manager.in_flight.contains_key(&pid),
+        "the failed request is no longer in flight"
+    );
+    assert!(
+        reactor.window_inventory_manager.pending.contains(&pid),
+        "the app is queued to be asked again"
+    );
+    assert!(
+        app_rx.try_recv().is_err(),
+        "an app too busy to answer is not asked again in the same breath"
+    );
+
+    // The sweep that follows the churn is what gets an answer.
+    reactor.request_window_inventories();
+    assert!(
+        matches!(app_rx.try_recv(), Ok((_, Request::RefreshWindowInventory(_)))),
+        "the next sweep asks the app again"
+    );
+    assert!(
+        !reactor.window_inventory_manager.pending.contains(&pid),
+        "and it leaves the queue once asked"
+    );
+}
+
 #[test]
 fn post_wake_snapshot_replaces_an_inventory_that_never_replied() {
     let mut reactor = test_reactor();

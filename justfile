@@ -24,11 +24,11 @@ _default:
 # These chain through dependencies rather than nested `just` calls: a nested
 # call is a fresh invocation and would not carry a `formula=` override, so
 # `just formula=rift dev` would build one thing and install into another.
-dev: (_build profile) (_install profile) restart
+dev: (_build profile) (_install profile) restart _sa-pin-check
     @echo "rift is live"
 
 # Same, but a full optimized build — what a release ships.
-install: (_build "release") (_install "release") restart
+install: (_build "release") (_install "release") restart _sa-pin-check
 
 _build profile:
     cargo build --profile {{profile}} --bins
@@ -92,6 +92,32 @@ status:
 # Re-inject the scripting addition. Needed after a Dock restart or a reboot.
 sa:
     sudo rift sa load
+
+# The sudoers rule is pinned to a binary's hash, so every rebuild staleness it.
+# Nothing breaks at the swap — the payload already inside Dock keeps working —
+# so the cost lands at the next Dock restart, hours later: `sa load` asks for a
+# password nobody is there to type, the addition stays out, and rift silently
+# loses every desktop and window move across spaces. rift says so at startup,
+# but that is a line in a log at the moment you stop looking. Say it here,
+# while you are still at the keyboard.
+_sa-pin-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status="$(rift sa status 2>&1 || true)"
+    printf '%s\n' "$status"
+    if printf '%s' "$status" | grep -q 'pinned to this binary'; then
+        exit 0
+    fi
+    cat >&2 <<'    EOF'
+
+    just: the passwordless 'sudo rift sa load' rule is pinned to the previous
+          build. Until it is re-pinned, the next Dock restart leaves the
+          scripting addition unloaded, and rift cannot move desktops or move
+          windows between spaces — an unplug then merges everything and cannot
+          put it back.
+
+          Fix now:  sudo rift sa install-sudoers && sudo rift sa load
+    EOF
 
 logs:
     tail -f "/tmp/rift_${USER}.out.log" "/tmp/rift_${USER}.err.log"

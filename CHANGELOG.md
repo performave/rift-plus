@@ -13,6 +13,20 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Windows no longer fall out of their layout when a display returns.** A
+  display change makes every application busy at once, and a busy application
+  answers rift's window enumeration with `kAXErrorCannotComplete`. That failure
+  was the one case the refresh queue dropped outright: the successful-but-stale
+  replies were queued again, the failed ones were forgotten. rift's idea of
+  that application's windows then stayed as it was, and the restore that
+  follows a display's return matched each saved tree against windows it had
+  lost track of — they went unmatched, and unmatched candidates are discarded,
+  so they left the layout for good. In one replug here that cost seven windows
+  across two desktops, one of which matched nothing at all. A failed refresh is
+  now queued again, to be asked at the sweep after the churn settles rather
+  than in the same breath, since an application too busy to answer this instant
+  is still too busy the next.
+
 - **A desktop whose tree cannot be put back no longer comes back tiled.** The
   record taken at a display's departure keeps each desktop's workspaces' layout
   modes, but only ever compared them, to tell a desktop the user rearranged
