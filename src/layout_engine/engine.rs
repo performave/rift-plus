@@ -1338,11 +1338,17 @@ impl LayoutEngine {
             return;
         }
 
-        // The layout store is keyed by workspace, which the window server
-        // does not re-mint, so there is nothing of it to carry here.
+        // The layout store is keyed by workspace, which the window server does
+        // not re-mint, so there is nothing of it to carry here. There is still
+        // something to drop: the remap deletes the workspaces that were on
+        // `new_space` to make room, and their layout state is keyed by an id
+        // that stops resolving the moment they go. Left behind, it fails the
+        // validation every save runs, and the layout is never persisted again.
         self.floating.remap_space(old_space, new_space);
         self.floating_positions.remap_space(old_space, new_space);
-        self.virtual_workspace_manager.remap_space(window_store, old_space, new_space);
+        let deleted =
+            self.virtual_workspace_manager.remap_space(window_store, old_space, new_space);
+        self.workspace_layouts.remove_workspaces(deleted);
 
         if let Some(uuid) = self.space_display_map.remove(&old_space) {
             self.space_display_map.insert(new_space, uuid);

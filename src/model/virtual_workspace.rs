@@ -368,14 +368,21 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Move every workspace of `old_space` onto `new_space`, and return the
+    /// workspaces this deleted from `new_space` to make room. The caller owns
+    /// the layout state keyed by those ids and has to drop it: a workspace
+    /// that is gone from here but still has an entry in `WorkspaceLayouts`
+    /// makes every later save fail validation, and the layout is then never
+    /// persisted again.
+    #[must_use]
     pub fn remap_space(
         &mut self,
         window_store: &mut WindowStore,
         old_space: SpaceId,
         new_space: SpaceId,
-    ) {
+    ) -> Vec<VirtualWorkspaceId> {
         if old_space == new_space || !self.workspaces_by_space.contains_key(&old_space) {
-            return;
+            return Vec::new();
         }
 
         let ids = self.workspaces_by_space.remove(&old_space).unwrap_or_default();
@@ -441,6 +448,8 @@ impl WorkspaceStore {
                 }
             }
         }
+
+        deleted_target_workspace_ids
     }
 
     pub fn create_workspace(
@@ -1449,8 +1458,19 @@ mod tests {
             transient_ws
         ));
 
-        manager.remap_space(&mut window_store, old_space, new_space);
+        let doomed: Vec<_> = manager
+            .existing_workspaces(new_space)
+            .into_iter()
+            .map(|(workspace, _)| workspace)
+            .collect();
+        assert!(doomed.contains(&transient_ws));
 
+        let deleted = manager.remap_space(&mut window_store, old_space, new_space);
+
+        assert_eq!(
+            deleted, doomed,
+            "the caller is told every workspace that went, so it can drop their layout state"
+        );
         assert_eq!(
             manager.workspace_for_window(&window_store, new_space, migrated_window),
             Some(migrated_ws)

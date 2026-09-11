@@ -13,6 +13,20 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **The layout is saved again after a desktop migration.** Layout state is now
+  keyed by the workspace rather than by the native space, and the call that
+  used to re-key it across a migration went with the change — but that call did
+  two jobs. It carried a desktop's layout onto its new id, which is genuinely
+  no longer needed, and it also dropped the layout state of the workspaces the
+  migration deletes to make room, which still is. Left behind, that state sat
+  under a workspace id that no longer resolved, and a save validates the whole
+  file: every autosave from then on failed, once a minute, and `layout.ron`
+  silently stopped being written. Since the migration runs at startup whenever
+  a display comes up on a different desktop id than it was last seen on, a
+  single unplug could cost an entire session's layout, with nothing to show for
+  it but a warning in the log. The migration now drops that state with the
+  workspaces it deletes.
+
 - **A window the window server had already moved no longer loses its desktop.**
   When macOS destroys a desktop and mints a fresh one, it puts windows on the
   new desktop before it tells rift the new desktop replaced the old. rift had

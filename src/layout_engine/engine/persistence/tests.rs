@@ -245,6 +245,53 @@ fn save_prunes_desktops_never_shown_and_the_file_loads() {
     );
 }
 
+/// The remap deletes the workspaces that were on the target desktop to make
+/// room for the migrated ones. Their layout state is keyed by the workspace id
+/// alone, so nothing drops it by space any more: it was left under an id that
+/// no longer resolves, every save from then on failed validation, and the
+/// layout was never persisted again — for the whole of an uptime, from the
+/// startup remap onwards.
+#[test]
+fn remap_space_drops_the_layout_state_of_the_workspaces_it_deletes() {
+    let mut engine = test_engine();
+    let mut window_store = WindowStore::default();
+    let old = SpaceId::new(1071);
+    let new = SpaceId::new(3);
+    let migrated = WindowId::new(10, 1);
+    let displaced = WindowId::new(11, 1);
+
+    for (space, window) in [(old, migrated), (new, displaced)] {
+        let _ = engine.handle_event(
+            &mut window_store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1453.0, 948.0)),
+        );
+        let _ = engine.handle_event(&mut window_store, LayoutEvent::WindowAdded(space, window));
+    }
+    let doomed = engine.virtual_workspace_manager.existing_workspaces(new)[0].0;
+    assert!(engine.workspace_layouts.has_state(doomed));
+
+    engine.remap_space(&mut window_store, old, new);
+
+    assert!(
+        engine.virtual_workspace_manager.workspace_info(new, doomed).is_none(),
+        "the target's own workspace is gone, to make room for the migrated one"
+    );
+    assert!(
+        !engine.workspace_layouts.has_state(doomed),
+        "and its layout state went with it, instead of outliving the id"
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "rift-remap-orphan-test-{}-{}.ron",
+        std::process::id(),
+        displaced.idx.get()
+    ));
+    engine
+        .save_current_layout(path.clone(), &window_store, Some(new))
+        .expect("a save after a remap still validates");
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn full_save_records_floating_window_in_its_inactive_workspace() {
     let mut engine = test_engine();
