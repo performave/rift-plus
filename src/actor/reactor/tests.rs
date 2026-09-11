@@ -7696,6 +7696,74 @@ mod fullscreen_slots {
         )
     }
 
+    /// A display change keeps moving windows between spaces for a second or
+    /// two after the reconfigure is done, and the trees follow it one space at
+    /// a time. A slot re-read in that window answers with whichever space
+    /// happens to hold the window at that millisecond — walking it off its own
+    /// desktop and onto another, where the restore then built it a tile it had
+    /// never had. The reading from before the shuffle started is kept instead.
+    #[test]
+    fn a_settling_display_change_does_not_move_a_slot_to_another_desktop() {
+        let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+            &crate::common::config::VirtualWorkspaceSettings::default(),
+            &crate::common::config::LayoutSettings {
+                mode: LayoutMode::Bsp,
+                ..crate::common::config::LayoutSettings::default()
+            },
+            None,
+        ));
+        let home = SpaceId::new(1);
+        // Lower-numbered, so it is the one a scan by space id would prefer.
+        let elsewhere = SpaceId::new(0);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(home), Some(elsewhere)],
+        ));
+        reactor.add_test_app(1);
+        let home_workspace = reactor.test_workspace(home, 0);
+        let elsewhere_workspace = reactor.test_workspace(elsewhere, 0);
+        let w1 = WindowId::new(1, 1);
+        reactor.add_test_window(
+            w1,
+            WindowServerId::new(101),
+            Some(home),
+            CGRect::new(CGPoint::new(10., 10.), CGSize::new(600., 400.)),
+        );
+        assert!(reactor.assign_test_window_to_workspace(home, w1, home_workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(home, w1));
+        assert!(reactor.layout_manager.layout_engine.is_window_tiled(home, w1));
+
+        // The slot is taken with the window at home, before any display change.
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w1));
+        assert_eq!(
+            reactor.fullscreen_slots_awaiting_insertion(),
+            vec![(w1, home)],
+            "the slot is recorded against the desktop the window was on"
+        );
+        // That reading predates the display change that follows.
+        reactor.display_archive.backdate_pre_churn(std::time::Duration::from_secs(600));
+
+        // The window server moves the window, and the tree follows it: mid
+        // shuffle the window is tiled on a desktop that is not its own.
+        assert!(reactor.assign_test_window_to_workspace(elsewhere, w1, elsewhere_workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(elsewhere, w1));
+        assert!(
+            reactor.layout_manager.layout_engine.is_window_tiled(elsewhere, w1),
+            "the shuffle has the window on the other desktop"
+        );
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w1));
+
+        assert_eq!(
+            reactor.fullscreen_slots_awaiting_insertion(),
+            vec![(w1, home)],
+            "the slot still names the window's own desktop, not the one the \
+             shuffle had it on"
+        );
+    }
+
     #[test]
     fn exit_puts_the_window_back_exactly_when_nothing_changed() {
         let (mut reactor, screen, space, [w1, w2, w3], [_, wsid2, _]) =

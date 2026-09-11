@@ -27,6 +27,19 @@ Entries describe this fork's changes relative to
   it but a warning in the log. The migration now drops that state with the
   workspaces it deletes.
 
+- **A settling display change no longer builds a window a tile on a desktop it
+  was never on.** The window server goes on moving windows between desktops for
+  a second or two after a display change is done, and rift's trees follow it one
+  desktop at a time, so which desktop holds a window answers differently from
+  one millisecond to the next. The bookkeeping that remembers where a window
+  sat before native fullscreen re-read that answer while it was still moving and
+  kept the newest one, walking a window's remembered slot off its own desktop,
+  onto the departed display's, and from there onto whichever surviving desktop
+  sorted first by id. The restore then put a tile there for a window that was
+  somewhere else entirely, and the window itself stopped taking focus on the
+  desktop it was really on. The reading from before the shuffle started is now
+  the one that is kept.
+
 - **A window the window server had already moved no longer loses its desktop.**
   When macOS destroys a desktop and mints a fresh one, it puts windows on the
   new desktop before it tells rift the new desktop replaced the old. rift had

@@ -23,6 +23,8 @@
 //! path notices it next. Hanging the slot off the addition means every one of
 //! those paths puts the window back where it was.
 
+use std::time::Instant;
+
 use tracing::{debug, info, warn};
 
 use super::{LayoutEvent, Reactor};
@@ -41,6 +43,9 @@ struct FullscreenSlot {
     /// The engine as it was with the window still in its tree.
     snapshot: String,
     anchor: Option<Slot>,
+    /// When this reading was taken, to tell a slot from before a display
+    /// churn from one taken while the window server was still shuffling.
+    taken: Instant,
 }
 
 impl FullscreenSlots {
@@ -70,6 +75,29 @@ impl Reactor {
         // this removal's is the one to keep.
         if let Some(existing) = self.fullscreen_slots.slots.get(&window) {
             if existing.space == space {
+                return;
+            }
+            // Unless a display change is still settling. Then the window
+            // server is moving windows between spaces itself and the trees
+            // follow it one space at a time, so which space holds the window
+            // answers differently from one millisecond to the next; the
+            // reading from before it started is the one that means anything.
+            // Replacing it walked a window's slot off its own desktop, onto
+            // the departed display's, and from there onto whichever surviving
+            // desktop sorted first — and the restore then built a tile for it
+            // on a desktop it had never been on.
+            if let Some(churn_began) = self.display_archive.churn_began()
+                && existing.taken < churn_began
+            {
+                crate::sys::trace::act(
+                    "fullscreen_slot",
+                    &(
+                        window.idx.get(),
+                        "churn settling; slot kept",
+                        existing.space.get(),
+                        space.get(),
+                    ),
+                );
                 return;
             }
             crate::sys::trace::act(
@@ -105,9 +133,12 @@ impl Reactor {
                 anchor.map(|slot| slot.anchor.idx.get()),
             ),
         );
-        self.fullscreen_slots
-            .slots
-            .insert(window, FullscreenSlot { space, snapshot, anchor });
+        self.fullscreen_slots.slots.insert(window, FullscreenSlot {
+            space,
+            snapshot,
+            anchor,
+            taken: crate::sys::trace::now(),
+        });
     }
 
     /// Which space's tree is holding `window` right now.

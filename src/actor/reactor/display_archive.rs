@@ -193,6 +193,14 @@ impl DisplayArchive {
             .filter(|pre| pre.pinned || pre.taken.elapsed() < PRE_CHURN_TTL)
     }
 
+    /// When the window server was last seen starting to move windows between
+    /// spaces on its own, if that is still recent enough to matter. Readings
+    /// of which space a window sits on are in flux from this moment until the
+    /// shuffle settles, so anything recorded before it is the steadier truth.
+    pub(super) fn churn_began(&self) -> Option<Instant> {
+        self.fresh_pre_churn().map(|pre| pre.taken)
+    }
+
     #[cfg(test)]
     pub(super) fn backdate_pre_churn(&mut self, by: Duration) {
         if let Some(pre) = self.pre_churn.as_mut() {
