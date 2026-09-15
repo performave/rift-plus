@@ -3748,7 +3748,6 @@ impl Reactor {
             }
         }
 
-
         self.arrive_on_space(space, frame, None, outcome);
     }
 
@@ -6719,6 +6718,9 @@ impl Reactor {
     }
 
     fn last_focused_window_in_space(&self, space: SpaceId) -> Option<WindowId> {
+        if !self.config.virtual_workspaces.preserve_focus_per_workspace {
+            return None;
+        }
         let active_workspace = self.layout_manager.layout_engine.active_workspace(space)?;
         let wid = self
             .layout_manager

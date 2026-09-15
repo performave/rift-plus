@@ -13,6 +13,17 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **`preserve_focus_per_workspace` does something.** The key was declared,
+  documented in `rift.default.toml` and defaulted to `true`, but nothing in the
+  codebase ever read it: arriving on a workspace always returned focus to the
+  window last used there, whatever the config said. It is a real switch now.
+  Turning it off falls through to the workspace's own selection instead; the
+  last-used window is still recorded either way, so turning it back on resumes
+  where it left off. The key could not simply be deleted — the settings block
+  is `deny_unknown_fields`, so removing it would reject every config that sets
+  it, the shipped default among them. Anyone who set it to `false` expecting
+  nothing will now get the behaviour they asked for.
+
 - **Opening an app from the Dock no longer lands you on the desktop's
   previous window.** Clicking the Dock tile of an app whose window lives on
   another desktop makes macOS switch desktop by itself. rift follows a switch
