@@ -6923,6 +6923,50 @@ mod mouse_follows_focus {
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
+    /// Clicking the Dock tile of an app whose window lives on another desktop
+    /// makes macOS switch desktop by itself. The window server names the new
+    /// key window straight away, but that window's own record only arrives
+    /// with the next inventory — and in the gap rift cannot say which space it
+    /// is on. That is the same "macOS's activation is on its way" case the
+    /// check above means to stand down for, so it must not be confused with
+    /// having no key window at all: arriving anyway raises whatever was last
+    /// used on the space, over the app the user actually asked for.
+    #[test]
+    fn a_space_switch_is_left_alone_while_an_activation_is_still_in_flight() {
+        let (_apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+
+        switch_right_display_to(&mut reactor, SpaceId::new(3));
+        while raise_manager_rx.try_recv().is_ok() {}
+
+        // An app comes forward owning a window rift has not admitted yet.
+        let activating = WindowId::new(2, 1);
+        reactor.handle_event(Event::ApplicationGloballyActivated(2));
+        reactor.handle_event(Event::WindowServerFocusChanged(activating, SpaceId::new(2)));
+        assert_eq!(
+            reactor.main_window(),
+            Some(activating),
+            "the window server's focus stands in for the key window"
+        );
+        assert!(
+            reactor.best_space_for_window_id(activating).is_none(),
+            "and rift cannot place it yet, which is the race being guarded"
+        );
+        while raise_manager_rx.try_recv().is_ok() {}
+        reactor.test_mouse_warps.clear();
+
+        switch_right_display_to(&mut reactor, SpaceId::new(2));
+
+        assert!(
+            reactor.test_mouse_warps.is_empty(),
+            "the pointer stays put while the activation lands"
+        );
+        assert!(
+            raise_manager_rx.try_recv().is_err(),
+            "the space's last window is not raised over the activating one"
+        );
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
     /// With the setting off, a cross-display switch changes nothing about
     /// where the pointer or the focus is.
     #[test]

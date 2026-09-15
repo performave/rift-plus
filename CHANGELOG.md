@@ -13,6 +13,24 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Opening an app from the Dock no longer lands you on the desktop's
+  previous window.** Clicking the Dock tile of an app whose window lives on
+  another desktop makes macOS switch desktop by itself. rift follows a switch
+  it sees on a display the pointer is not on, carrying focus to the window
+  last used there — right for a switch you asked for, wrong here, because the
+  activation had already decided who should be focused. It was meant to stand
+  down for exactly this case: the check asks whether the key window is on
+  either desktop and leaves the switch to macOS if it is. But the window
+  server names the new key window the moment the app comes forward, while
+  that window's own record only arrives with the next inventory, and in the
+  gap rift cannot say which desktop it is on. An unplaceable key window read
+  the same as no key window at all, so the guard passed and rift went. The
+  pointer offers no second line of defence, because a Dock on a screen edge
+  sits outside the display frame the guard tests. Recorded three times in one
+  session, the margin between the desktop change and the window's record
+  ranging from 32ms to 137ms, which is why it came and went. A key window
+  rift cannot place now holds the switch rather than releasing it.
+
 - **The layout is saved again after a desktop migration.** Layout state is now
   keyed by the workspace rather than by the native space, and the call that
   used to re-key it across a migration went with the change — but that call did

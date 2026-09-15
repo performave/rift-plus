@@ -3728,11 +3728,26 @@ impl Reactor {
         if window_server::current_cursor_location().is_ok_and(|point| frame.contains(point)) {
             return;
         }
-        let key_window_space =
-            self.main_window().and_then(|wid| self.best_space_for_window_id(wid));
-        if key_window_space.is_some_and(|key| key == space || key == previous) {
-            return;
+        // A key window rift cannot place yet is not the same as no key window
+        // at all, and collapsing the two is what let this carry the user away
+        // from an app they had just activated. The window server reports focus
+        // the moment an app comes forward; the window's own record arrives with
+        // the next inventory, tens of milliseconds later. In that gap
+        // `best_space_for_window_id` has no answer — which is precisely the
+        // "macOS's own activation is on its way" case above, not a licence to
+        // go somewhere else. Clicking a Dock tile for an app whose window lives
+        // on another desktop hits this every time macOS wins that race: the
+        // pointer is on the Dock, outside the arriving display's frame, so the
+        // check before this one does not hold it back either.
+        if let Some(key_window) = self.main_window() {
+            let Some(key_window_space) = self.best_space_for_window_id(key_window) else {
+                return;
+            };
+            if key_window_space == space || key_window_space == previous {
+                return;
+            }
         }
+
 
         self.arrive_on_space(space, frame, None, outcome);
     }
