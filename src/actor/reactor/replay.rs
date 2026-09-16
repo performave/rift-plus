@@ -72,18 +72,6 @@ impl Record {
         self.start_with_state(config, layout, None, None);
     }
 
-    /// Starts a recording whose header also carries the reactor's window
-    /// store, so a replay begins from the same per-window state (workspace
-    /// assignments, the user's tile/float choices, admission overrides).
-    pub(super) fn start_with_windows(
-        &mut self,
-        config: &Config,
-        layout: &LayoutEngine,
-        windows: Option<&crate::model::window_store::WindowStore>,
-    ) {
-        self.start_with_state(config, layout, windows, None);
-    }
-
     /// Starts a recording whose header also carries the transaction store,
     /// so the replay's frame writes carry the ids the live ones did and the
     /// apps' echoed reports are accepted or discarded exactly as live.
@@ -146,13 +134,6 @@ pub enum TraceLine {
     Sys(SysLine),
     /// A frame written live.
     Out(trace::OutLine),
-}
-
-/// Reads a trace: config, layout, then its lines in order. Lines in the old
-/// event-only shape (no `Ev ` prefix) are accepted with `ms = 0`.
-pub fn read_trace(path: &Path) -> anyhow::Result<(Config, LayoutEngine, Vec<TraceLine>)> {
-    let (tx, _rx) = actor::channel();
-    read_trace_with_handle(path, AppThreadHandle::new_for_test(tx)).map(|t| (t.0, t.1, t.3))
 }
 
 type ReadTrace = (
@@ -311,6 +292,7 @@ pub struct ReplayReport {
     /// (float drift in a key). Informational.
     pub drifts: Vec<String>,
     /// The frames written live, from the recording.
+    #[cfg(test)]
     pub live_writes: Vec<trace::OutLine>,
     /// Every change of a window's place (floating / tiled on which spaces),
     /// with the trace line that caused it.
@@ -328,6 +310,7 @@ pub struct ReplayReport {
 }
 
 impl ReplayReport {
+    #[cfg(test)]
     pub fn is_clean(&self) -> bool {
         // Once the replay has diverged from the recording, the code under
         // test is off the recorded script; questions the recording never
@@ -515,6 +498,7 @@ impl LiveWrites {
 ///    window to different displays within 1.5 seconds, with no button
 ///    release and no command in between, is rift moving it on its own.
 /// 5. A floating window is written a frame only on a command's behalf.
+#[cfg(test)]
 pub fn replay_trace(path: &Path) -> anyhow::Result<ReplayReport> {
     replay_trace_with(path, |_, _| {})
 }
@@ -609,6 +593,7 @@ fn replay_trace_with(
     }
     let mut live = LiveWrites::new(&live_writes, &reactor);
     let mut report = ReplayReport {
+        #[cfg(test)]
         live_writes,
         ..ReplayReport::default()
     };
