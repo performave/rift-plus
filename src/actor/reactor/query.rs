@@ -598,7 +598,6 @@ impl Reactor {
         let display_uuid = screen.display_uuid_owned();
         let gaps = self.config.settings.layout.gaps.effective_for_display(display_uuid.as_deref());
         let target_frames = self.layout_manager.layout_engine.calculate_workspace_layout(
-            space_id,
             snapshot.workspace_id,
             screen.frame,
             &gaps,

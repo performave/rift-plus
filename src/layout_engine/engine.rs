@@ -251,7 +251,6 @@ impl LayoutEngine {
 
     pub(crate) fn calculate_workspace_layout(
         &self,
-        space: SpaceId,
         workspace_id: VirtualWorkspaceId,
         screen: CGRect,
         gaps: &crate::common::config::GapSettings,
@@ -1241,7 +1240,6 @@ impl LayoutEngine {
 
     fn active_workspace_contains_window(
         &self,
-        space: SpaceId,
         workspace_id: VirtualWorkspaceId,
         wid: WindowId,
     ) -> bool {
@@ -1775,11 +1773,10 @@ impl LayoutEngine {
                         self.workspace_layouts.active(target_workspace).and_then(|layout| {
                             self.workspace_tree(target_workspace).selected_window(layout)
                         });
-                    let contained =
-                        self.active_workspace_contains_window(space, target_workspace, wid);
+                    let contained = self.active_workspace_contains_window(target_workspace, wid);
                     self.add_window_to_layout(window_store, space, wid);
-                    membership_changed |= !contained
-                        && self.active_workspace_contains_window(space, target_workspace, wid);
+                    membership_changed |=
+                        !contained && self.active_workspace_contains_window(target_workspace, wid);
                     if !should_focus
                         && let (Some(previous), Some(layout)) = (
                             previous_selection,
@@ -2502,7 +2499,6 @@ impl LayoutEngine {
             return Vec::new();
         };
         self.calculate_workspace_layout(
-            space,
             workspace_id,
             screen,
             gaps,
