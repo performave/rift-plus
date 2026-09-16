@@ -4388,6 +4388,7 @@ fn fullscreen_startup_fixture(
             title_substring: None,
             ax_role: None,
             ax_subrole: None,
+            only_first_window: false,
         }];
     }
 

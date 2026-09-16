@@ -1247,6 +1247,10 @@ impl WorkspaceStore {
             window_title,
             ax_role,
             ax_subrole,
+            // This helper exists for workspace-assignment tests, which never
+            // exercise only_first_window; the layout engine owns the real
+            // answer because it is the half that knows what is tiled.
+            app_has_tiled_window: false,
         });
         self.apply_app_rule_decision(window_store, window_id, space, decision)
     }
@@ -1667,6 +1671,7 @@ mod tests {
             title_substring: None,
             ax_role: None,
             ax_subrole: None,
+            only_first_window: false,
         }];
         let mut manager = WorkspaceStore::new_with_config(&settings, &LayoutSettings::default());
         let old_space = SpaceId::new(1);

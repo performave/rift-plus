@@ -13,6 +13,39 @@ Entries describe this fork's changes relative to
 
 ### Added
 
+- **`only_first_window`, for apps whose other windows are documents.** An app
+  rule with `floating = false` tiles every window its app opens, and most apps
+  open more than one kind. Outlook's drafts and message windows, a browser's
+  Library and Page Info: each one split the desktop the moment it appeared. The
+  usual answer is a `title_regex` exception, and it does not hold. Those windows
+  report the same `ax_role` and `ax_subrole` as the main window, carry no size
+  constraints to tell them apart, and are titled with whatever the user typed —
+  an Outlook draft is `<Subject> • <account>` against a main window of
+  `<Folder> • <account>`, two arbitrary words in the same position. Every
+  pattern that works is one the app can invalidate by existing, so the list
+  only ever grows.
+
+  The difference that does hold is ordinality: the window worth tiling is the
+  one the app opens for itself, and everything after it was spawned from that
+  one. `only_first_window = true` applies a rule only while the app has no
+  tiled window, leaving later windows to fall through to whatever comes next —
+  a float-by-default catch-all, in the configuration this is for.
+
+  It asks whether the app has a *tiled* window rather than whether one has been
+  seen, which is what makes it survive the cases a counter would not. Close
+  every window and reopen the app and it tiles again, because at that moment
+  nothing of the app's is tiled. A splash screen cannot take the slot either:
+  Outlook's is an `AXUnknown` window that fails admission, so it is never
+  tiled, and a rule that counts appearances would have lost the slot to it on
+  every launch.
+
+  It is app-wide rather than per-desktop, because a draft opened from a desktop
+  the main window is not on is still a draft; the cost is that an app cannot be
+  auto-tiled on two desktops at once, which is the trade the key exists to
+  make. It does not count toward rule specificity — it narrows *when* a rule
+  applies, not which window it describes — and a rule setting it with no
+  matcher is still ignored for having no matcher.
+
 - **A focus ring confirms that the float toggle landed.**
   `[settings.ui.tile_halo]`, off by default. Under a float-by-default config
   the float toggle is the only thing that pulls a window into the tree, and it
