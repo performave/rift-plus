@@ -1703,27 +1703,36 @@ fn startup_restore_reapplies_configured_workspace_names() {
     assert_eq!(names, ["A", "S"]);
 }
 
-/// A snapshot is only worth putting back if rift is coming straight back up.
-/// After a reboot or a long gap the windows have moved on without it, and
-/// reasserting a stale arrangement fights the user instead of helping.
+/// The age of the snapshot bounds putting the *windows* back, not the
+/// desktops. Where a window sat goes stale: after a reboot it has moved on,
+/// and reasserting it fights the user. Which layout a desktop is in does not —
+/// it is a setting the user chose — and letting it go with the rest is what
+/// left a stacked desktop coming back in the default layout after a reboot.
 #[test]
-fn startup_restore_ignores_a_snapshot_older_than_the_window() {
+fn startup_restore_past_the_window_keeps_the_layout_and_lets_the_windows_go() {
     let space = SpaceId::new(640);
     let size = CGSize::new(1200.0, 800.0);
+    let window = WindowId::new(4321, 1);
     let mut snapshot = test_engine();
     let mut snapshot_store = WindowStore::default();
     let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
+    let workspace = snapshot.active_workspace(space).unwrap();
+    assert!(snapshot.switch_workspace_layout_mode(
+        &snapshot_store,
+        space,
+        workspace,
+        LayoutMode::Stack,
+    ));
+    let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::WindowAdded(space, window));
     let path =
         std::env::temp_dir().join(format!("rift-startup-age-test-{}.ron", std::process::id()));
     snapshot.save(path.clone()).unwrap();
 
     let max_age = std::time::Duration::from_secs(120);
-    assert!(
-        LayoutEngine::load_for_startup_restore(path.clone(), Some(max_age))
-            .unwrap()
-            .is_some(),
-        "a snapshot written just now is worth restoring"
-    );
+    let fresh = LayoutEngine::load_for_startup_restore(path.clone(), Some(max_age))
+        .unwrap()
+        .expect("a snapshot written just now is worth restoring");
+    assert_eq!(fresh.active_layout_mode_at(space), LayoutMode::Stack);
 
     let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
     std::fs::File::options()
@@ -1733,15 +1742,18 @@ fn startup_restore_ignores_a_snapshot_older_than_the_window() {
         .set_times(std::fs::FileTimes::new().set_modified(stale))
         .unwrap();
 
-    assert!(
-        LayoutEngine::load_for_startup_restore(path.clone(), Some(max_age))
-            .unwrap()
-            .is_none(),
-        "a snapshot older than the window must be left alone"
+    let restored = LayoutEngine::load_for_startup_restore(path.clone(), Some(max_age))
+        .unwrap()
+        .expect("a snapshot past the window still describes the desktops");
+    assert_eq!(
+        restored.active_layout_mode_at(space),
+        LayoutMode::Stack,
+        "the desktop's layout is a setting, not a snapshot of a moment"
     );
-    assert!(
-        LayoutEngine::load_for_startup_restore(path.clone(), None).unwrap().is_some(),
-        "`--restore` asks for it by hand and ignores the age"
+    assert_eq!(
+        restored.persistence.pending_len(),
+        0,
+        "nothing of where the windows were is put back"
     );
     let _ = std::fs::remove_file(path);
 }

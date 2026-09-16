@@ -21,36 +21,59 @@ impl LayoutEngine {
     /// Load the master snapshot used for process startup and report its persisted coverage.
     /// Validation and menu previews continue to use `load` without emitting restore logs.
     ///
-    /// `max_age` bounds how stale a snapshot may be and still be worth putting
-    /// back; `None` accepts any. Returns `Ok(None)` for a snapshot that is
-    /// readable but too old, which is not an error — it is the ordinary case of
-    /// starting fresh after the machine has been doing something else.
+    /// `max_age` bounds how stale the *window positions* in a snapshot may be
+    /// and still be worth putting back; `None` accepts any. A snapshot past it
+    /// is still loaded for the desktops it describes — their layouts, their
+    /// workspaces — and only the windows are let go; see the body for why the
+    /// two have different shelf lives.
     pub fn load_for_startup_restore(
         path: PathBuf,
         max_age: Option<Duration>,
     ) -> anyhow::Result<Option<Self>> {
-        if let (Some(max_age), Some(age)) = (max_age, Self::snapshot_age(&path))
-            && age > max_age
-        {
-            tracing::info!(
-                path = %path.display(),
-                age_secs = age.as_secs(),
-                max_age_secs = max_age.as_secs(),
-                "Saved layout is older than the restore window; starting fresh"
-            );
-            return Ok(None);
-        }
+        let stale = match (max_age, Self::snapshot_age(&path)) {
+            (Some(max_age), Some(age)) if age > max_age => {
+                tracing::info!(
+                    path = %path.display(),
+                    age_secs = age.as_secs(),
+                    max_age_secs = max_age.as_secs(),
+                    "Saved layout is older than the restore window; keeping the desktops' layouts and dropping the saved window positions"
+                );
+                true
+            }
+            _ => false,
+        };
         let (mut engine, schema_version) = Self::load_with_schema_version(&path)?;
         engine.startup_restore_pending = true;
-        let unavailable_windows = engine.discard_unmatchable_startup_candidates(
-            |window, id| {
-                crate::sys::window_server::get_window(
-                    crate::sys::window_server::WindowServerId::new(id),
-                )
-                .is_some_and(|info| info.pid == window.pid)
-            },
-            crate::sys::app::is_bundle_running,
-        );
+        let unavailable_windows = if stale {
+            // Only where each window was goes stale. After a reboot or an
+            // afternoon away the windows have moved on, and putting them back
+            // where they were would fight the user — which is what the restore
+            // window is for. But which layout a desktop is in, and what its
+            // workspaces are, is a setting the user chose, not a snapshot of a
+            // moment: as true after a reboot as before one. Dropping the whole
+            // file for the sake of the half that went stale is what left a
+            // stacked desktop coming back bsp. So keep the desktops and let go
+            // of every window: each comes back empty, in the layout it had, and
+            // whatever the user opens next tiles into it.
+            let candidates: HashSet<WindowId> = engine
+                .persistence
+                .windows
+                .keys()
+                .copied()
+                .chain(engine.floating_positions.persisted_windows())
+                .collect();
+            engine.discard_candidates(candidates.into_iter().collect())
+        } else {
+            engine.discard_unmatchable_startup_candidates(
+                |window, id| {
+                    crate::sys::window_server::get_window(
+                        crate::sys::window_server::WindowServerId::new(id),
+                    )
+                    .is_some_and(|info| info.pid == window.pid)
+                },
+                crate::sys::app::is_bundle_running,
+            )
+        };
         tracing::info!(
             path = %path.display(),
             schema_version,

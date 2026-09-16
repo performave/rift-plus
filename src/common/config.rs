@@ -725,13 +725,17 @@ fn default_autosave_secs() -> u64 { 60 }
 /// the way in. Under a float-by-default config that means re-tiling everything
 /// after each restart.
 ///
-/// The restore is deliberately not unconditional. A snapshot is only worth
-/// putting back if rift is coming straight back up — a crash respawn, a
-/// `brew services restart`, a dev rebuild. After a reboot or an afternoon away
-/// the windows have moved on without it, and reasserting a stale arrangement
-/// would fight the user rather than help. `max_age_secs` is how long a snapshot
-/// stays worth restoring; `autosave_secs` keeps the file's timestamp tracking
-/// the last moment rift was known to be alive, so the age measures downtime.
+/// Putting the *windows* back is deliberately not unconditional. Where each
+/// window sat is only worth reasserting if rift is coming straight back up — a
+/// crash respawn, a `brew services restart`, a dev rebuild. After a reboot or
+/// an afternoon away the windows have moved on without it, and putting them
+/// back would fight the user rather than help. `max_age_secs` is how long that
+/// stays worth doing; `autosave_secs` keeps the file's timestamp tracking the
+/// last moment rift was known to be alive, so the age measures downtime.
+///
+/// The desktops themselves have no such shelf life. Which layout a desktop is
+/// in, and what workspaces it has, is a setting the user chose; it is as true
+/// after a reboot as before one, so it is restored however old the snapshot is.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutRestoreSettings {
@@ -739,8 +743,11 @@ pub struct LayoutRestoreSettings {
     /// `--restore` flag forces this on for one run regardless.
     #[serde(default = "no")]
     pub on_start: bool,
-    /// How old the snapshot may be and still be restored, in seconds. Measured
-    /// from when the file was last written. 0 restores whatever is there.
+    /// How old the snapshot's *window positions* may be and still be put back,
+    /// in seconds. Measured from when the file was last written. 0 puts back
+    /// whatever is there. Past it the desktops still come back in the layouts
+    /// they were in — that is a setting, not a snapshot of a moment — and only
+    /// the windows are left where they now are.
     #[serde(default = "default_restore_max_age_secs")]
     pub max_age_secs: u64,
     /// Save the layout every this many seconds. 0 disables it, leaving only

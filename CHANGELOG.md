@@ -112,6 +112,18 @@ Entries describe this fork's changes relative to
   of the window server itself, which keeps the time it last moved windows for
   a display change, rather than inferred from rift's own event handling.
 
+- **A desktop that was stacked comes back stacked after a reboot.** The saved
+  layout is only restored if it is fresh, on the reasoning that after a reboot
+  or an afternoon away the windows have moved on and putting them back would
+  fight the user. That is true of the windows and of nothing else: which
+  layout a desktop is in, and what workspaces it has, is a setting the user
+  chose, as true after a reboot as before one. Restoring nothing at all when
+  the snapshot aged out meant every reboot silently reset every desktop to the
+  default layout — a 20-minute gap was enough, and the two-minute window makes
+  one certain. The age now bounds putting the *windows* back; past it the
+  desktops still come back in the layouts they were in, empty, and whatever is
+  opened next tiles into them.
+
 - **The scripting addition works on macOS 27.** The payload's version gate knew
   Tahoe and nothing after it, so on 27 it returned before a single symbol was
   looked up, and the handshake reported dock.spaces, the desktop picture
