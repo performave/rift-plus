@@ -255,6 +255,12 @@ const DOCK_ORIENTATION_LEFT: i32 = 3;
 const DOCK_ORIENTATION_RIGHT: i32 = 4;
 
 fn menu_bar_hidden() -> bool {
+    // Inert under test, for the same reason: the suite must not depend on
+    // whether the developer auto-hides their menu bar, nor open a window
+    // server connection to find out.
+    #[cfg(test)]
+    return false;
+    #[allow(unreachable_code)]
     let mut status = 0;
     unsafe { SLSGetMenuBarAutohideEnabled(*G_CONNECTION, &mut status) };
     status != 0
@@ -289,6 +295,9 @@ fn dock_orientation() -> i32 {
 
 fn dock_rect() -> CGRect {
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
+    #[cfg(test)]
+    return rect;
+    #[allow(unreachable_code)]
     let mut reason = 0;
     unsafe { SLSGetDockRectWithReason(*G_CONNECTION, &mut rect, &mut reason) };
     rect
@@ -296,12 +305,18 @@ fn dock_rect() -> CGRect {
 
 fn dock_rect_with_reason() -> (CGRect, i32) {
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
+    #[cfg(test)]
+    return (rect, 0);
+    #[allow(unreachable_code)]
     let mut reason = 0;
     unsafe { SLSGetDockRectWithReason(*G_CONNECTION, &mut rect, &mut reason) };
     (rect, reason)
 }
 
 fn dock_display_id() -> Option<u32> {
+    #[cfg(test)]
+    return None;
+    #[allow(unreachable_code)]
     unsafe {
         let dock = dock_rect();
         let uuid_ref = CGSCopyBestManagedDisplayForRect(*G_CONNECTION, dock);
@@ -760,10 +775,17 @@ pub fn set_managed_display_spaces_override(spaces: Option<Vec<ManagedDisplaySpac
 /// Every display's spaces, in the order the window server lists displays —
 /// the order Mission Control numbers spaces in, across displays.
 pub fn managed_display_spaces_in_order() -> Vec<ManagedDisplaySpaces> {
+    // Under test the window server is never asked. A test that invents
+    // displays and desktops and leaves this to the live answer gets the
+    // developer's own desktops mixed in with its own, and an invented space
+    // id that collides with a real one then decides the test: the suite
+    // passed where nothing owned the id and failed where something did. A
+    // test that needs an answer here states it with the override.
     #[cfg(test)]
-    if let Some(spaces) = TEST_MANAGED_DISPLAY_SPACES.with(|cell| cell.borrow().clone()) {
-        return spaces;
-    }
+    return TEST_MANAGED_DISPLAY_SPACES
+        .with(|cell| cell.borrow().clone())
+        .unwrap_or_default();
+    #[allow(unreachable_code)]
     let mut out: Vec<ManagedDisplaySpaces> = Vec::new();
     unsafe {
         let raw = CGSCopyManagedDisplaySpaces(SLSMainConnectionID());

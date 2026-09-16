@@ -22,6 +22,7 @@ pub const AX_APPLICATION_DOCK_ITEM_SUBROLE: &str = "AXApplicationDockItem";
 /// How long the Dock gets to answer a tile question. This is asked on the
 /// reactor thread, where a wedged Dock must not take the window manager down
 /// with it.
+#[cfg(not(test))]
 const DOCK_QUERY_TIMEOUT: f32 = 0.1;
 
 #[cfg(test)]
@@ -86,15 +87,11 @@ impl fmt::Display for Error {
 impl StdError for Error {}
 
 impl From<AXError> for Error {
-    fn from(value: AXError) -> Self {
-        Self::Ax(value)
-    }
+    fn from(value: AXError) -> Self { Self::Ax(value) }
 }
 
 impl AXUIElement {
-    fn new(inner: CFRetained<RawAXUIElement>) -> Self {
-        Self { inner }
-    }
+    fn new(inner: CFRetained<RawAXUIElement>) -> Self { Self { inner } }
 
     #[inline]
     pub fn application(pid: pid_t) -> Self {
@@ -142,20 +139,14 @@ impl AXUIElement {
     }
 
     #[inline]
-    pub fn retained(&self) -> CFRetained<RawAXUIElement> {
-        self.inner.clone()
-    }
+    pub fn retained(&self) -> CFRetained<RawAXUIElement> { self.inner.clone() }
 
     #[allow(non_snake_case)]
     #[inline]
-    pub fn as_concrete_TypeRef(&self) -> &RawAXUIElement {
-        self.deref()
-    }
+    pub fn as_concrete_TypeRef(&self) -> &RawAXUIElement { self.deref() }
 
     #[inline]
-    pub fn raw_ptr(&self) -> NonNull<RawAXUIElement> {
-        CFRetained::as_ptr(&self.inner)
-    }
+    pub fn raw_ptr(&self) -> NonNull<RawAXUIElement> { CFRetained::as_ptr(&self.inner) }
 
     #[inline]
     pub unsafe fn from_get_rule(ptr: *const RawAXUIElement) -> Self {
@@ -257,13 +248,9 @@ impl AXUIElement {
         Ok(string.to_string())
     }
 
-    pub fn minimized(&self) -> Result<bool> {
-        self.bool_attribute("AXMinimized")
-    }
+    pub fn minimized(&self) -> Result<bool> { self.bool_attribute("AXMinimized") }
 
-    pub fn fullscreen(&self) -> Result<bool> {
-        self.bool_attribute("AXFullscreen")
-    }
+    pub fn fullscreen(&self) -> Result<bool> { self.bool_attribute("AXFullscreen") }
 
     pub fn title(&self) -> Result<String> {
         let value = self.copy_required_attribute("AXTitle")?;
@@ -271,9 +258,7 @@ impl AXUIElement {
         Ok(string.to_string())
     }
 
-    pub fn frontmost(&self) -> Result<bool> {
-        self.bool_attribute("AXFrontmost")
-    }
+    pub fn frontmost(&self) -> Result<bool> { self.bool_attribute("AXFrontmost") }
 
     pub fn main_window(&self) -> Result<AXUIElement> {
         let value = self.copy_required_attribute("AXMainWindow")?;
@@ -290,9 +275,7 @@ impl AXUIElement {
     /// Whether this element is the "main" window (AXMain).
     ///
     /// This is primarily used by developer tooling and may not be supported by all elements.
-    pub fn main(&self) -> Result<bool> {
-        self.bool_attribute("AXMain")
-    }
+    pub fn main(&self) -> Result<bool> { self.bool_attribute("AXMain") }
 
     pub fn windows(&self) -> Result<Vec<AXUIElement>> {
         let Some(value) = self.copy_attribute("AXWindows")? else {
@@ -357,13 +340,9 @@ impl AXUIElement {
         self.set_attribute_value(attr.as_ref(), cf_bool.as_ref())
     }
 
-    pub fn can_move(&self) -> Result<bool> {
-        self.is_settable("AXPosition")
-    }
+    pub fn can_move(&self) -> Result<bool> { self.is_settable("AXPosition") }
 
-    pub fn can_resize(&self) -> Result<bool> {
-        self.is_settable("AXSize")
-    }
+    pub fn can_resize(&self) -> Result<bool> { self.is_settable("AXSize") }
 
     /// How long this element's application gets to answer before we give up
     /// on it.
@@ -408,9 +387,7 @@ impl AXUIElement {
 impl Deref for AXUIElement {
     type Target = RawAXUIElement;
 
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+    fn deref(&self) -> &Self::Target { &self.inner }
 }
 
 impl PartialEq for AXUIElement {
@@ -434,9 +411,7 @@ impl Hash for AXUIElement {
 }
 
 impl fmt::Debug for AXUIElement {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.deref().fmt(f)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.deref().fmt(f) }
 }
 
 fn rect_from_axvalue(value: &AXValue) -> Result<CGRect> {
