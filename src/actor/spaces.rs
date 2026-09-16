@@ -29,9 +29,9 @@ use crate::actor;
 use crate::actor::{reactor, wm_controller};
 use crate::common::collections::{HashMap, HashSet};
 use crate::sys::dispatch::DispatchExt;
-#[cfg(not(test))]
-use crate::sys::screen::managed_display_space_ids;
-use crate::sys::screen::{CoordinateConverter, ScreenCache, ScreenInfo, SpaceId};
+use crate::sys::screen::{
+    CoordinateConverter, ScreenCache, ScreenInfo, SpaceId, managed_display_space_ids_opt,
+};
 use crate::sys::skylight::DisplayReconfigFlags;
 use crate::sys::window_server::WindowServerId;
 use crate::sys::{display_churn, window_server};
@@ -189,11 +189,6 @@ pub struct AuthorityState {
     pre_churn_visible_window_spaces: HashMap<WindowServerId, SpaceId>,
     pending_topology_window_delta: Option<TopologyWindowDelta>,
     timers_enabled: bool,
-    /// Stands in for `managed_display_space_ids`, which tests have no way to
-    /// answer. Without it a test display owns exactly the desktop it is
-    /// showing, and a replaced desktop is indistinguishable from a switched one.
-    #[cfg(test)]
-    test_display_space_ids: Option<HashMap<String, Vec<SpaceId>>>,
 }
 
 impl Default for AuthorityState {
@@ -224,8 +219,6 @@ impl Default for AuthorityState {
             pre_churn_visible_window_spaces: HashMap::default(),
             pending_topology_window_delta: None,
             timers_enabled: true,
-            #[cfg(test)]
-            test_display_space_ids: None,
         }
     }
 }
@@ -442,10 +435,7 @@ impl SpacesActor {
     }
 
     fn handle_active_display_changed(&mut self) {
-        #[cfg(not(test))]
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
-        #[cfg(test)]
-        let active_display_uuid: Option<String> = None;
 
         self.handle_active_display_changed_for(active_display_uuid.as_deref());
     }
@@ -521,20 +511,13 @@ impl SpacesActor {
     }
 
     fn collect_state(&mut self) -> Option<(Vec<ScreenInfo>, CoordinateConverter)> {
-        self.state
-            .screen_cache
-            .as_mut()
-            .and_then(|screen_cache| screen_cache.refresh())
-            .or_else(|| {
-                #[cfg(test)]
-                {
-                    Some((self.state.screens.clone(), self.state.last_converter))
-                }
-                #[cfg(not(test))]
-                {
-                    None
-                }
-            })
+        match self.state.screen_cache.as_mut() {
+            Some(screen_cache) => screen_cache.refresh(),
+            // An actor built without a cache has no window server to ask, so
+            // the screens it was last handed are the whole answer. Only the
+            // test constructor leaves it unset.
+            None => Some((self.state.screens.clone(), self.state.last_converter)),
+        }
     }
 
     fn forward_screen_parameters(
@@ -640,21 +623,16 @@ impl SpacesActor {
                 .filter_map(|screen| screen.space)
                 .any(|space| !unique_spaces.insert(space))
         };
-        #[cfg(test)]
-        {
-            let mut display_space_ids: HashMap<String, Vec<SpaceId>> = HashMap::default();
+        // Without a list, a display owns exactly the desktop it is showing.
+        self.state.display_space_ids = managed_display_space_ids_opt().unwrap_or_else(|| {
+            let mut derived: HashMap<String, Vec<SpaceId>> = HashMap::default();
             for screen in &screens {
                 if let Some(space) = screen.space {
-                    display_space_ids.entry(screen.display_uuid.clone()).or_default().push(space);
+                    derived.entry(screen.display_uuid.clone()).or_default().push(space);
                 }
             }
-            self.state.display_space_ids =
-                self.state.test_display_space_ids.clone().unwrap_or(display_space_ids);
-        }
-        #[cfg(not(test))]
-        {
-            self.state.display_space_ids = managed_display_space_ids();
-        }
+            derived
+        });
 
         let snapshot_is_coherent =
             !has_duplicate_spaces && screens.iter().all(|screen| screen.space.is_some());
@@ -662,10 +640,7 @@ impl SpacesActor {
         let space_remaps =
             self.compute_space_remaps(&screens, allow_space_remap, snapshot_is_coherent);
         let menu_bar_space = self.resolve_menu_bar_space(&screens);
-        #[cfg(not(test))]
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
-        #[cfg(test)]
-        let active_display_uuid: Option<String> = None;
         let command_space = self.resolve_command_space(&screens, active_display_uuid.as_deref());
         self.state.active_display_uuid = active_display_uuid
             .filter(|uuid| screens.iter().any(|screen| screen.display_uuid == *uuid))
@@ -889,23 +864,11 @@ impl SpacesActor {
         screens: &[ScreenInfo],
         active_display_uuid: Option<&str>,
     ) -> Option<SpaceId> {
-        #[cfg(test)]
-        {
-            let _ = active_display_uuid;
-            Self::resolve_active_display_space(screens, None, None)
-                .or_else(|| self.state.screens.iter().find_map(|screen| screen.space))
-        }
-        #[cfg(not(test))]
-        {
-            let active_space = crate::sys::screen::get_active_space_number();
-            if let Some(space) =
-                Self::resolve_active_display_space(screens, active_display_uuid, active_space)
-            {
-                return Some(space);
-            }
-
-            screens.iter().find_map(|screen| screen.space)
-        }
+        let active_space = crate::sys::screen::get_active_space_number();
+        Self::resolve_active_display_space(screens, active_display_uuid, active_space)
+            // A snapshot with no desktop on any screen falls back to the last
+            // one that had them, rather than reporting no active desktop at all.
+            .or_else(|| self.state.screens.iter().find_map(|screen| screen.space))
     }
 
     fn resolve_active_display_space(
@@ -928,47 +891,23 @@ impl SpacesActor {
     }
 
     fn resolve_menu_bar_space(&self, screens: &[ScreenInfo]) -> Option<SpaceId> {
-        #[cfg(test)]
+        if let Some(active_space) = crate::sys::screen::get_active_space_number()
+            && screens.iter().any(|screen| screen.space == Some(active_space))
         {
-            screens
-                .iter()
-                .find_map(|screen| screen.space)
-                .or_else(|| self.state.screens.iter().find_map(|screen| screen.space))
+            return Some(active_space);
         }
-        #[cfg(not(test))]
-        {
-            if let Some(active_space) = crate::sys::screen::get_active_space_number()
-                && screens.iter().any(|screen| screen.space == Some(active_space))
-            {
-                return Some(active_space);
-            }
 
-            screens.iter().find_map(|screen| screen.space)
-        }
+        screens
+            .iter()
+            .find_map(|screen| screen.space)
+            .or_else(|| self.state.screens.iter().find_map(|screen| screen.space))
     }
 
     fn is_fullscreen_space(space: SpaceId) -> bool {
-        #[cfg(test)]
-        {
-            space.get() >= 0x400000000
-        }
-        #[cfg(not(test))]
-        {
-            window_server::space_is_fullscreen(space.get())
-        }
+        window_server::space_is_fullscreen(space.get())
     }
 
-    fn is_user_space(space: SpaceId) -> bool {
-        #[cfg(test)]
-        {
-            let _ = space;
-            true
-        }
-        #[cfg(not(test))]
-        {
-            window_server::space_is_user(space.get())
-        }
-    }
+    fn is_user_space(space: SpaceId) -> bool { window_server::space_is_user(space.get()) }
 
     fn classify_space(&self, space: SpaceId) -> Option<reactor::SpaceEventKind> {
         if Self::is_fullscreen_space(space) {

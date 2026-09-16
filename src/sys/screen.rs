@@ -127,13 +127,7 @@ impl<S: System> ScreenCache<S> {
             let spaces: Vec<Option<SpaceId>> = self
                 .uuids
                 .iter()
-                .map(|screen| unsafe {
-                    CGSManagedDisplayGetCurrentSpace(
-                        SLSMainConnectionID(),
-                        CFRetained::<objc2_core_foundation::CFString>::as_ptr(screen).as_ptr(),
-                    )
-                })
-                .map(|id| if id == 0 { None } else { Some(SpaceId(id)) })
+                .map(|screen| current_space_for_display_uuid(&screen.to_string()))
                 .collect();
 
             if let Some(state) = self.state.clone() {
@@ -218,13 +212,7 @@ impl<S: System> ScreenCache<S> {
 
         let spaces: Vec<Option<SpaceId>> = uuids
             .iter()
-            .map(|screen| unsafe {
-                CGSManagedDisplayGetCurrentSpace(
-                    SLSMainConnectionID(),
-                    CFRetained::<objc2_core_foundation::CFString>::as_ptr(screen).as_ptr(),
-                )
-            })
-            .map(|id| if id == 0 { None } else { Some(SpaceId(id)) })
+            .map(|screen| current_space_for_display_uuid(&screen.to_string()))
             .collect();
 
         self.uuids = uuids;
@@ -599,7 +587,27 @@ pub fn get_active_space_number() -> Option<SpaceId> {
     active_menu_bar_display_uuid().and_then(|uuid| current_space_for_display_uuid(&uuid))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_ACTIVE_MENU_BAR_DISPLAY: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Which display carries the menu bar under test, instead of asking the
+/// window server about the machine the tests run on.
+#[cfg(test)]
+pub fn set_active_menu_bar_display_override(display_uuid: Option<&str>) {
+    TEST_ACTIVE_MENU_BAR_DISPLAY.with(|cell| *cell.borrow_mut() = display_uuid.map(str::to_string));
+}
+
 pub fn active_menu_bar_display_uuid() -> Option<String> {
+    // Under test the window server is never asked, for the reason
+    // `managed_display_spaces_in_order` gives: the live answer names one of
+    // the developer's own displays, so a test that invented its displays is
+    // told the menu bar lives on a display it never created.
+    #[cfg(test)]
+    return TEST_ACTIVE_MENU_BAR_DISPLAY.with(|cell| cell.borrow().clone());
+    #[allow(unreachable_code)]
     Some(
         unsafe {
             CFRetained::<CFString>::from_raw(NonNull::new(SLSCopyActiveMenuBarDisplayIdentifier(
@@ -727,6 +735,22 @@ pub fn order_visible_spaces_by_position(
 pub struct ManagedDisplaySpaces {
     pub display_uuid: String,
     pub spaces: Vec<SpaceId>,
+}
+
+/// The window server's list of every display's desktops, or `None` under test
+/// when no test has stated one. A test that states an *empty* list is saying
+/// the window server has not answered for those displays yet, which is not the
+/// same as a test that never mentioned them at all.
+pub fn managed_display_space_ids_opt() -> Option<HashMap<String, Vec<SpaceId>>> {
+    #[cfg(test)]
+    return TEST_MANAGED_DISPLAY_SPACES.with(|cell| cell.borrow().clone()).map(|displays| {
+        displays
+            .into_iter()
+            .map(|display| (display.display_uuid, display.spaces))
+            .collect()
+    });
+    #[allow(unreachable_code)]
+    Some(managed_display_space_ids())
 }
 
 pub fn managed_display_space_ids() -> HashMap<String, Vec<SpaceId>> {

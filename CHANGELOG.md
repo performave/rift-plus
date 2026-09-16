@@ -110,6 +110,15 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A screen snapshot with no desktop on it no longer reports no active
+  desktop.** Resolving the command space and the menu-bar space both ended at
+  the desktops on the incoming screens, so a snapshot that arrived mid-churn
+  with none of them carrying a desktop yet answered "no active desktop" rather
+  than holding the last one that had them. Both now fall back to the previous
+  screens, which is what the test path had been doing all along — these two
+  resolvers ran different logic under `cfg(test)` than in a release build, so
+  the behaviour that shipped was the one nothing covered.
+
 - **A modifier-drag resize now moves the boundary, not just the window.**
   Alt-dragging a tile's edge mostly did nothing, and when it did take, it left
   a gap between the two windows. Every frame rift writes during such a drag is

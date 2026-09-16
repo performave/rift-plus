@@ -100,6 +100,34 @@ fn build_actor() -> (
     (actor, wm_rx, reactor_rx)
 }
 
+/// The menu-bar display is stated by the test rather than read off the
+/// machine the suite runs on, so `Event::ActiveDisplayChanged` can be driven
+/// through its own handler instead of reaching past it to
+/// `handle_active_display_changed_for`.
+#[test]
+fn active_display_changed_reads_the_stated_menu_bar_display() {
+    let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "display-left", 0.0, 1000.0, Some(SpaceId::new(1))),
+            make_screen_with(2, "display-right", 1000.0, 1000.0, Some(SpaceId::new(2))),
+        ],
+        CoordinateConverter::default(),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    crate::sys::screen::set_active_menu_bar_display_override(Some("display-left"));
+    actor.handle_event(Event::ActiveDisplayChanged);
+    assert_no_wm_event(&mut wm_rx);
+    assert_no_reactor_event(&mut reactor_rx);
+
+    crate::sys::screen::set_active_menu_bar_display_override(Some("display-right"));
+    actor.handle_event(Event::ActiveDisplayChanged);
+    assert_eq!(actor.state.active_display_uuid.as_deref(), Some("display-right"));
+
+    crate::sys::screen::set_active_menu_bar_display_override(None);
+}
+
 #[test]
 fn active_display_changed_skips_refresh_when_display_is_already_active() {
     let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
@@ -797,12 +825,18 @@ fn wake_transient_cannot_steal_another_displays_space_history() {
     }
 }
 
-fn seed_display_desktops(actor: &mut SpacesActor, desktops: &[(&str, &[SpaceId])]) {
-    let mut listed: HashMap<String, Vec<SpaceId>> = HashMap::default();
-    for (display_uuid, spaces) in desktops {
-        listed.insert((*display_uuid).to_string(), spaces.to_vec());
-    }
-    actor.state.test_display_space_ids = Some(listed);
+fn seed_display_desktops(desktops: &[(&str, &[SpaceId])]) {
+    crate::sys::screen::set_managed_display_spaces_override(Some(
+        desktops
+            .iter()
+            .map(
+                |(display_uuid, spaces)| crate::sys::screen::ManagedDisplaySpaces {
+                    display_uuid: (*display_uuid).to_string(),
+                    spaces: spaces.to_vec(),
+                },
+            )
+            .collect(),
+    ));
 }
 
 #[test]
@@ -820,7 +854,7 @@ fn desktop_replaced_during_sleep_is_remapped_without_a_topology_change() {
         ]
     };
 
-    seed_display_desktops(&mut actor, &[
+    seed_display_desktops(&[
         ("builtin", &[builtin_before_sleep, builtin_other]),
         ("external", &[
             SpaceId::new(215),
@@ -836,7 +870,7 @@ fn desktop_replaced_during_sleep_is_remapped_without_a_topology_change() {
 
     // Both displays stayed attached across the sleep; macOS simply destroyed
     // the desktop the built-in was showing and put a new one in its place.
-    seed_display_desktops(&mut actor, &[
+    seed_display_desktops(&[
         ("builtin", &[builtin_after_wake, builtin_other]),
         ("external", &[
             SpaceId::new(215),
@@ -869,7 +903,7 @@ fn switching_to_another_listed_desktop_is_not_a_replacement() {
     let shown_first = SpaceId::new(155);
     let shown_next = SpaceId::new(5);
 
-    seed_display_desktops(&mut actor, &[("builtin", &[shown_first, shown_next])]);
+    seed_display_desktops(&[("builtin", &[shown_first, shown_next])]);
     actor.handle_event(Event::ScreenParametersChanged(
         vec![make_screen_with(
             1,
@@ -907,7 +941,7 @@ fn a_snapshot_that_does_not_list_the_display_cannot_claim_a_replacement() {
     let shown_first = SpaceId::new(155);
     let shown_next = SpaceId::new(257);
 
-    seed_display_desktops(&mut actor, &[("builtin", &[shown_first, SpaceId::new(5)])]);
+    seed_display_desktops(&[("builtin", &[shown_first, SpaceId::new(5)])]);
     actor.handle_event(Event::ScreenParametersChanged(
         vec![make_screen_with(
             1,
@@ -922,7 +956,7 @@ fn a_snapshot_that_does_not_list_the_display_cannot_claim_a_replacement() {
 
     // WindowServer has not answered for the display yet. The old desktop being
     // absent from the list says nothing while the list itself is missing.
-    seed_display_desktops(&mut actor, &[]);
+    seed_display_desktops(&[]);
     actor.handle_event(Event::ScreenParametersChanged(
         vec![make_screen_with(
             1,

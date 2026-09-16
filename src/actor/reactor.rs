@@ -1021,17 +1021,7 @@ impl Reactor {
             let inactive_target = self
                 .resolve_native_space(wsid, None)
                 .filter(|current_space| *current_space != space)
-                .filter(|current_space| {
-                    #[cfg(test)]
-                    {
-                        let _ = current_space;
-                        true
-                    }
-                    #[cfg(not(test))]
-                    {
-                        window_server::space_is_user(current_space.get())
-                    }
-                })
+                .filter(|current_space| window_server::space_is_user(current_space.get()))
                 .filter(|current_space| !self.is_space_active(*current_space));
             if let Some(current_space) = inactive_target {
                 self.state.windows.set_window_server_space(wsid, Some(current_space));

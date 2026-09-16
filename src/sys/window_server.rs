@@ -1228,7 +1228,13 @@ pub fn space_is_user(sid: u64) -> bool {
 }
 pub fn space_is_fullscreen(sid: u64) -> bool {
     trace::observe("space_is_fullscreen", sid, || {
-        live_answer(|| unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 4 }, || false)
+        // Inert answer: the suite names a fullscreen space by setting the bit
+        // the window server itself sets, so a test builds one the same way it
+        // builds an ordinary desktop and nothing has to branch on `cfg(test)`.
+        live_answer(
+            || unsafe { SLSSpaceGetType(*G_CONNECTION, sid) == 4 },
+            || sid >= 0x4_0000_0000,
+        )
     })
 }
 
