@@ -77,6 +77,24 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Reloading the config no longer throws away the layout mode you switched
+  to.** Hot reload re-applies `virtual_workspaces.workspace_rules` to
+  workspaces that already exist, so that editing a rule takes effect without a
+  restart. But the mode it compared against fell through to the global
+  `layout.mode` whenever no rule named the workspace, and a fallback is
+  indistinguishable from an instruction once it reaches the comparison: every
+  reload put every unruled workspace back to the default. `set_workspace_layout`
+  and `toggle_workspace_layout` are runtime commands, so a desktop switched to
+  `stack` by hand reverted to `bsp` the next time anything reloaded the config
+  — including a reload prompted by an edit to an unrelated key, and including
+  `Reload Config` in the menu bar.
+
+  Only an explicit rule re-applies now. A workspace no rule names keeps the
+  mode it has; `layout.mode` goes back to being what a workspace is *born*
+  with, which is all it ever claimed to be. Configs that do set
+  `workspace_rules` are unaffected, and the existing test for that path still
+  covers it.
+
 - **`preserve_focus_per_workspace` does something.** The key was declared,
   documented in `rift.default.toml` and defaulted to `true`, but nothing in the
   codebase ever read it: arriving on a workspace always returned focus to the
