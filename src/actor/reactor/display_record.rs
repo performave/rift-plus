@@ -4,8 +4,12 @@
 //!
 //! The window server reshuffles desktops and windows on its own at both
 //! ends of an unplug, and not in one consistent way: on unplug it destroys
-//! the surviving display's first desktop and merges its windows into the
-//! first desktop of the ones it carries over; on replug it mints a fresh
+//! one desktop and merges its windows into the first desktop of whatever
+//! survives — the *surviving* display's first, when it carries a departing
+//! display's desktops over; the *departing* display's own, when that display
+//! is the one being shown, as at a lid close, while its other desktops
+//! migrate with their ids intact. Either way a desktop's worth of windows
+//! ends up on top of a layout that is not theirs. On replug it mints a fresh
 //! desktop for the survivor, sometimes puts the merged windows back on it
 //! itself, sends every desktop it filed behind the visitors along with them,
 //! and can dump a kept desktop's windows elsewhere while handing that desktop
@@ -17,9 +21,11 @@
 //! tree — and everything after that is a diff against it. Twice:
 //!
 //! 1. Right after departure, once the window server is done, the survivor
-//!    is settled: the windows of the desktop macOS destroyed get a desktop
-//!    of their own, made for the purpose, with their tree; the survivor's
-//!    own desktops go first; and the survivor is switched back to the
+//!    is settled: the windows of the desktop macOS destroyed — whichever
+//!    display it belonged to — get a desktop of their own, made for the
+//!    purpose, with their tree, and standing where the destroyed one stood
+//!    in its own display's order; the survivor's own desktops go first, the
+//!    visitors behind them; and the survivor is switched back to the
 //!    desktop it was showing. The record notes the desktop it made as its
 //!    own, so nothing later mistakes it for the user's. A later departure
 //!    while the record stands — another display that came and went — costs
@@ -70,7 +76,6 @@ const CHURN_SETTLE: Duration = Duration::from_secs(10);
 const RETIRE_GIVE_UP: Duration = Duration::from_secs(30);
 
 pub(super) struct DisplayRecord {
-    taken: Instant,
     /// Every desktop's tree at departure, keyed by the desktop ids of then.
     layout: String,
     /// Every desktop's windows at departure, in layout order: what tells
@@ -192,10 +197,7 @@ impl DisplayRecord {
     }
 
     #[cfg(test)]
-    pub(super) fn backdate(&mut self, by: Duration) {
-        self.taken -= by;
-        self.churn_seen -= by;
-    }
+    pub(super) fn backdate(&mut self, by: Duration) { self.churn_seen -= by; }
 
     /// A desktop the window server listed after the record was taken and
     /// lists no longer, with the displays as they were: the user destroyed
@@ -396,7 +398,6 @@ impl Reactor {
         crate::sys::trace::act("record", &(windows.len(), displays.len()));
         let now = crate::sys::trace::now();
         self.display_archive.record = Some(DisplayRecord {
-            taken: now,
             layout,
             members,
             modes,
@@ -445,7 +446,17 @@ impl Reactor {
         };
         let addition = scripting_addition::is_available();
         let mut now = self.display_space_ids_now();
-        let listed_all: HashSet<SpaceId> = now.values().flatten().copied().collect();
+        // Only what a display still on screen lists. `now` starts from the
+        // reactor's own display map, which is updated after this runs, so it
+        // still carries the departing display's desktops under its name —
+        // and counting those as listed is what hid the one macOS destroyed
+        // on the way out, the desktop whose windows are now somebody else's
+        // problem.
+        let listed_all: HashSet<SpaceId> = now
+            .iter()
+            .filter(|(uuid, _)| on_screen.contains(&uuid.as_str()))
+            .flat_map(|(_, spaces)| spaces.iter().copied())
+            .collect();
         let on_survivor: Vec<SpaceId> = now.get(&survivor.uuid).cloned().unwrap_or_default();
         // The survivor's own desktops, by the id each has now: a destroyed
         // one is represented by the desktop made for it.
@@ -454,8 +465,30 @@ impl Reactor {
             .iter()
             .map(|then| (record.stopgap_for(*then).unwrap_or(*then), *then))
             .collect();
-        let destroyed: Vec<(SpaceId, SpaceId)> =
-            own_now.iter().copied().filter(|(now, _)| !listed_all.contains(now)).collect();
+        // The desktops of the displays that are away, the same way. macOS
+        // does not carry over the desktop a departing display was showing:
+        // it destroys that one and merges its windows into whatever the
+        // survivor is showing, while the display's other desktops migrate
+        // with their ids intact. So a departed display loses a desktop just
+        // as the survivor can, and its windows are stranded on somebody
+        // else's desktop just the same — but neither `kept` nor `visitors`
+        // sees it, because it is on no display at all any more. Only ones
+        // with windows to rescue: a desktop that went empty needs nothing,
+        // and an empty desktop is what the window server reaps first.
+        let away_now: Vec<(SpaceId, SpaceId)> = record
+            .displays
+            .iter()
+            .filter(|d| d.uuid != survivor.uuid)
+            .flat_map(|d| d.desktops.iter().copied())
+            .map(|then| (record.stopgap_for(then).unwrap_or(then), then))
+            .filter(|(_, then)| !record.windows_desired_on(*then).is_empty())
+            .collect();
+        let destroyed: Vec<(SpaceId, SpaceId)> = own_now
+            .iter()
+            .chain(away_now.iter())
+            .copied()
+            .filter(|(now, _)| !listed_all.contains(now))
+            .collect();
         let kept: Vec<SpaceId> = own_now
             .iter()
             .map(|(now, _)| *now)
@@ -505,7 +538,7 @@ impl Reactor {
             if destroyed.len() > 1 {
                 warn!(
                     ?destroyed,
-                    "Several of the survivor's desktops were destroyed; only the first gets a desktop of its own meanwhile"
+                    "Several desktops were destroyed; only the first gets a desktop of its own meanwhile"
                 );
             }
             let anchor = visitors.last().or(on_survivor.last()).copied();
@@ -523,9 +556,26 @@ impl Reactor {
 
         // The survivor's own desktops first — the made one, then the kept
         // ones — and the visitors behind them, each moved behind the
-        // previous only when it is not there already.
-        let mut own: Vec<SpaceId> = stopgap.iter().map(|(made, _, _)| *made).collect();
+        // previous only when it is not there already. A desktop made for a
+        // departed display's destroyed one is that display's, not the
+        // survivor's: it goes among the visitors, where the one it stands in
+        // for stood, so the away display's desktops keep their order.
+        let made_for_survivor =
+            stopgap.is_some_and(|(_, _, lost)| survivor.desktops.contains(&lost));
+        let mut own: Vec<SpaceId> =
+            stopgap.iter().filter(|_| made_for_survivor).map(|(made, _, _)| *made).collect();
         own.extend(kept.iter().copied());
+        let visitors: Vec<SpaceId> = record
+            .displays
+            .iter()
+            .filter(|d| d.uuid != survivor.uuid)
+            .flat_map(|d| d.desktops.iter().copied())
+            .map(|then| match stopgap {
+                Some((made, _, lost)) if then == lost => made,
+                _ => record.stopgap_for(then).unwrap_or(then),
+            })
+            .filter(|s| now.get(&survivor.uuid).is_some_and(|listed| listed.contains(s)))
+            .collect();
         let desired: Vec<SpaceId> = own.iter().chain(visitors.iter()).copied().collect();
         let mut desktop_moves = 0usize;
         if addition && reshuffled && !own.is_empty() {

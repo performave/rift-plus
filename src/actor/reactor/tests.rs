@@ -8756,6 +8756,64 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// macOS does not carry the desktop a departing display was showing over
+    /// to the survivor: it destroys that one and merges its windows into
+    /// whatever the survivor is showing, while the display's other desktops
+    /// migrate with their ids intact. Those windows are stranded exactly as
+    /// the survivor's own are after a takeover — on top of somebody else's
+    /// layout — but the settle used to look for destroyed desktops only among
+    /// the survivor's, so it found none and left them there.
+    #[test]
+    fn a_departed_displays_destroyed_desktop_gets_a_desktop_of_its_own() {
+        let mut f = spaces_fixture();
+        let made = SpaceId::new(41);
+        sa::set_next_created_space(Some(made.get()));
+        // The spare desktop migrates to the survivor keeping its id; the one
+        // the display was showing is gone, and its windows are on `space1`.
+        managed(vec![("test-display-0", vec![space1(), space2_extra()])]);
+        unplug(&mut f);
+
+        assert_eq!(
+            f.reactor.display_archive.record().expect("the record stands").made_desktops(),
+            vec![made],
+            "the destroyed desktop gets one made to stand in for it"
+        );
+        let expected: Vec<(u32, u64)> =
+            f.exiled_wsids.iter().map(|wsid| (wsid.as_u32(), made.get())).collect();
+        assert_eq!(
+            sorted_moves(),
+            expected,
+            "its windows go there rather than staying on the survivor's desktop"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// A desktop that keeps its display needs nothing made for it, and one
+    /// that went empty needs nothing either — an empty desktop is the first
+    /// thing the window server reaps, so making one to stand in for it just
+    /// feeds the reaper.
+    #[test]
+    fn a_departed_displays_empty_destroyed_desktop_gets_no_desktop() {
+        let mut f = spaces_fixture();
+        sa::set_next_created_space(Some(SpaceId::new(41).get()));
+        // This time the showing desktop migrates and the spare — which never
+        // held a window — is the one macOS destroys.
+        managed(vec![("test-display-0", vec![space1(), space2()])]);
+        unplug(&mut f);
+
+        assert!(
+            f.reactor
+                .display_archive
+                .record()
+                .expect("the record stands")
+                .made_desktops()
+                .is_empty(),
+            "nothing was stranded, so nothing is made"
+        );
+        assert!(sa::window_moves().is_empty());
+        spaces_cleanup(&f, &[]);
+    }
+
     #[test]
     fn spaces_mode_puts_the_survivors_window_back_after_a_takeover() {
         let mut f = spaces_fixture();

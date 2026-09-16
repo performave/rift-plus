@@ -78,6 +78,28 @@ Entries describe this fork's changes relative to
   ranging from 32ms to 137ms, which is why it came and went. A key window
   rift cannot place now holds the switch rather than releasing it.
 
+- **A departing display's windows get a desktop of their own, instead of
+  landing on somebody else's layout.** macOS does not carry over the desktop a
+  departing display was showing: it destroys that one and merges its windows
+  into whatever the survivor is showing, while the display's other desktops
+  migrate with their ids intact. Those windows are stranded exactly as the
+  survivor's own are when the traffic goes the other way — but the settle
+  looked for destroyed desktops only among the survivor's, found none, and
+  left them where they landed. Close the lid with an external display
+  attached and the laptop's windows piled onto whatever was on the external
+  screen, on top of its tiling. It compounded from there: a stranded window
+  drifts, and a drift seen more than ten seconds after the reshuffle is
+  recorded as the user putting it there, so the record's memory of where the
+  window belongs was overwritten with wherever it had wandered to, and the
+  replug put it back in the wrong place. The settle now considers every
+  recorded display's desktops, and a destroyed one with windows to rescue
+  gets a desktop made for it, standing where it stood in its own display's
+  order. A desktop that went empty still gets nothing — that is the first
+  thing the window server reaps. Two things that hid the case are fixed with
+  it: the list of what is still on screen was taken from rift's own display
+  map, which is updated only *after* the settle runs and so still named the
+  departing display's desktops as present.
+
 - **The scripting addition works on macOS 27.** The payload's version gate knew
   Tahoe and nothing after it, so on 27 it returned before a single symbol was
   looked up, and the handshake reported dock.spaces, the desktop picture
