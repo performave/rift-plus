@@ -10906,3 +10906,85 @@ fn a_toggle_that_moves_nothing_still_flashes() {
         "a window joining the tree flashes in the tile direction: {event:?}"
     );
 }
+
+/// An alt-drag resize of a tile has to move the boundary with the pointer and
+/// leave no gap behind it.
+///
+/// Every write rift makes is followed, a few milliseconds later, by the app's
+/// own move/resize notification carrying the frame the window had *before* it
+/// — unrequested, with the button still down. Read as the user resizing the
+/// window, each one rolled the split ratio back a step: the dragged window was
+/// written to the pointer again on the next update while its neighbour stayed
+/// behind, so the boundary between them opened a gap, and a drag short enough
+/// to end on a rollback did nothing at all.
+#[test]
+fn a_modifier_resize_carries_the_neighbour_with_it() {
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(2560., 1400.));
+    reactor.handle_event(space_state_event(vec![screen], vec![Some(SpaceId::new(1))]));
+    apps.make_app_and_settle(&mut reactor, 1, make_windows(2));
+
+    let left = WindowId::new(1, 1);
+    let right = WindowId::new(1, 2);
+    let start = apps.windows[&right].frame;
+    let wsid = reactor.test_window_server_id(right);
+
+    // Pressed just inside the right tile's left edge, as the user does.
+    reactor.handle_event(Event::MouseModifierDragBegin {
+        window: wsid,
+        at: CGPoint::new(start.origin.x + 60., start.mid().y),
+        action: crate::common::config::MouseAction::Resize,
+    });
+
+    // The tap reports movement measured from the press, not per step.
+    for dx in [-1.3, 58.7, 153.0, 200.0] {
+        let before = apps.windows[&right].frame;
+        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0. });
+        apps.simulate_until_quiet(&mut reactor);
+        let txid = reactor.transaction_manager.get_last_sent_txid(wsid);
+        reactor.handle_event(Event::WindowFrameChanged(
+            right,
+            before,
+            Some(txid),
+            Requested(false),
+            Some(crate::sys::event::MouseState::Down),
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+
+        let dragged = apps.windows[&right].frame;
+        let neighbour = apps.windows[&left].frame;
+        assert!(
+            (dragged.origin.x - (start.origin.x + dx)).abs() < 2.,
+            "the dragged edge follows the pointer: {dragged:?} at dx={dx}"
+        );
+        assert!(
+            (neighbour.max().x - dragged.origin.x).abs() < 2.,
+            "no gap opens behind it: {neighbour:?} then {dragged:?}"
+        );
+    }
+
+    reactor.handle_event(Event::MouseUp);
+    apps.simulate_until_quiet(&mut reactor);
+
+    // The last notification the app queued lands after the release.
+    let txid = reactor.transaction_manager.get_last_sent_txid(wsid);
+    reactor.handle_event(Event::WindowFrameChanged(
+        right,
+        start,
+        Some(txid),
+        Requested(false),
+        Some(crate::sys::event::MouseState::Up),
+    ));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let dragged = apps.windows[&right].frame;
+    let neighbour = apps.windows[&left].frame;
+    assert!(
+        (dragged.origin.x - (start.origin.x + 200.)).abs() < 2.,
+        "the resize survives the release: {dragged:?}"
+    );
+    assert!(
+        (neighbour.max().x - dragged.origin.x).abs() < 2.,
+        "and so does the neighbour: {neighbour:?} then {dragged:?}"
+    );
+}

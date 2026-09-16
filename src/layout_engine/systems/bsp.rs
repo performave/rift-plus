@@ -2054,9 +2054,25 @@ impl LayoutSystem for BspLayoutSystem {
         screen: CGRect,
         gaps: &crate::common::config::GapSettings,
     ) {
-        if let Some(node) = self.node_for_window_mut(wid) {
-            if let Some(state) = self.layouts.get(layout).copied() {
+        let note = |why: &str, extra: serde_json::Value| {
+            crate::sys::trace::act(
+                "bsp_resize",
+                &serde_json::json!({ "wid": wid.idx.get(), "why": why, "extra": extra }),
+            );
+        };
+        let Some(node) = self.node_for_window_mut(wid) else {
+            // Every screen's workspace is offered the resize; the trees that
+            // do not hold the window are not worth a line.
+            return;
+        };
+        {
+            let Some(state) = self.layouts.get(layout).copied() else {
+                note("no layout state", serde_json::Value::Null);
+                return;
+            };
+            {
                 if !self.belongs_to_layout(state, node) {
+                    note("node is not in this layout", serde_json::Value::Null);
                     return;
                 }
                 let tiling = Self::apply_outer_gaps(screen, gaps);
@@ -2088,12 +2104,17 @@ impl LayoutSystem for BspLayoutSystem {
                 }
 
                 if fullscreen_transition {
+                    note("read as a fullscreen transition", serde_json::Value::Null);
                     return;
                 }
 
                 let width_changed = (new_frame.size.width - old_frame.size.width).abs() > 0.5;
                 let height_changed = (new_frame.size.height - old_frame.size.height).abs() > 0.5;
                 if !width_changed && !height_changed {
+                    note(
+                        "no change in size",
+                        serde_json::json!([old_frame.size.width, new_frame.size.width]),
+                    );
                     return;
                 }
 
@@ -2108,6 +2129,15 @@ impl LayoutSystem for BspLayoutSystem {
                     let left = moved(new_frame.origin.x, old_frame.origin.x);
                     let right = moved(new_frame.max().x, old_frame.max().x);
                     let gap = gaps.inner.horizontal as f64;
+                    note(
+                        "moving a horizontal edge",
+                        serde_json::json!({
+                            "left": left,
+                            "right": right,
+                            "to": if left && !right { new_frame.origin.x } else { new_frame.max().x },
+                            "screen": [screen.origin.x, screen.size.width],
+                        }),
+                    );
                     // Both moving is a resize about the centre; treat it as
                     // the far edge, which is what a plain size change was.
                     if left && !right {

@@ -110,6 +110,28 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A modifier-drag resize now moves the boundary, not just the window.**
+  Alt-dragging a tile's edge mostly did nothing, and when it did take, it left
+  a gap between the two windows. Every frame rift writes during such a drag is
+  followed a few milliseconds later by the app's own move/resize notification
+  carrying the frame the window had *before* the write — unrequested, with the
+  button still down. Rift read each of those as the user resizing the window by
+  hand and rolled the split ratio back a step. The dragged window was written
+  to the pointer again on the next update while its neighbour stayed behind, so
+  the boundary between them opened; a drag short enough to end on a rollback,
+  or whose last notification landed after the button was up, was undone
+  entirely.
+
+  Reports that reach the layout while rift is driving a resize from the
+  pointer — and for a moment after the release, since the notifications trail
+  the writes — are now read as what they are. Only rift moves tiles during a
+  modifier drag, so there is nothing else they can be. Floats are untouched:
+  their own geometry path is what records where a modifier-drag move left
+  them. Which edge an update moves is also read against the frame rift last
+  asked for rather than the one the app last reported, so a lagging report can
+  no longer make both edges look like they moved and send the layout after the
+  boundary the user was not dragging.
+
 - **Reloading the config no longer throws away the layout mode you switched
   to.** Hot reload re-applies `virtual_workspaces.workspace_rules` to
   workspaces that already exist, so that editing a rule takes effect without a

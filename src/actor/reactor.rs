@@ -245,6 +245,12 @@ struct ModifierDragState {
     /// The window's frame when the drag began; every update is applied to this
     /// rather than to the previous frame, so nothing drifts.
     origin_frame: CGRect,
+    /// The frame the last update aimed at. Which edges an update moved is
+    /// read against this rather than against the window's reported frame:
+    /// an app's report lags rift's write by a beat, and a lagging one made
+    /// both edges look moved, so the layout moved the boundary the user was
+    /// not dragging.
+    last_target: CGRect,
     edges: ResizeEdges,
 }
 
@@ -465,6 +471,10 @@ pub struct Reactor {
     transaction_manager: transaction_manager::TransactionManager,
     /// The modifier drag in flight, if any. See `ModifierDragState`.
     modifier_drag: Option<ModifierDragState>,
+    /// When the last modifier drag ended. The apps' notifications trail
+    /// rift's writes, so the last few land after the button is up and have
+    /// to be read as echoes too.
+    modifier_drag_ended: Option<std::time::Instant>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -630,6 +640,7 @@ impl Reactor {
             },
             transaction_manager: transaction_manager::TransactionManager::new(window_tx_store),
             modifier_drag: None,
+            modifier_drag_ended: None,
             last_float_strips: Vec::new(),
             last_mouse_up: None,
             focus_left_from: None,
@@ -1973,6 +1984,35 @@ impl Reactor {
                     );
                     return Ok(outcome);
                 }
+                // While rift is resizing a window from the pointer, every
+                // report that escapes the transaction gate is the tail of
+                // one of rift's own arranges: the app's move/resize
+                // notification arrives a beat late, carrying the frame the
+                // window had *before* the write, unrequested and with the
+                // button down. Read as the user resizing the window, it
+                // rolled the split ratio back one step — the dragged window
+                // was written to the pointer again on the next update while
+                // its neighbour stayed a step behind, so the boundary
+                // between them opened a gap that the release made permanent,
+                // and a drag short enough to end on a rollback did nothing
+                // at all. Only rift moves tiles during a modifier drag, so
+                // there is nothing else such a report can be — and only
+                // tiles: a float's own geometry path is what stores where a
+                // modifier-drag move left it.
+                if self.modifier_drag_is_settling()
+                    && !self.layout_manager.layout_engine.is_window_floating(wid)
+                {
+                    if let Some(window) = self.state.windows.window_mut(wid) {
+                        window.frame_monotonic = new_frame;
+                    }
+                    self.note_frame_change_for_flight_recorder(
+                        wid,
+                        effective_mouse_state,
+                        "modifier_drag_echo",
+                        None,
+                    );
+                    return Ok(EventOutcome::no_change());
+                }
                 let (server_id, old_frame) = self
                     .state
                     .windows
@@ -2117,6 +2157,9 @@ impl Reactor {
                 // reading the window's later reports as echoes and kept
                 // mouse-follows-focus off for good.
                 let ended_modifier_drag = self.modifier_drag.take();
+                if ended_modifier_drag.is_some() {
+                    self.modifier_drag_ended = Some(crate::sys::trace::now());
+                }
                 // A rift-driven float move (a takeover, or an alt-drag) that
                 // ends straddling the display seam needs the same finish a
                 // reported drag's drop gets: the system relocates straddling
@@ -5204,6 +5247,21 @@ impl Reactor {
             && warp_space.is_some_and(|space| self.warp_mouse_to_space_center(space))
     }
 
+    /// Whether rift is resizing or moving a window from the pointer, or has
+    /// just stopped. The apps' move/resize notifications trail rift's writes
+    /// by a few milliseconds, so the tail of a drag arrives after the button
+    /// is up; read as the user's own resize it undid the drag.
+    fn modifier_drag_is_settling(&self) -> bool {
+        /// Generous next to the few milliseconds the notifications actually
+        /// lag by, and far short of the time it takes to reach for a
+        /// window's edge after letting go of one.
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+        self.modifier_drag.is_some()
+            || self
+                .modifier_drag_ended
+                .is_some_and(|at| crate::sys::trace::now().saturating_duration_since(at) < SETTLE)
+    }
+
     /// Whether `mouse_follows_focus` should warp the cursor onto this window.
     ///
     /// Global setting first, then the per-app opt-out. The window keeps focus
@@ -5234,6 +5292,7 @@ impl Reactor {
             window: wid,
             action,
             origin_frame: frame,
+            last_target: frame,
             edges: ResizeEdges::from_press(frame, at),
         });
     }
@@ -5249,7 +5308,8 @@ impl Reactor {
 
         let drag = self.modifier_drag?;
         let wid = drag.window;
-        let old_frame = self.state.windows.window(wid)?.frame_monotonic;
+        self.state.windows.window(wid)?;
+        let old_frame = drag.last_target;
 
         let target = match drag.action {
             MouseAction::Move => {
@@ -5261,8 +5321,26 @@ impl Reactor {
             MouseAction::Resize => drag.edges.apply(drag.origin_frame, dx, dy),
             MouseAction::None => return None,
         };
+        if let Some(drag) = self.modifier_drag.as_mut() {
+            drag.last_target = target;
+        }
 
-        if !self.layout_manager.layout_engine.is_window_floating(wid) {
+        let floating = self.layout_manager.layout_engine.is_window_floating(wid);
+        crate::sys::trace::act(
+            "modifier_drag",
+            &serde_json::json!({
+                "wid": wid.idx.get(),
+                "action": format!("{:?}", drag.action),
+                "floating": floating,
+                "edges": [drag.edges.left, drag.edges.top],
+                "origin": [drag.origin_frame.origin.x, drag.origin_frame.size.width],
+                "old": [old_frame.origin.x, old_frame.size.width],
+                "new": [target.origin.x, target.size.width],
+                "space": self.best_space_for_window_id(wid),
+                "in_drag": self.window_in_drag().map(|w| w.idx.get()),
+            }),
+        );
+        if !floating {
             // A tiled window's frame belongs to its layout, so writing one is
             // pointless: the next arrange overwrites it. Moving one has no
             // meaning either — drag-to-swap already covers that — but a resize

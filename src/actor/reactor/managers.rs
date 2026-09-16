@@ -358,6 +358,12 @@ impl LayoutManager {
                 continue;
             }
             if !reactor.is_space_active(space) {
+                crate::sys::trace::act(
+                    "arrange_calc",
+                    &serde_json::json!({
+                        "space": space, "skipped": "space is not active",
+                    }),
+                );
                 continue;
             }
             let display_uuid_opt = screen.display_uuid_owned();
@@ -405,6 +411,15 @@ impl LayoutManager {
                     &active_workspace_windows,
                 );
             }
+            crate::sys::trace::act(
+                "arrange_calc",
+                &serde_json::json!({
+                    "space": space,
+                    "frames": layout.iter().map(|(wid, f)| {
+                        serde_json::json!([wid.idx.get(), f.origin.x.round(), f.size.width.round()])
+                    }).collect::<Vec<_>>(),
+                }),
+            );
             layout_result.push((space, layout));
         }
 
@@ -447,6 +462,14 @@ impl LayoutManager {
 
         let active_space = reactor.workspace_command_space();
         for (space, layout) in layout_result {
+            if reactor.space_state.screen_by_space(space).is_none() {
+                crate::sys::trace::act(
+                    "arrange_apply",
+                    &serde_json::json!({
+                        "space": space, "skipped": "no screen holds this space",
+                    }),
+                );
+            }
             if let Some(screen) = reactor.space_state.screen_by_space(space) {
                 let screen_frame = screen.frame;
                 let display_uuid = screen.display_uuid_owned();

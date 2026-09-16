@@ -147,6 +147,12 @@ impl AnimationManager {
         skip_wid: Option<WindowId>,
     ) -> bool {
         let Some(active_ws) = reactor.layout_manager.layout_engine.active_workspace(space) else {
+            crate::sys::trace::act(
+                "arrange_apply",
+                &serde_json::json!({
+                    "space": space, "skipped": "no active workspace",
+                }),
+            );
             return false;
         };
         let mut anim = Animation::new(reactor.config.clone());
@@ -170,6 +176,10 @@ impl AnimationManager {
                     Some(window) => {
                         let current_frame = window.frame_monotonic;
                         if target_frame.same_as(current_frame) {
+                            crate::sys::trace::act(
+                                "layout_skip",
+                                &(wid.idx.get(), "already there", current_frame.origin.x.round()),
+                            );
                             continue;
                         }
                         let wsid = window.info.sys_id;
