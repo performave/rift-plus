@@ -52,7 +52,7 @@ pub fn save_on_termination(save: impl FnOnce() + Send + 'static) {
     let [read_fd, write_fd] = fds;
     TERMINATION_PIPE.store(write_fd, Ordering::Relaxed);
     for signal in [libc::SIGTERM, libc::SIGINT] {
-        unsafe { libc::signal(signal, note_termination as libc::sighandler_t) };
+        unsafe { libc::signal(signal, note_termination as *const () as libc::sighandler_t) };
     }
 
     thread::spawn(move || {

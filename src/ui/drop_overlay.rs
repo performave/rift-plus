@@ -90,19 +90,17 @@ impl DropOverlayWindow {
         let converter = main_screen_converter(mtm)?;
         let panel_frame = converter.convert_rect(screen)?;
 
-        let panel = unsafe {
-            NSPanel::initWithContentRect_styleMask_backing_defer(
-                NSPanel::alloc(mtm),
-                panel_frame,
-                // Borderless so there is no chrome, non-activating so showing
-                // it never takes focus from the window being dragged.
-                NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
+        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            panel_frame,
+            // Borderless so there is no chrome, non-activating so showing it
+            // never takes focus from the window being dragged.
+            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+            NSBackingStoreType::Buffered,
+            false,
+        );
         panel.setOpaque(false);
-        unsafe { panel.setBackgroundColor(Some(&NSColor::clearColor())) };
+        panel.setBackgroundColor(Some(&NSColor::clearColor()));
         panel.setHasShadow(false);
         panel.setLevel(NSStatusWindowLevel as isize);
         panel.setIgnoresMouseEvents(true);
@@ -115,18 +113,14 @@ impl DropOverlayWindow {
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
 
-        let content = unsafe {
-            NSView::initWithFrame(
-                NSView::alloc(mtm),
-                CGRect::new(CGPoint::new(0.0, 0.0), panel_frame.size),
-            )
-        };
-        let glass = unsafe {
-            NSGlassEffectView::initWithFrame(
-                NSGlassEffectView::alloc(mtm),
-                CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0)),
-            )
-        };
+        let content = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            CGRect::new(CGPoint::new(0.0, 0.0), panel_frame.size),
+        );
+        let glass = NSGlassEffectView::initWithFrame(
+            NSGlassEffectView::alloc(mtm),
+            CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0)),
+        );
         glass.setCornerRadius(config.corner_radius);
         glass.setTintColor(Some(&config.tint.to_nscolor()));
         glass.setStyle(if config.clear_style {
@@ -134,7 +128,7 @@ impl DropOverlayWindow {
         } else {
             NSGlassEffectViewStyle::Regular
         });
-        unsafe { content.addSubview(&glass) };
+        content.addSubview(&glass);
         panel.setContentView(Some(&content));
 
         Some(Self {
@@ -148,9 +142,7 @@ impl DropOverlayWindow {
         })
     }
 
-    pub fn screen(&self) -> CGRect {
-        self.screen
-    }
+    pub fn screen(&self) -> CGRect { self.screen }
 
     /// Points the overlay at a region, in the same y-down space as window
     /// frames.
@@ -214,9 +206,7 @@ impl DropOverlayWindow {
 }
 
 impl Drop for DropOverlayWindow {
-    fn drop(&mut self) {
-        self.panel.orderOut(None);
-    }
+    fn drop(&mut self) { self.panel.orderOut(None); }
 }
 
 fn main_screen_converter(mtm: MainThreadMarker) -> Option<CoordinateConverter> {
@@ -254,9 +244,7 @@ fn rects_close(a: CGRect, b: CGRect) -> bool {
 }
 
 /// Ease-out: most of the distance early, settling gently.
-fn ease(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(3)
-}
+fn ease(t: f64) -> f64 { 1.0 - (1.0 - t).powi(3) }
 
 #[cfg(test)]
 mod tests {

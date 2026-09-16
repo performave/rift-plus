@@ -793,8 +793,6 @@ pub struct DropOverlaySettings {
 }
 
 fn default_drop_overlay_corner_radius() -> f64 { 10.0 }
-fn default_drop_overlay_border_width() -> f64 { 2.0 }
-fn default_drop_overlay_blur() -> i32 { 24 }
 fn default_drop_overlay_follow_rate() -> f64 { 0.35 }
 
 impl Default for DropOverlaySettings {
