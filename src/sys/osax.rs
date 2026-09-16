@@ -39,7 +39,7 @@ use crate::sys::scripting_addition;
 /// The payload version this build ships, mirroring `OSAX_VERSION` in
 /// `src/osax/common.h`. A payload already inside Dock that answers with
 /// anything else is treated as stale.
-pub const OSAX_VERSION: &str = "1.3.3";
+pub const OSAX_VERSION: &str = "1.3.5";
 
 const OSAX_BASE_DIR: &str = "/Library/ScriptingAdditions/rift.osax";
 const SUDOERS_PATH: &str = "/private/etc/sudoers.d/rift";

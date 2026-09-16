@@ -270,6 +270,16 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
         NSLog(@"[rift-sa] Detected Tahoe Preview... flagging 'macOSSequoia=true.'");
         macOSSequoia = true;
         return true; // Tahoe preview
+    } else if (os_version.majorVersion == 27) {
+        //
+        // 27 kept Tahoe's Dock internals: every byte pattern below still
+        // matches this Dock, and only the offsets the search starts from
+        // moved. The two selector spellings macOSSequoia picks between are
+        // unchanged, so it is set here for the same reason as on 26.
+        //
+        NSLog(@"[rift-sa] Detected macOS 27... flagging 'macOSSequoia=true.'");
+        macOSSequoia = true;
+        return true; // macOS 27
     }
 
     NSLog(@"[rift-sa] spaces functionality is only supported on macOS Monterey 12.0.0+, and Ventura 13.0.0+, Sonoma 14.0.0+, and Sequoia 15.0");

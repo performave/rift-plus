@@ -78,6 +78,28 @@ Entries describe this fork's changes relative to
   ranging from 32ms to 137ms, which is why it came and went. A key window
   rift cannot place now holds the switch rather than releasing it.
 
+- **The scripting addition works on macOS 27.** The payload's version gate knew
+  Tahoe and nothing after it, so on 27 it returned before a single symbol was
+  looked up, and the handshake reported dock.spaces, the desktop picture
+  manager and add, remove and move space all missing at once. Five at once
+  reads like a Dock that changed everything; it was only the gate. Dock's
+  internals are very nearly the same: every byte pattern still matches, and
+  only the offsets the search starts from moved — far enough that Tahoe's
+  hints now sit *past* their match for all but dock.spaces, and the search
+  runs forward from its hint, never back. 27 now carries its own offsets and
+  shares Tahoe's patterns, so sending a window to a desktop, creating and
+  destroying desktops, and the teleporting space switch all work again.
+
+  The two routines rift patches rather than calls needed reading again, and
+  both turned out to be near-identical. The space-switch step gained a single
+  instruction -- a `mov x8, #0x7fefffffffffffff` between the call and the
+  `ldr d2`, for a magnitude check Tahoe did not make -- while its prologue,
+  its tail and the distance between them are unchanged, so 27 reuses Tahoe's
+  resume delta. `setFrontWindow` did not change at all: the pattern began at
+  the `cbz w1` that returns on a zero window id, whose first byte carries the
+  low bits of its own branch distance, and 27 branches further. That byte is
+  now left open, and the prologue behind it still narrows to one match.
+
 - **The layout is saved again after a desktop migration.** Layout state is now
   keyed by the workspace rather than by the native space, and the call that
   used to re-key it across a migration went with the change — but that call did

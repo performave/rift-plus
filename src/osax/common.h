@@ -20,7 +20,7 @@
 // way a running Dock would have to pick up: `rift sa load` compares this
 // against what the payload answers with and reinstalls when they differ.
 //
-#define OSAX_VERSION                "1.3.3"
+#define OSAX_VERSION                "1.3.5"
 
 #define OSAX_ATTRIB_DOCK_SPACES     0x01
 #define OSAX_ATTRIB_DPPM            0x02
