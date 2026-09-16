@@ -89,9 +89,32 @@ status:
     rift status || true
     tail -n 5 "/tmp/rift_${USER}.err.log" 2>/dev/null || true
 
-# Re-inject the scripting addition. Needed after a Dock restart or a reboot.
+# Re-inject the scripting addition. Needed after a Dock restart or a reboot,
+# and after any rebuild that ships a new payload.
+#
+# Three things can be wrong at once and each hides the next, so they are done
+# in order rather than left to be discovered one command at a time: the
+# sudoers rule is pinned to a sha256 and every rebuild invalidates it, and a
+# running Dock cannot swap payloads in place, so a payload bump needs Dock to
+# go first. One password prompt covers the lot.
 sa:
-    sudo rift sa load
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! rift sa status 2>&1 | grep -q 'pinned to this binary'; then
+        echo "just: re-pinning the passwordless 'sa load' rule to this build"
+        sudo rift sa install-sudoers || exit 1
+    fi
+    out="$(sudo rift sa load 2>&1)"
+    printf '%s\n' "$out"
+    if printf '%s' "$out" | grep -q 'restart Dock'; then
+        echo "just: Dock is holding an older payload and cannot swap it in place; restarting it"
+        killall Dock
+        for _ in $(seq 1 50); do
+            pgrep -x Dock >/dev/null && break
+            sleep 0.1
+        done
+        sudo rift sa load
+    fi
 
 # The sudoers rule is pinned to a binary's hash, so every rebuild staleness it.
 # Nothing breaks at the swap — the payload already inside Dock keeps working —
@@ -116,7 +139,7 @@ _sa-pin-check:
           windows between spaces — an unplug then merges everything and cannot
           put it back.
 
-          Fix now:  sudo rift sa install-sudoers && sudo rift sa load
+          Fix now:  just sa
     EOF
 
 logs:
