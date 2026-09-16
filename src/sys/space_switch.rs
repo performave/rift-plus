@@ -305,11 +305,13 @@ pub fn active_space() -> SpaceId {
 }
 
 /// The ordered spaces of the display holding the active space.
-pub fn spaces_on_active_display() -> Option<Vec<SpaceId>> {
-    let active = active_space();
+pub fn spaces_on_active_display() -> Option<Vec<SpaceId>> { spaces_on_display_of(active_space()) }
+
+/// The ordered spaces of the display showing `space`.
+pub fn spaces_on_display_of(space: SpaceId) -> Option<Vec<SpaceId>> {
     crate::sys::screen::managed_display_space_ids()
         .into_values()
-        .find(|ids| ids.contains(&active))
+        .find(|ids| ids.contains(&space))
 }
 
 /// Posts `steps` switches in one direction, one after another.

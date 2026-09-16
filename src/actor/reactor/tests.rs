@@ -10717,6 +10717,101 @@ fn space_commands_report_that_they_need_the_scripting_addition() {
     );
 }
 
+/// The desktop these commands act on used to be whichever one `CGSGetActiveSpace`
+/// named, which is the desktop of the display owning the menu bar. Switching
+/// the *other* display to an empty desktop moves neither: an empty desktop has
+/// no window that could take focus. A destroy aimed at the empty desktop in
+/// front of you therefore took the one you were working in. The pointer is the
+/// signal that survives, and it is what the commands go by now.
+#[test]
+fn space_destroy_follows_the_pointer_onto_the_other_display() {
+    use crate::model::reactor::Command;
+    use crate::sys::scripting_addition::test_hooks as sa;
+
+    let (mut reactor, _wid, _wsid, space1, space2, _frame, screen2) =
+        reactor_with_window_on_space1_two_displays();
+    sa::set_available(true);
+    assert_eq!(
+        reactor.raw_command_space(),
+        Some(space1),
+        "the menu bar, and so the focused desktop, is on the first display"
+    );
+
+    let on_screen2 = CGPoint::new(screen2.origin.x + 10., screen2.origin.y + 10.);
+    crate::sys::window_server::set_cursor_location_override(Some(on_screen2));
+    reactor
+        .handle_ipc_command(Command::Reactor(ReactorCommand::DestroySpace))
+        .expect("destroying the pointed-at desktop succeeds");
+    crate::sys::window_server::set_cursor_location_override(None);
+
+    assert_eq!(
+        sa::space_destroys(),
+        vec![space2.get()],
+        "the desktop under the pointer, not the one holding the focused window"
+    );
+}
+
+/// The other half of the bargain: sometimes the desktop you mean is the one
+/// you are working in, whatever the pointer happens to be sitting on. That is
+/// what `space_target = "focus"` keeps, and it is the pre-pointer behaviour
+/// exactly — the focused desktop, straight from the window server.
+#[test]
+fn space_target_focus_ignores_the_pointer() {
+    use crate::model::reactor::Command;
+    use crate::sys::scripting_addition::test_hooks as sa;
+
+    let (mut reactor, _wid, _wsid, _space1, space2, _frame, screen2) =
+        reactor_with_window_on_space1_two_displays();
+    sa::set_available(true);
+    reactor.config.settings.space_target = SpaceCommandTarget::Focus;
+
+    let on_screen2 = CGPoint::new(screen2.origin.x + 10., screen2.origin.y + 10.);
+    crate::sys::window_server::set_cursor_location_override(Some(on_screen2));
+    reactor
+        .handle_ipc_command(Command::Reactor(ReactorCommand::DestroySpace))
+        .expect("destroying the focused desktop succeeds");
+    crate::sys::window_server::set_cursor_location_override(None);
+
+    assert_eq!(sa::space_destroys(), vec![
+        crate::sys::space_switch::active_space().get()
+    ]);
+    assert_ne!(sa::space_destroys(), vec![space2.get()]);
+}
+
+/// Create had the same anchor and so the same bug: it appended to whichever
+/// display held the menu bar. The reorder that follows is not exercised here —
+/// the display's desktops are stated by an override that the addition, stubbed
+/// under test, does not add to — but which display was asked is the whole
+/// question.
+#[test]
+fn space_create_anchors_on_the_pointed_at_desktop() {
+    use crate::model::reactor::Command;
+    use crate::sys::screen::ManagedDisplaySpaces;
+    use crate::sys::scripting_addition::test_hooks as sa;
+
+    let (mut reactor, _wid, _wsid, space1, space2, _frame, screen2) =
+        reactor_with_window_on_space1_two_displays();
+    sa::set_available(true);
+    crate::sys::screen::set_managed_display_spaces_override(Some(vec![
+        ManagedDisplaySpaces {
+            display_uuid: "display-1".to_string(),
+            spaces: vec![space1],
+        },
+        ManagedDisplaySpaces {
+            display_uuid: "display-2".to_string(),
+            spaces: vec![space2],
+        },
+    ]));
+
+    let on_screen2 = CGPoint::new(screen2.origin.x + 10., screen2.origin.y + 10.);
+    crate::sys::window_server::set_cursor_location_override(Some(on_screen2));
+    let _ = reactor.handle_ipc_command(Command::Reactor(ReactorCommand::CreateSpace));
+    crate::sys::window_server::set_cursor_location_override(None);
+    crate::sys::screen::set_managed_display_spaces_override(None);
+
+    assert_eq!(sa::space_creations(), vec![space2.get()]);
+}
+
 /// The other silent path: a command whose target does not exist at all. It
 /// used to return the same success as one that worked.
 #[test]

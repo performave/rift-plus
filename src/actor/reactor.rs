@@ -96,7 +96,7 @@ use crate::actor::reactor::events::window_discovery;
 use crate::actor::spaces::{ForwardedSpaceState, TopologyWindowDelta};
 use crate::actor::{self, menu_bar, stack_line};
 use crate::common::collections::{BTreeMap, HashMap, HashSet};
-use crate::common::config::Config;
+use crate::common::config::{Config, SpaceCommandTarget};
 use crate::layout_engine::{self as layout, Direction, LayoutEngine, LayoutEvent, ResolvedWindow};
 use crate::model::broadcast::{
     BroadcastEvent, BroadcastSender, protocol_window_id, protocol_workspace_id,
@@ -2600,15 +2600,16 @@ impl Reactor {
                 return Ok(self.move_focused_window_to_space(index, follow));
             }
             Event::Command(Command::Reactor(ReactorCommand::CreateSpace)) => {
-                self.create_space_after_active();
+                let target = self.space_command_target();
+                self.create_space_after(target);
                 return Ok(EventOutcome::default());
             }
             Event::Command(Command::Reactor(ReactorCommand::RestoreDepartureLayout)) => {
                 return Ok(self.restore_departure_layout());
             }
             Event::Command(Command::Reactor(ReactorCommand::DestroySpace)) => {
-                let active = crate::sys::space_switch::active_space();
-                if !crate::sys::scripting_addition::destroy_space(active.get()) {
+                let target = self.space_command_target();
+                if !crate::sys::scripting_addition::destroy_space(target.get()) {
                     self.fail_command(SA_REQUIRED_DESTROY);
                 }
                 return Ok(EventOutcome::default());
@@ -5308,25 +5309,24 @@ impl Reactor {
         None
     }
 
-    /// Creates a space immediately to the right of the active one and switches
-    /// to it.
+    /// Creates a space immediately to the right of `anchor` and switches to
+    /// it.
     ///
     /// The addition can only append a space to the end of its display, so the
-    /// new one is then reordered to sit after the active space — which is what
-    /// a `space --create` followed by a loop of `space --move prev` was doing,
+    /// new one is then reordered to sit after the anchor — which is what a
+    /// `space --create` followed by a loop of `space --move prev` was doing,
     /// in one step rather than one per space in between.
-    fn create_space_after_active(&mut self) {
+    fn create_space_after(&mut self, anchor: SpaceId) {
         use crate::sys::{scripting_addition, space_switch};
 
-        let active = space_switch::active_space();
-        let before = space_switch::spaces_on_active_display().unwrap_or_default();
+        let before = space_switch::spaces_on_display_of(anchor).unwrap_or_default();
 
-        if !scripting_addition::create_space(active.get()) {
+        if !scripting_addition::create_space(anchor.get()) {
             self.fail_command(SA_REQUIRED_CREATE);
             return;
         }
 
-        let Some(created) = space_switch::spaces_on_active_display()
+        let Some(created) = space_switch::spaces_on_display_of(anchor)
             .unwrap_or_default()
             .into_iter()
             .find(|space| !before.contains(space))
@@ -5335,12 +5335,12 @@ impl Reactor {
             return;
         };
 
-        // Already in the right place when the active space was the last one.
-        if before.last() == Some(&active) {
+        // Already in the right place when the anchor was the last one.
+        if before.last() == Some(&anchor) {
             scripting_addition::focus_space(created.get());
             return;
         }
-        if !scripting_addition::move_space_after_space(created.get(), active.get(), true) {
+        if !scripting_addition::move_space_after_space(created.get(), anchor.get(), true) {
             warn!(?created, "Created the space but could not move it into place");
         }
     }
@@ -7058,6 +7058,23 @@ impl Reactor {
                 .filter(|space| self.is_space_active(*space))
                 .or_else(|| self.main_window_space().filter(|space| self.is_space_active(*space)))
         })
+    }
+
+    /// The macOS desktop the space commands act on.
+    ///
+    /// `active_space` follows the menu bar, and a desktop on another display
+    /// does not move it: an empty desktop has no window that could take focus.
+    /// The pointer is the signal that survives, so by default the commands go
+    /// by it, and fall back to the focused desktop only when it is over no
+    /// display rift knows. `settings.space_target` turns that off.
+    fn space_command_target(&self) -> SpaceId {
+        if self.config.settings.space_target == SpaceCommandTarget::Pointer
+            && let Ok(point) = window_server::current_cursor_location()
+            && let Some(space) = self.screen_for_point(point).and_then(|screen| screen.space)
+        {
+            return space;
+        }
+        crate::sys::space_switch::active_space()
     }
 
     fn screen_for_point(&self, point: CGPoint) -> Option<&ScreenInfo> {

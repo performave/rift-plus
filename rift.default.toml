@@ -75,6 +75,22 @@ restore_display_layouts = true
 # - "tile"   they join the surviving display's tree as one cluster.
 displaced_windows = "spaces"
 
+# Which desktop `space create` and `space destroy` act on:
+# - "pointer" the desktop shown on the display the mouse is over, falling back
+#             to the focused desktop when the mouse is over no display rift
+#             manages. macOS names the focused desktop by which display owns
+#             the menu bar, and switching the other display to an empty desktop
+#             moves neither — an empty desktop has no window that could take
+#             focus — so a destroy aimed at the empty desktop in front of you
+#             took the one you were working in instead. The pointer is on the
+#             display you mean in both cases: you reach a desktop on the other
+#             display by gesturing there or through a rift command that warps
+#             the pointer there, and when you do mean the desktop holding the
+#             focused window, that is where you were working anyway.
+# - "focus"   the focused desktop, whatever the mouse is over. The behaviour
+#             before "pointer" existed.
+space_target = "pointer"
+
 # Modifier-drag: hold a modifier and drag anywhere in a window to move or resize
 # it, rather than aiming for its title bar or its edge.
 # - modifier: the modifier that claims the drag ("Alt", "Ctrl + Alt", ...).

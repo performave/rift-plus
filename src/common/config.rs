@@ -433,6 +433,30 @@ pub enum DisplacedWindows {
     Tile,
 }
 
+/// Which macOS desktop `space create` and `space destroy` act on.
+///
+/// `CGSGetActiveSpace` answers with the desktop of whichever display owns the
+/// menu bar, so a desktop shown on a display that holds no focus is invisible
+/// to it. Switching the other display to an empty desktop takes no focus —
+/// there is no window there to take it — and a destroy aimed at the empty
+/// desktop in front of you then takes the one you were working in instead.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceCommandTarget {
+    /// The desktop shown on the display under the pointer, falling back to the
+    /// focused desktop when the pointer is not over a display rift manages.
+    ///
+    /// You reach a desktop on another display either by gesturing on that
+    /// display or through a rift command that warps the pointer there, so the
+    /// pointer is on the display you mean; and when you do mean the desktop
+    /// holding the focused window, the pointer is almost always on that
+    /// display too, because that is where you are working.
+    #[default]
+    Pointer,
+    /// The focused desktop, whatever the pointer is over.
+    Focus,
+}
+
 /// How rift changes the active macOS space.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, Default)]
 #[serde(rename_all = "snake_case")]
@@ -670,6 +694,10 @@ pub struct Settings {
     /// How to change the active macOS space. See `SpaceSwitchMethod`.
     #[serde(default)]
     pub space_switch_method: SpaceSwitchMethod,
+    /// Which desktop `space create` and `space destroy` act on. See
+    /// `SpaceCommandTarget`.
+    #[serde(default)]
+    pub space_target: SpaceCommandTarget,
     /// The timing of the trackpad space switch. See
     /// `SpaceSwitchAnimationSettings`.
     #[serde(default)]

@@ -47,6 +47,34 @@ Entries describe this fork's changes relative to
   `NSGlassEffectContainerView` on a rule documented only as "sufficiently
   similar". Its timer runs only while a flash is on screen.
 
+### Changed
+
+- **`space create` and `space destroy` go by the pointer.**
+  `settings.space_target`, `"pointer"` by default; `"focus"` restores the old
+  behaviour. Both commands used to act on whatever `CGSGetActiveSpace` named,
+  which is the desktop of the display that owns the menu bar. Switching the
+  *other* display to an empty desktop moves neither, because an empty desktop
+  has no window that could take the focus — so a destroy aimed at the empty
+  desktop in front of you took the desktop you were working in, windows and
+  all. The workaround was to click the empty desktop first.
+
+  The pointer is the signal that survives that, and it agrees with the intent
+  in both directions: you reach a desktop on another display either by
+  gesturing on that display or through a rift command that warps the pointer
+  there, and when you do mean the desktop holding the focused window, the
+  pointer is almost always on that display too, because that is where you were
+  working. Emptiness is deliberately not the rule — the choice is between
+  *this* desktop and *that* one, and keying it on whether a desktop happens to
+  be empty would be wrong precisely when it mattered, and unpredictable in the
+  meantime. The pointer falls back to the focused desktop when it is over no
+  display rift manages, so a pointer parked off-screen changes nothing.
+
+  Not fixed by moving focus with the switch instead: that is what
+  `follow_space_switch_across_displays` does, and loosening its gate is what
+  once carried the user away from an app they had just activated. The
+  addition's destroy takes an arbitrary desktop id, so nothing here needed the
+  target to be focused in the first place.
+
 ### Fixed
 
 - **`preserve_focus_per_workspace` does something.** The key was declared,
