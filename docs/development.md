@@ -51,6 +51,12 @@ you swap in locally.
 | `just fmt` | format **only** changed files |
 | `just release <version>` | see [releasing.md](releasing.md) |
 
+## Display churn
+
+`just churn` connects and disconnects a virtual display at the running rift and
+checks its invariants each cycle, so an unplug no longer means reaching behind
+the machine. See [display-churn.md](display-churn.md).
+
 ## Formatting
 
 The committed tree predates the current nightly rustfmt: `cargo +nightly fmt

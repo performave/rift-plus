@@ -153,6 +153,11 @@ check: fmt-check
 test:
     cargo test
 
+# Connect and disconnect a virtual display at the running rift, checking its
+# invariants each cycle. See docs/display-churn.md.
+churn *ARGS:
+    ./scripts/display-churn.py {{ARGS}}
+
 # Format only the files you changed (never --all; see AGENTS.md).
 #
 # --skip-children is what keeps that promise. rustfmt follows `mod`
