@@ -86,6 +86,18 @@ pub fn handle_command_layout(
     } else {
         None
     };
+    // The engine reports neither the direction of a float toggle nor whether
+    // it found anything to do, so ask it the same question on either side of
+    // the command. Its own focused window, not the reactor's: that is the one
+    // the toggle acts on, and the reactor has already aligned the two.
+    let float_toggle_subject = matches!(
+        cmd,
+        LayoutCommand::ToggleWindowFloating | LayoutCommand::ToggleWindowFloatingWithOptions(_)
+    )
+    .then(|| layout.layout_engine.focused_window())
+    .flatten()
+    .map(|wid| (wid, layout.layout_engine.is_window_floating(wid)));
+
     if is_workspace_switch {
         workspace_switch.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
     } else {
@@ -149,6 +161,14 @@ pub fn handle_command_layout(
     outcome.broadcast_selection_changed = selection_changed;
     if is_move_node && let Some(window) = post_arrange_mouse_warp {
         outcome = outcome.with_post_arrange_mouse_warp(window);
+    }
+    // A toggle that found nothing to do leaves the answer unchanged, and earns
+    // no halo.
+    if let Some((window, was_floating)) = float_toggle_subject {
+        let is_floating = layout.layout_engine.is_window_floating(window);
+        if was_floating != is_floating {
+            outcome = outcome.with_post_arrange_halo(window, was_floating);
+        }
     }
     Ok(outcome)
 }

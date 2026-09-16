@@ -275,6 +275,39 @@ display_style = "layout"
 # .ron files in this folder appear under Layout Files in the menu bar
 layout_folder = "~/.config/rift/layouts"
 
+# A focus ring flashed over a window the float toggle has just pulled into the
+# tiling tree, or pushed back out of it. It is for the case where the transition
+# leaves no trace: a window whose own size already matched the frame the layout
+# hands it does not move, and one that lands in a stack covers its neighbours
+# exactly.
+#
+# The ring is drawn inside the window's own edge, not around it: the inner gap
+# between two tiled windows is a few points, and anything outside the frame
+# lands on the neighbour.
+[settings.ui.tile_halo]
+enabled = false
+# also flash, in float_color and drifting outward rather than springing in,
+# when the toggle takes a window back out of the tree
+on_float = true
+# points the ring starts outside the frame before it springs on. 0 draws it in
+# place and only fades it — which is also what macOS's Reduce Motion setting
+# forces, whatever this says
+grow = 14.0
+thickness = 3.5
+# corner rounding of the outermost ring. Match it to the window corners of the
+# macOS you are on; the inner rings derive theirs from this so the curves nest
+corner_radius = 14.0
+# the whole flash. The last 40% of it is the fade
+duration_ms = 420.0
+# [r, g, b] in 0..1. Left out, tile_color takes the accent colour you chose in
+# System Settings and float_color is a neutral grey — macOS's register for
+# "selected, but not the focus"
+# tile_color = [0.0, 0.48, 1.0]
+# float_color = [0.62, 0.65, 0.70]
+# draw a fainter rim inside the ring for each window sharing the stack a window
+# landed in, up to two. That landing is the one where nothing moves at all
+stack_depth = true
+
 [settings.ui.stack_line]
 # experimental stack line indicator (defaults to off)
 enabled = false

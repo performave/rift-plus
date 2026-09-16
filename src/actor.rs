@@ -18,6 +18,7 @@ pub mod raise_manager;
 pub mod reactor;
 pub mod spaces;
 pub mod stack_line;
+pub mod tile_halo;
 pub mod window_notify;
 pub mod wm_controller;
 
@@ -42,9 +43,7 @@ impl<Event> Sender<Event> {
 }
 
 impl<Event> Clone for Sender<Event> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
+    fn clone(&self) -> Self { Self(self.0.clone()) }
 }
 
 impl<Event> std::fmt::Debug for Sender<Event> {

@@ -532,6 +532,7 @@ impl Reactor {
         menu_tx: menu_bar::Sender,
         stack_line_tx: stack_line::Sender,
         drop_overlay_tx: crate::actor::drop_overlay::Sender,
+        tile_halo_tx: crate::actor::tile_halo::Sender,
         window_notify: Option<(crate::actor::window_notify::Sender, WindowTxStore)>,
         gesture_tap_tx: Option<gesture_tap::Sender>,
         one_space: bool,
@@ -550,6 +551,7 @@ impl Reactor {
         reactor.menu_manager.menu_tx = Some(menu_tx);
         reactor.communication_manager.stack_line_tx = Some(stack_line_tx);
         reactor.communication_manager.drop_overlay_tx = Some(drop_overlay_tx);
+        reactor.communication_manager.tile_halo_tx = Some(tile_halo_tx);
         reactor.communication_manager.gesture_tap_tx = gesture_tap_tx;
         reactor.communication_manager.events_tx = Some(events_tx_clone.clone());
         let query_handle = ReactorQueryHandle::new(events_tx_clone.clone());
@@ -615,6 +617,7 @@ impl Reactor {
                 gesture_tap_tx: None,
                 stack_line_tx: None,
                 drop_overlay_tx: None,
+                tile_halo_tx: None,
                 raise_manager_tx,
                 event_broadcaster: broadcast_tx,
                 wm_sender: None,
@@ -3025,6 +3028,14 @@ impl Reactor {
             self.warp_mouse(center);
         }
 
+        // Deliberately not gated on `layout_changed`, unlike the warp above.
+        // A window that already sat on the frame the layout hands it moves
+        // nothing, so arrange writes nothing and reports no change — and that
+        // is precisely the case the halo exists to speak for.
+        if let Some((window, tiled)) = outcome.post_arrange_halo {
+            self.flash_tile_halo(window, tiled);
+        }
+
         for request in outcome.raise_requests {
             if let Err(error) = self.communication_manager.raise_manager_tx.try_send(request) {
                 warn!(%error, "failed to send raise request");
@@ -3091,6 +3102,9 @@ impl Reactor {
             }
             if let Some(tx) = &self.communication_manager.drop_overlay_tx {
                 tx.send(crate::actor::drop_overlay::Event::ConfigUpdated(config.clone()));
+            }
+            if let Some(tx) = &self.communication_manager.tile_halo_tx {
+                tx.send(crate::actor::tile_halo::Event::ConfigUpdated(config.clone()));
             }
             if let Some(tx) = &self.menu_manager.menu_tx
                 && let Err(error) = tx.try_send(menu_bar::Event::ConfigUpdated(config.clone()))
@@ -5103,6 +5117,57 @@ impl Reactor {
     fn window_center_on_known_screen(&self, wid: WindowId) -> Option<CGPoint> {
         let window_center = self.live_frame_for(wid)?.mid();
         self.screen_for_point(window_center).map(|_| window_center)
+    }
+
+    /// Flashes the halo over a window the float toggle has just moved into or
+    /// out of the tiling tree.
+    fn flash_tile_halo(&mut self, wid: WindowId, tiled: bool) {
+        if !self.config.settings.ui.tile_halo.enabled {
+            return;
+        }
+        // `frame_monotonic`, not the live window server frame: arrange sets it
+        // to the target, while the server is still showing wherever an
+        // animation has got to. The ring has to land on the frame the window
+        // is going to have, or it outlines empty desktop.
+        let Some(frame) = self.state.windows.window(wid).map(|window| window.frame_monotonic)
+        else {
+            return;
+        };
+        let Some(screen) = self.screen_for_point(frame.mid()).map(|screen| screen.frame) else {
+            debug!(?wid, ?frame, "tile halo skipped: no screen holds the window");
+            return;
+        };
+        let kind = if tiled {
+            crate::ui::tile_halo::HaloKind::Tiled {
+                stack_members: self.stack_members_of(wid),
+            }
+        } else {
+            crate::ui::tile_halo::HaloKind::Floated
+        };
+        if let Some(tx) = &self.communication_manager.tile_halo_tx {
+            tx.send(crate::actor::tile_halo::Event::Flash { screen, frame, kind });
+        }
+    }
+
+    /// How many windows share `wid`'s stack, itself included. 0 when it is not
+    /// in one.
+    ///
+    /// Counted against the workspace's other windows rather than read off the
+    /// tree, because the engine exposes stack membership only as a question
+    /// about a pair. A workspace holds few enough windows that the difference
+    /// does not show, and this borrows nothing mutably.
+    fn stack_members_of(&self, wid: WindowId) -> usize {
+        let Some(space) = self.best_space_for_window_id(wid) else {
+            return 0;
+        };
+        let engine = &self.layout_manager.layout_engine;
+        let peers = engine
+            .windows_in_active_workspace(&self.state.windows, space)
+            .into_iter()
+            .filter(|other| *other != wid)
+            .filter(|other| engine.windows_share_a_stack(space, wid, *other))
+            .count();
+        if peers == 0 { 0 } else { peers + 1 }
     }
 
     pub fn warp_mouse(&mut self, point: CGPoint) {

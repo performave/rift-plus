@@ -63,6 +63,10 @@ pub(crate) struct EventOutcome {
     pub(crate) make_key_windows: Vec<(pid_t, WindowServerId)>,
     pub(crate) mouse_warps: Vec<CGPoint>,
     pub(crate) post_arrange_mouse_warp: Option<WindowId>,
+    /// A window the float toggle moved into or out of the tiling tree,
+    /// to be flashed once arrange has given it its new frame. `true` when
+    /// it joined the tree.
+    pub(crate) post_arrange_halo: Option<(WindowId, bool)>,
     pub(crate) pre_layout_window_frame_writes: Vec<WindowFrameWriteRequest>,
     pub(crate) drag_swap_evaluations: Vec<(WindowId, CGRect)>,
     pub(crate) dispatch_mouse_up: bool,
@@ -119,6 +123,7 @@ impl EventOutcome {
         self.mouse_warps.append(&mut other.mouse_warps);
         self.post_arrange_mouse_warp =
             other.post_arrange_mouse_warp.or(self.post_arrange_mouse_warp);
+        self.post_arrange_halo = other.post_arrange_halo.or(self.post_arrange_halo);
         self.pre_layout_window_frame_writes
             .append(&mut other.pre_layout_window_frame_writes);
         self.drag_swap_evaluations.append(&mut other.drag_swap_evaluations);
@@ -177,6 +182,7 @@ impl EventOutcome {
             make_key_windows: Vec::new(),
             mouse_warps: Vec::new(),
             post_arrange_mouse_warp: None,
+            post_arrange_halo: None,
             pre_layout_window_frame_writes: Vec::new(),
             drag_swap_evaluations: Vec::new(),
             dispatch_mouse_up: false,
@@ -366,6 +372,11 @@ impl EventOutcome {
 
     pub(crate) fn with_post_arrange_mouse_warp(mut self, window: WindowId) -> Self {
         self.post_arrange_mouse_warp = Some(window);
+        self
+    }
+
+    pub(crate) fn with_post_arrange_halo(mut self, window: WindowId, tiled: bool) -> Self {
+        self.post_arrange_halo = Some((window, tiled));
         self
     }
 

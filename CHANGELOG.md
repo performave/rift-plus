@@ -11,6 +11,42 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Added
+
+- **A focus ring confirms that the float toggle landed.**
+  `[settings.ui.tile_halo]`, off by default. Under a float-by-default config
+  the float toggle is the only thing that pulls a window into the tree, and it
+  is also the one command whose effect can be entirely invisible. A window the
+  user has already sized by hand frequently lands on a frame it was practically
+  sitting on, so nothing moves; a window that joins a stack covers the windows
+  already there exactly, so nothing moves *and* the result is actively
+  misleading. Either way the key reads as broken when it worked.
+
+  A ring in the accent colour the user chose in System Settings now springs
+  onto the window's new frame, holds, and fades — inward when the window joins
+  the tree, outward and in a neutral grey when it leaves, so the direction is
+  legible from the motion without reading the colour. A stacked landing draws a
+  fainter rim for each window sharing the stack, up to two, because the depth
+  is the only thing on screen that distinguishes it from an ordinary tile.
+
+  The ring is drawn *inside* the window's own edge rather than around it. The
+  inner gap between two tiled windows is a handful of points, so a ring outside
+  the frame lands on the neighbour, and two windows tiled in a row would flash
+  rings into each other. The spring's overshoot is what makes the arrival read
+  as a snap, and it carries the ring briefly past the frame — inward, where
+  there is room. Nested rims take their corner radius from the outer one less
+  their inset, so the curves stay concentric; macOS 26 ships that rule as
+  `NSViewCornerRadius.containerConcentric`, and it is one subtraction here.
+
+  Deliberately not gated on whether arrange actually wrote any frames, unlike
+  the mouse warp it sits beside: a toggle that moves nothing writes nothing and
+  reports no change, and that is the case the ring exists for. It respects
+  Reduce Motion by dropping the travel and fading in place. Unlike the drop
+  overlay it uses no `NSGlassEffectView` and so has no macOS 26 floor — glass
+  is a filled shape, and an outline of it would need four bars merged by an
+  `NSGlassEffectContainerView` on a rule documented only as "sufficiently
+  similar". Its timer runs only while a flash is on screen.
+
 ### Fixed
 
 - **`preserve_focus_per_workspace` does something.** The key was declared,

@@ -269,6 +269,7 @@ pub struct CommunicationManager {
     pub gesture_tap_tx: Option<gesture_tap::Sender>,
     pub stack_line_tx: Option<stack_line::Sender>,
     pub drop_overlay_tx: Option<crate::actor::drop_overlay::Sender>,
+    pub tile_halo_tx: Option<crate::actor::tile_halo::Sender>,
     pub raise_manager_tx: raise_manager::Sender,
     pub event_broadcaster: BroadcastSender,
     pub wm_sender: Option<wm_controller::Sender>,

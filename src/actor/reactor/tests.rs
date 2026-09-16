@@ -10621,3 +10621,78 @@ fn moving_a_window_to_a_space_that_does_not_exist_reports_it() {
         "the message names the space asked for: {error:?}"
     );
 }
+
+/// The float toggle is the one command whose effect can leave no trace: a
+/// window already sitting on the frame the layout hands it does not move, and
+/// one that lands in a stack covers its neighbours exactly. The halo is the
+/// only thing that reports it, so the outcome has to carry the transition —
+/// and the direction, which the engine does not report either.
+#[test]
+fn the_float_toggle_reports_which_way_it_went() {
+    let (mut reactor, wid, _space, _screen, _floating_frame) = reactor_with_floating_window();
+
+    let tiled = reactor.dispatch_test_layout_command(LayoutCommand::ToggleWindowFloating);
+    assert_eq!(tiled.post_arrange_halo, Some((wid, true)));
+    assert!(!reactor.layout_manager.layout_engine.is_window_floating(wid));
+
+    let floated = reactor.dispatch_test_layout_command(LayoutCommand::ToggleWindowFloating);
+    assert_eq!(floated.post_arrange_halo, Some((wid, false)));
+    assert!(reactor.layout_manager.layout_engine.is_window_floating(wid));
+}
+
+/// Commands that are not the float toggle leave it alone, so an ordinary move
+/// does not flash anything.
+#[test]
+fn other_layout_commands_do_not_ask_for_a_halo() {
+    let (mut reactor, _wid, _space, _screen, _floating_frame) = reactor_with_floating_window();
+    let moved = reactor.dispatch_test_layout_command(LayoutCommand::MoveNode(Direction::Left));
+    assert_eq!(moved.post_arrange_halo, None);
+}
+
+/// The flash has to survive a toggle that moves nothing, which is the whole
+/// reason it exists. Arrange writes no frames and reports no change when the
+/// window is already where the layout wants it, so anything gated on that
+/// would go quiet in exactly the case the user cannot read for themselves.
+#[test]
+fn a_toggle_that_moves_nothing_still_flashes() {
+    let (mut reactor, wid, space, _screen, _floating_frame) = reactor_with_floating_window();
+    reactor.config.settings.ui.tile_halo.enabled = true;
+
+    let (tx, mut rx) = crate::actor::channel();
+    reactor.communication_manager.tile_halo_tx = Some(tx);
+
+    // Put the floating window on the frame the layout would give it anyway:
+    // the only window in the workspace takes the whole screen less the gaps.
+    let screen_frame = reactor.space_state.screen_by_space(space).expect("screen").frame;
+    let settings = reactor.config.settings.clone();
+    let tiled_frame = reactor
+        .layout_manager
+        .layout_engine
+        .calculate_layout(
+            space,
+            screen_frame,
+            &settings.layout.gaps,
+            settings.ui.stack_line.thickness,
+            settings.ui.stack_line.horiz_placement,
+            settings.ui.stack_line.vert_placement,
+        )
+        .into_iter()
+        .find(|(id, _)| *id == wid)
+        .map(|(_, frame)| frame);
+    if let Some(frame) = tiled_frame
+        && let Some(window) = reactor.state.windows.window_mut(wid)
+    {
+        window.frame_monotonic = frame;
+    }
+
+    reactor.handle_test_layout_command(LayoutCommand::ToggleWindowFloating);
+
+    let (_span, event) = rx.try_recv().expect("the toggle has to flash the halo");
+    assert!(
+        matches!(event, crate::actor::tile_halo::Event::Flash {
+            kind: crate::ui::tile_halo::HaloKind::Tiled { .. },
+            ..
+        }),
+        "a window joining the tree flashes in the tile direction: {event:?}"
+    );
+}

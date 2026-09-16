@@ -770,6 +770,8 @@ pub struct UiSettings {
     pub mission_control: MissionControlSettings,
     #[serde(default)]
     pub drop_overlay: DropOverlaySettings,
+    #[serde(default)]
+    pub tile_halo: TileHaloSettings,
 }
 
 /// The region shown while dragging a window, marking where it would land.
@@ -802,6 +804,75 @@ impl Default for DropOverlaySettings {
             corner_radius: default_drop_overlay_corner_radius(),
             clear_style: false,
             follow_rate: default_drop_overlay_follow_rate(),
+        }
+    }
+}
+
+/// The focus ring flashed over a window that the float toggle has just pulled
+/// into the tiling tree, or pushed back out of it.
+///
+/// It exists for the case where the transition leaves no trace on screen: a
+/// window whose own size already matched the frame the layout hands it does
+/// not move, and one that lands in a stack covers its neighbours exactly.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TileHaloSettings {
+    #[serde(default = "no")]
+    pub enabled: bool,
+    /// Also flash, in `float_color` and drifting outward rather than springing
+    /// in, when the toggle takes a window back out of the tree.
+    #[serde(default = "yes")]
+    pub on_float: bool,
+    /// How far outside the frame the ring starts before it springs on, in
+    /// points. 0 draws it in place and only fades it, which is also what
+    /// macOS's Reduce Motion setting forces regardless of this value.
+    #[serde(default = "default_tile_halo_grow")]
+    pub grow: f64,
+    /// Stroke width, in points.
+    #[serde(default = "default_tile_halo_thickness")]
+    pub thickness: f64,
+    /// Corner rounding of the outermost ring, in points. Match it to the
+    /// window corners of the macOS you are on; the inner rings derive theirs
+    /// from this one so the curves stay concentric.
+    #[serde(default = "default_tile_halo_corner_radius")]
+    pub corner_radius: f64,
+    /// The whole flash, in milliseconds. The last 40% of it is the fade.
+    #[serde(default = "default_tile_halo_duration_ms")]
+    pub duration_ms: f64,
+    /// Colour of the ring when a window joins the tree, as `[r, g, b]` in
+    /// 0..1. Left out, it takes the accent colour the user chose in System
+    /// Settings, which is what makes it look like part of macOS.
+    #[serde(default)]
+    pub tile_color: Option<[f64; 3]>,
+    /// Colour of the ring when a window leaves the tree. Left out, it is a
+    /// neutral grey — macOS's register for "selected, but not the focus".
+    #[serde(default)]
+    pub float_color: Option<[f64; 3]>,
+    /// Draw a fainter rim inside the ring for each window sharing the stack a
+    /// window landed in, up to two. That landing is the one where nothing on
+    /// screen moves at all, so the depth is the only thing distinguishing it
+    /// from an ordinary tile.
+    #[serde(default = "yes")]
+    pub stack_depth: bool,
+}
+
+fn default_tile_halo_grow() -> f64 { 14.0 }
+fn default_tile_halo_thickness() -> f64 { 3.5 }
+fn default_tile_halo_corner_radius() -> f64 { 14.0 }
+fn default_tile_halo_duration_ms() -> f64 { 420.0 }
+
+impl Default for TileHaloSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            on_float: true,
+            grow: default_tile_halo_grow(),
+            thickness: default_tile_halo_thickness(),
+            corner_radius: default_tile_halo_corner_radius(),
+            duration_ms: default_tile_halo_duration_ms(),
+            tile_color: None,
+            float_color: None,
+            stack_depth: true,
         }
     }
 }
