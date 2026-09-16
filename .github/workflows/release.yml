@@ -40,9 +40,20 @@ jobs:
     # controls, and that applies to a bare binary like rift with no bundle.
     # Nothing rift draws was measurably affected -- the menu bar, alerts and
     # panels come out the same either way, and the drop overlay is exempt
-    # because it asks for NSGlassEffectView by name at run time -- but building
-    # on the same SDK `just dev` uses keeps releases and local builds on the
-    # same side of that switch rather than relying on it staying harmless.
+    # because it asks for NSGlassEffectView by name at run time.
+    #
+    # A release therefore links SDK 26 while a machine on macOS 27 builds
+    # against SDK 27, so the two are no longer on the same side of that
+    # switch. That is deliberate for now: `xcode-27` is the only image with
+    # the 27 SDK and it is still a public preview, which is not what a
+    # signed, notarized release should be cut on. Moving the pin is the call
+    # to make once it is generally available -- it needs no other change,
+    # since rift's macOS-27 support is decided at run time, not by the SDK.
+    #
+    # The 27 SDK also declares a new arm64e.x1 architecture that a pre-27
+    # linker cannot parse, so an image pairing an older Xcode with that SDK
+    # fails every link with `tapi error: malformed file`. macos-26 ships
+    # neither, which is a second reason not to drift onto macos-latest.
     runs-on: macos-26
     steps:
       # Everything downstream is named from this tag, so a malformed one has to
