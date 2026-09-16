@@ -52,6 +52,16 @@ const HOMING_DEADLINE: Duration = Duration::from_secs(3);
 /// within a second or two of the window server starting to move windows.
 const PRE_CHURN_TTL: Duration = Duration::from_secs(10);
 
+/// How long after the window server last moved windows for a display change
+/// a desktop going missing is still its doing rather than the user's.
+///
+/// It goes on reaping desktops well after the event that announced the change
+/// has been handled: 3.6s for a desktop rift had just made, 11.3s for one of
+/// the survivor's own that it decided was spare. Erring long costs a record
+/// entry for a desktop the user destroyed in the same half-minute, which the
+/// next settle clears up; erring short throws the whole record away.
+const REAP_AFTER_CHURN: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 pub(super) struct DisplayArchive {
     entries: HashMap<String, ArchivedDisplay>,
@@ -155,14 +165,6 @@ impl DisplayArchive {
     pub(super) fn is_empty(&self) -> bool { self.entries.is_empty() && self.record.is_none() }
 
     pub(super) fn has(&self, display_uuid: &str) -> bool { self.entries.contains_key(display_uuid) }
-
-    #[cfg(test)]
-    pub(super) fn archived_windows(&self, display_uuid: &str) -> Vec<WindowId> {
-        self.entries
-            .get(display_uuid)
-            .map(|entry| entry.windows.iter().map(|window| window.wid).collect())
-            .unwrap_or_default()
-    }
 
     pub(super) fn is_homing(&self, display_uuid: &str) -> bool {
         self.entries.get(display_uuid).is_some_and(|entry| entry.homing.is_some())
@@ -459,6 +461,19 @@ impl Reactor {
         display_space_ids: &HashMap<String, Vec<SpaceId>>,
     ) {
         if self.refresh_quarantine_manager.display_churn_active {
+            return;
+        }
+        // The churn flag above is cleared by the event that reports the new
+        // display set, but the window server is not finished then: it reaps
+        // desktops of its own accord for seconds afterwards — an empty one,
+        // and a freshly made one whose windows have not arrived yet. Reading
+        // that as the user destroying a desktop forgets the record, and the
+        // desktop rift made to hold the merged windows, moments after the
+        // departure that took it — so there is nothing left to put back when
+        // the display returns. Ask the window server itself instead.
+        if crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < REAP_AFTER_CHURN)
+        {
             return;
         }
         let Some(previous) = self.display_archive.whole_displays.as_ref() else {

@@ -254,9 +254,7 @@ impl From<CGSEventType> for u32 {
 
 impl fmt::Display for KnownCGSEvent {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Debug::fmt(self, f) }
 }
 
 impl fmt::Display for CGSEventType {
@@ -432,6 +430,9 @@ unsafe extern "C" {
     pub fn SLSCopyActiveMenuBarDisplayIdentifier(cid: cid_t) -> *mut CFString;
     pub fn SLSSpaceGetType(cid: cid_t, sid: u64) -> c_int;
     pub fn SLSGetMenuBarAutohideEnabled(cid: cid_t, enabled: *mut i32) -> i32;
+    /// Mach absolute time of the last display reconfiguration in which the
+    /// window server moved windows between desktops itself.
+    pub fn SLSGetDisplayReconfigureTimeWhenWindowsLastMoved() -> u64;
     pub fn SLSGetDisplayMenubarHeight(did: u32, height: *mut u32) -> i32;
     pub fn CoreDockGetAutoHideEnabled() -> bool;
     pub fn CoreDockGetOrientationAndPinning(orientation: *mut i32, pinning: *mut i32) -> bool;

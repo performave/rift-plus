@@ -100,6 +100,18 @@ Entries describe this fork's changes relative to
   map, which is updated only *after* the settle runs and so still named the
   departing display's desktops as present.
 
+- **A desktop macOS reaps no longer throws the record away.** macOS 27 garbage
+  collects desktops of its own accord in the wake of a display change, seconds
+  after the event announcing it has been handled and rift's churn flag
+  cleared — including the desktop rift had just made to hold the merged
+  windows, 3.6s after making it. rift read that as the user destroying a
+  desktop, which means forgetting it, the desktop it stood in for, and every
+  window filed on either. So the record was discarded moments after it was
+  taken and there was nothing left to put back when the display returned.
+  Whether a desktop went with a reshuffle or by the user's hand is now asked
+  of the window server itself, which keeps the time it last moved windows for
+  a display change, rather than inferred from rift's own event handling.
+
 - **The scripting addition works on macOS 27.** The payload's version gate knew
   Tahoe and nothing after it, so on 27 it returned before a single symbol was
   looked up, and the handshake reported dock.spaces, the desktop picture

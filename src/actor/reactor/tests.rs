@@ -8601,6 +8601,7 @@ mod display_archive {
         }
         clear_overrides(&f.exiled_wsids);
         crate::sys::screen::set_managed_display_spaces_override(None);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
         sa::set_next_created_space(None);
         sa::set_available(false);
     }
@@ -10001,7 +10002,6 @@ mod display_archive {
     #[test]
     fn a_made_desktop_that_nothing_replaces_stays_with_its_windows() {
         let mut f = spaces_fixture();
-        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
         let survivor_layout = test_layout(&mut f.reactor, space1(), screen1());
         let made = SpaceId::new(23);
         takeover_and_settle(&mut f, made);
@@ -10158,6 +10158,62 @@ mod display_archive {
             test_layout(&mut f.reactor, made, screen1()),
             survivor_layout,
             "the survivor's layout is on its made desktop"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// The window server reaps desktops of its own accord in the wake of a
+    /// display change — an empty one, and a freshly made one whose windows
+    /// have not arrived yet — seconds after the event announcing the change
+    /// has been handled and rift's own churn flag cleared. Reading that as
+    /// the user destroying a desktop threw the record away moments after it
+    /// was taken, so there was nothing left to put back when the display
+    /// returned. (Seen 2026-09-15 on macOS 27: the desktop rift made was
+    /// gone 3.6s later, and the record went with it.)
+    #[test]
+    fn a_made_desktop_the_window_server_reaps_leaves_the_record_standing() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        let made = SpaceId::new(23);
+        takeover_and_settle(&mut f, made);
+
+        // The window server's own account: it was still moving windows for a
+        // display change a moment ago, so the desktop went with the reshuffle.
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(4),
+        ));
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .backdate(std::time::Duration::from_secs(30));
+        set_window_spaces(&[survivor_wsid], space2());
+        managed(vec![("test-display-0", vec![space2(), space2_extra()])]);
+        let dropped = everyone(&f, space2(), space2());
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(space2())],
+            move |state| {
+                state.has_seen_display_set = true;
+                state
+                    .display_space_ids
+                    .insert("test-display-0".to_string(), vec![space2(), space2_extra()]);
+                for (wsid, space) in dropped {
+                    state.active_window_spaces.insert(wsid, space);
+                }
+            },
+        ));
+
+        let record = f.reactor.display_archive.record().expect("the record stands");
+        assert_eq!(
+            record.made_desktops(),
+            vec![made],
+            "the desktop the window server took is still the record's"
+        );
+        assert_eq!(
+            record.recorded_desktop(f.survivor),
+            Some(space1()),
+            "and the window still belongs where it did, not where it was dropped"
         );
         spaces_cleanup(&f, &[]);
     }
