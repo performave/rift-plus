@@ -139,10 +139,18 @@ Entries describe this fork's changes relative to
 
   A recorded display the window server has stopped listing *at all* — not
   merely showing nothing, which is what a display mid-churn does — is given up
-  on after twenty seconds. Its desktops are forgotten the way a desktop
-  destroyed while a display is away already was, its windows are filed
-  wherever they next turn up, and the displays that did come back reconcile
-  without it. The survivor is never given up on.
+  on after two minutes. Its desktops are forgotten the way a desktop destroyed
+  while a display is away already was, its windows are filed wherever they
+  next turn up, and the displays that did come back reconcile without it. The
+  survivor is never given up on.
+
+  Two minutes because giving up on a display that does come back costs its
+  trees: the return has nothing to pair it with and restores nothing, so the
+  windows are not lost but nothing puts them back either. At twenty seconds
+  that happened to a monitor unplugged for half a minute while the desktop was
+  still in use, which is an ordinary thing to do. The absence is also only
+  aged while reports keep arriving, so a machine sitting quiet with a display
+  unplugged never gives up on it however long it stays away.
 
 - **The window server's own shuffling is no longer mistaken for the user
   moving a window.** A window that turned up on another desktop while a
