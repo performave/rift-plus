@@ -110,6 +110,40 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A destroyed desktop now finds its replacement by its windows, not by
+  list order.** macOS destroys a desktop on unplug and mints a fresh one on
+  replug, and the two had to be paired for the tree to go back. They were
+  paired by zipping two lists — the desktops that vanished against the ones
+  that appeared, in the order macOS reports them — which is right only when
+  macOS lists a replacement where the old one stood. When it does not, a
+  desktop's tree lands on the desktop next to the one holding its windows and
+  every window follows it there.
+
+  A destroyed desktop cannot be identified, because it no longer exists, so
+  the only thing that can speak for it is what outlives it: the windows that
+  were on it. Window server ids survive a churn, an unplug and a restart of
+  rift; desktop ids survive none of them. Each destroyed desktop now takes the
+  fresh one holding most of its windows, best match first. Order remains the
+  tie-break and the answer when the windows cannot speak — an empty desktop
+  has nothing to match on — so a churn that moved nothing pairs as it always
+  did.
+
+- **A display that never comes back no longer holds up the whole return.**
+  The return runs only once every recorded display is back, which is what
+  makes it one coherent diff rather than a series of guesses; the cost was
+  that a display which never returned wedged it for good. A laptop screen
+  opened out of clamshell joins the record, and shutting the lid again leaves
+  the record waiting on a display macOS has switched off — so nothing was ever
+  put back, and rift settled the survivor over and over instead while macOS
+  pulled the same windows off the desktop it kept putting them on.
+
+  A recorded display the window server has stopped listing *at all* — not
+  merely showing nothing, which is what a display mid-churn does — is given up
+  on after twenty seconds. Its desktops are forgotten the way a desktop
+  destroyed while a display is away already was, its windows are filed
+  wherever they next turn up, and the displays that did come back reconcile
+  without it. The survivor is never given up on.
+
 - **The window server's own shuffling is no longer mistaken for the user
   moving a window.** A window that turned up on another desktop while a
   display was away was taken as deliberate, and where it landed became where

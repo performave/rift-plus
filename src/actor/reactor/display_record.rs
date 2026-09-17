@@ -85,6 +85,18 @@ const CHURN_SETTLE: Duration = Duration::from_secs(10);
 /// desktop's worth of windows in the wrong place.
 const PLACEMENT_AFTER_CHURN: Duration = Duration::from_secs(30);
 
+/// How long a recorded display the window server has stopped listing is
+/// waited for before the record gives up on it.
+///
+/// The return only runs once every recorded display is back, which is what
+/// makes it a single coherent diff rather than a series of guesses. The cost
+/// is that a display which never comes back holds it up for good: a laptop
+/// screen opened out of clamshell and shut again is in the record and then
+/// gone, and everything else waits on it. Long enough to outlast the gaps a
+/// churn leaves in the window server's own display list, short enough that a
+/// lid does not cost a session.
+const GIVE_UP_ON_DISPLAY: Duration = Duration::from_secs(20);
+
 /// How long a made desktop that a display keeps showing is retried before
 /// it is left alone.
 const RETIRE_GIVE_UP: Duration = Duration::from_secs(30);
@@ -127,6 +139,11 @@ pub(super) struct DisplayRecord {
     /// departure or a return. One the user makes appears while the window
     /// server is quiet, so it is never in here.
     minted: HashSet<SpaceId>,
+    /// Recorded displays the window server has stopped listing, and when it
+    /// first stopped. Not the same as off screen: a display mid-churn is
+    /// listed but shows nothing, while one that is disabled or unplugged is
+    /// not listed at all. See `GIVE_UP_ON_DISPLAY`.
+    absent: HashMap<String, Instant>,
     /// When the window server was last seen reshuffling: the record's
     /// taking, and every settle since.
     churn_seen: Instant,
@@ -225,6 +242,15 @@ impl DisplayRecord {
     #[cfg(test)]
     pub(super) fn backdate(&mut self, by: Duration) { self.churn_seen -= by; }
 
+    /// Ages every "the window server has stopped listing this display"
+    /// stamp, so a test need not wait `GIVE_UP_ON_DISPLAY` out.
+    #[cfg(test)]
+    pub(super) fn backdate_absence(&mut self, by: Duration) {
+        for since in self.absent.values_mut() {
+            *since -= by;
+        }
+    }
+
     /// Files every desktop listed now that the record has not met before.
     /// One that turns up while the window server is still moving windows for
     /// a reconfiguration is macOS's, and may be retired when it turns out to
@@ -262,6 +288,53 @@ impl DisplayRecord {
     /// window server has put those somewhere, and where each next turns up
     /// is where it belongs (`note_window_placed_while_away`). Returns the
     /// desktops forgotten and the windows let go.
+    /// Notes which recorded displays the window server still lists, and
+    /// gives up on any it has not listed for `GIVE_UP_ON_DISPLAY`. A display
+    /// given up on is dropped from the record and its desktops forgotten, so
+    /// its windows are filed wherever they next turn up — the same treatment
+    /// a desktop destroyed while a display is away gets.
+    ///
+    /// The survivor is never given up on. If the window server has stopped
+    /// listing that too, the record has nothing left to be about, and the
+    /// answer is not to dismantle it one display at a time.
+    ///
+    /// Returns the displays dropped, with the desktops each took with it.
+    pub(super) fn give_up_on_displays_gone_for_good(
+        &mut self,
+        listed: &HashSet<String>,
+    ) -> Vec<(String, Vec<SpaceId>)> {
+        let now = crate::sys::trace::now();
+        for d in &self.displays {
+            if listed.contains(&d.uuid) {
+                self.absent.remove(&d.uuid);
+            } else {
+                self.absent.entry(d.uuid.clone()).or_insert(now);
+            }
+        }
+        let give_up: Vec<String> = self
+            .displays
+            .iter()
+            .map(|d| d.uuid.clone())
+            .filter(|uuid| *uuid != self.survivor)
+            .filter(|uuid| {
+                self.absent.get(uuid).is_some_and(|since| since.elapsed() > GIVE_UP_ON_DISPLAY)
+            })
+            .collect();
+        let mut dropped = Vec::new();
+        for uuid in give_up {
+            let Some(at) = self.displays.iter().position(|d| d.uuid == uuid) else {
+                continue;
+            };
+            let gone = self.displays.remove(at);
+            for desktop in &gone.desktops {
+                self.forget_destroyed_desktop(*desktop);
+            }
+            self.absent.remove(&uuid);
+            dropped.push((uuid, gone.desktops));
+        }
+        dropped
+    }
+
     pub(super) fn forget_destroyed_desktop(
         &mut self,
         space: SpaceId,
@@ -330,6 +403,59 @@ impl DisplayRecord {
     pub(super) fn made_desktops(&self) -> Vec<SpaceId> {
         self.stopgaps.iter().map(|(made, _)| *made).collect()
     }
+}
+
+/// Pairs each destroyed desktop with the fresh desktop standing in for it.
+///
+/// A destroyed desktop cannot be identified, because it no longer exists, so
+/// the only thing that can speak for it is what outlives it: the windows that
+/// were on it. Window server ids survive a churn, an unplug and a restart of
+/// rift; desktop ids survive none of them.
+///
+/// Best match first — most windows in common — and the desktop ids break
+/// ties, so the same churn always pairs the same way. Whatever the windows
+/// cannot speak for falls back to the order macOS lists them in, which is
+/// the only answer available for an empty desktop and is what this did
+/// before: a churn that moved no windows pairs exactly as it used to.
+///
+/// Returns `(destroyed, fresh, windows in common)`.
+fn pair_by_windows(
+    destroyed: &[SpaceId],
+    fresh: &[SpaceId],
+    members: &HashMap<SpaceId, Vec<WindowId>>,
+    where_now: &HashMap<WindowId, SpaceId>,
+) -> Vec<(SpaceId, SpaceId, usize)> {
+    let mut scored: Vec<(usize, SpaceId, SpaceId)> = Vec::new();
+    for lost in destroyed {
+        let was_on = members.get(lost).map(Vec::as_slice).unwrap_or(&[]);
+        for now in fresh {
+            let held = was_on.iter().filter(|w| where_now.get(*w) == Some(now)).count();
+            if held > 0 {
+                scored.push((held, *lost, *now));
+            }
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0).then(a.1.get().cmp(&b.1.get())).then(a.2.get().cmp(&b.2.get()))
+    });
+
+    let mut pairs: Vec<(SpaceId, SpaceId, usize)> = Vec::new();
+    let mut spoken_for: HashSet<SpaceId> = HashSet::default();
+    let mut taken: HashSet<SpaceId> = HashSet::default();
+    for (held, lost, now) in scored {
+        if spoken_for.contains(&lost) || taken.contains(&now) {
+            continue;
+        }
+        spoken_for.insert(lost);
+        taken.insert(now);
+        pairs.push((lost, now, held));
+    }
+    let rest_lost = destroyed.iter().filter(|s| !spoken_for.contains(s));
+    let rest_fresh: Vec<SpaceId> = fresh.iter().copied().filter(|s| !taken.contains(s)).collect();
+    for (lost, now) in rest_lost.zip(rest_fresh) {
+        pairs.push((*lost, now, 0));
+    }
+    pairs
 }
 
 impl Reactor {
@@ -461,6 +587,7 @@ impl Reactor {
             survivor,
             met: seen.clone(),
             seen,
+            absent: HashMap::default(),
             minted: HashSet::default(),
             churn_seen: now,
             settled: false,
@@ -851,6 +978,20 @@ impl Reactor {
     /// what the window server reports and put the differences right.
     pub(super) fn reconcile_record(&mut self) -> EventOutcome {
         let mut outcome = EventOutcome::default();
+        // Before anything waits on it: a display the window server has
+        // stopped listing altogether is not coming back by itself, and the
+        // return below waits for every recorded display.
+        let listed_displays: HashSet<String> = self.display_space_ids_now().into_keys().collect();
+        if let Some(record) = self.display_archive.record.as_mut() {
+            for (uuid, desktops) in record.give_up_on_displays_gone_for_good(&listed_displays) {
+                warn!(
+                    display = %uuid,
+                    desktops = ?desktops.iter().map(SpaceId::get).collect::<Vec<_>>(),
+                    "The window server has stopped listing a display of the record; giving up on it so the rest can be put back"
+                );
+                crate::sys::trace::act("record_give_up", &(uuid, desktops.len()));
+            }
+        }
         let Some(record) = self.display_archive.record.as_ref() else {
             return outcome;
         };
@@ -881,12 +1022,30 @@ impl Reactor {
         let retiring: Vec<SpaceId> =
             self.display_archive.retiring.iter().map(|(space, _)| *space).collect();
 
+        // Where every window the window server knows of is now. A destroyed
+        // desktop cannot be identified — it does not exist — so what stands
+        // in for it is decided by the one thing that outlives it: the
+        // windows that were on it. Window server ids survive a churn, an
+        // unplug and a restart of rift; desktop ids survive none of them.
+        let where_now: HashMap<WindowId, SpaceId> = self
+            .state
+            .windows
+            .iter_tracked_window_server_ids()
+            .filter_map(|wsid| {
+                let wid = self.state.windows.tracked_window_id(wsid)?;
+                Some((wid, crate::sys::window_server::window_space(wsid)?))
+            })
+            .collect();
+
         // A destroyed desktop is one the record has that is listed nowhere
         // now; a fresh one is listed under a display now, recorded nowhere,
         // not one rift made, and not seen before the return — one that came
         // along with some other display meanwhile stands in for nothing.
-        // macOS lists the replacement first, so they pair in order. Fresh
-        // desktops beyond the destroyed ones were made by the user.
+        // Each destroyed desktop takes the fresh one holding most of its
+        // windows, best match first. Order is the tie-break and the answer
+        // when the windows cannot speak — an empty desktop has nothing to
+        // match on, and macOS lists the replacement first — so a churn that
+        // moved nothing pairs exactly as it did before.
         let mut subst: HashMap<SpaceId, SpaceId> = HashMap::default();
         let mut paired: HashSet<SpaceId> = HashSet::default();
         for d in &record.displays {
@@ -903,7 +1062,16 @@ impl Reactor {
                         && !record.seen.contains(s)
                 })
                 .collect();
-            for (old, new) in destroyed.into_iter().zip(fresh) {
+            for (old, new, held) in pair_by_windows(&destroyed, &fresh, &record.members, &where_now)
+            {
+                if held > 0 {
+                    debug!(
+                        lost = old.get(),
+                        now = new.get(),
+                        windows = held,
+                        "Paired a destroyed desktop with the one holding its windows"
+                    );
+                }
                 subst.insert(old, new);
                 paired.insert(new);
             }
@@ -1491,5 +1659,116 @@ impl Reactor {
             }
         }
         outcome.with_window_inventory_refresh().with_arrange_passes(1)
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+
+    fn wid(idx: u32) -> WindowId { WindowId::new(1, idx) }
+
+    fn space(id: u64) -> SpaceId { SpaceId::new(id) }
+
+    /// macOS does not list a replacement where its windows went. Pairing by
+    /// the order it lists them in put a desktop's tree on the desktop next
+    /// to the one holding its windows, and every window then went with it.
+    #[test]
+    fn a_destroyed_desktop_pairs_with_the_one_holding_its_windows() {
+        let members = HashMap::from_iter([
+            (space(1), vec![wid(10), wid(11)]),
+            (space(2), vec![wid(20), wid(21)]),
+        ]);
+        // Crosswise: the first destroyed desktop's windows are on the second
+        // fresh one, which is the case pairing in order gets backwards.
+        let where_now = HashMap::from_iter([
+            (wid(10), space(200)),
+            (wid(11), space(200)),
+            (wid(20), space(100)),
+            (wid(21), space(100)),
+        ]);
+        let pairs = pair_by_windows(
+            &[space(1), space(2)],
+            &[space(100), space(200)],
+            &members,
+            &where_now,
+        );
+        let mut by_lost: Vec<(u64, u64)> =
+            pairs.iter().map(|(lost, now, _)| (lost.get(), now.get())).collect();
+        by_lost.sort();
+        assert_eq!(
+            by_lost,
+            vec![(1, 200), (2, 100)],
+            "each goes where its windows went"
+        );
+    }
+
+    /// An empty desktop has nothing to match on, and a churn that moved no
+    /// windows has to pair exactly as it did before this existed.
+    #[test]
+    fn desktops_the_windows_cannot_speak_for_pair_in_order() {
+        let members = HashMap::default();
+        let where_now = HashMap::default();
+        let pairs = pair_by_windows(
+            &[space(1), space(2)],
+            &[space(100), space(200)],
+            &members,
+            &where_now,
+        );
+        assert_eq!(
+            pairs.iter().map(|(lost, now, _)| (lost.get(), now.get())).collect::<Vec<_>>(),
+            vec![(1, 100), (2, 200)],
+        );
+    }
+
+    /// A partial match still wins over order, and the desktop it leaves over
+    /// takes what is left rather than going unpaired.
+    #[test]
+    fn a_matched_desktop_takes_its_own_and_the_rest_fall_in_behind() {
+        let members = HashMap::from_iter([
+            (space(1), vec![wid(10)]),
+            (space(2), vec![wid(20), wid(21)]),
+        ]);
+        let where_now = HashMap::from_iter([
+            (wid(10), space(300)),
+            // Only one of space 2's two windows arrived; it should still win
+            // the desktop it landed on.
+            (wid(20), space(100)),
+        ]);
+        let pairs = pair_by_windows(
+            &[space(1), space(2)],
+            &[space(100), space(300)],
+            &members,
+            &where_now,
+        );
+        let mut by_lost: Vec<(u64, u64)> =
+            pairs.iter().map(|(lost, now, _)| (lost.get(), now.get())).collect();
+        by_lost.sort();
+        assert_eq!(by_lost, vec![(1, 300), (2, 100)]);
+    }
+
+    /// Two destroyed desktops whose windows all landed on one fresh desktop:
+    /// the one with more of them there takes it, the other falls back.
+    #[test]
+    fn only_one_desktop_can_take_a_given_replacement() {
+        let members = HashMap::from_iter([
+            (space(1), vec![wid(10)]),
+            (space(2), vec![wid(20), wid(21)]),
+        ]);
+        let where_now = HashMap::from_iter([
+            (wid(10), space(100)),
+            (wid(20), space(100)),
+            (wid(21), space(100)),
+        ]);
+        let pairs = pair_by_windows(
+            &[space(1), space(2)],
+            &[space(100), space(200)],
+            &members,
+            &where_now,
+        );
+        let mut by_lost: Vec<(u64, u64)> =
+            pairs.iter().map(|(lost, now, _)| (lost.get(), now.get())).collect();
+        by_lost.sort();
+        assert_eq!(by_lost, vec![(1, 200), (2, 100)], "the better match takes it");
     }
 }

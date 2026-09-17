@@ -8942,6 +8942,100 @@ mod display_archive {
         spaces_cleanup(&f, &[survivor_wsid]);
     }
 
+    /// The return waits for every recorded display, which is what makes it
+    /// one coherent diff. A display that never comes back then holds it up
+    /// for good — a laptop screen opened out of clamshell and shut again is
+    /// in the record and then gone, and nothing is ever put back. Being
+    /// listed by the window server at all is the test: mid-churn a display
+    /// is listed but shows nothing, while a disabled or unplugged one is not
+    /// listed.
+    #[test]
+    fn a_display_the_window_server_stops_listing_is_given_up_on() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra()],
+            merged,
+        );
+        assert!(
+            f.reactor.display_archive.record().unwrap().display_uuids().contains(&DISPLAY2),
+            "the departed display is in the record, and the return waits for it"
+        );
+
+        // The window server lists only the survivor: the other display is
+        // not off, it is gone.
+        let listed: HashSet<String> = std::iter::once("test-display-0".to_string()).collect();
+        let dropped = f
+            .reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .give_up_on_displays_gone_for_good(&listed);
+        assert!(
+            dropped.is_empty(),
+            "a gap this short is a churn, not a departure"
+        );
+
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .backdate_absence(std::time::Duration::from_secs(30));
+        let dropped = f
+            .reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .give_up_on_displays_gone_for_good(&listed);
+        assert_eq!(
+            dropped.iter().map(|(uuid, _)| uuid.as_str()).collect::<Vec<_>>(),
+            vec![DISPLAY2],
+            "a display gone this long is given up on"
+        );
+        assert!(
+            !f.reactor.display_archive.record().unwrap().display_uuids().contains(&DISPLAY2),
+            "and the return no longer waits for it"
+        );
+
+        // The survivor is never given up on, however long it goes unlisted.
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .give_up_on_displays_gone_for_good(&HashSet::default());
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .backdate_absence(std::time::Duration::from_secs(30));
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .give_up_on_displays_gone_for_good(&HashSet::default());
+        assert!(
+            f.reactor
+                .display_archive
+                .record()
+                .unwrap()
+                .display_uuids()
+                .contains(&"test-display-0"),
+            "the survivor is never given up on"
+        );
+        spaces_cleanup(&f, &[survivor_wsid]);
+    }
+
     #[test]
     fn spaces_mode_puts_the_survivors_window_back_after_a_takeover() {
         let mut f = spaces_fixture();
