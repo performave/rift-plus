@@ -93,9 +93,21 @@ const PLACEMENT_AFTER_CHURN: Duration = Duration::from_secs(30);
 /// is that a display which never comes back holds it up for good: a laptop
 /// screen opened out of clamshell and shut again is in the record and then
 /// gone, and everything else waits on it. Long enough to outlast the gaps a
-/// churn leaves in the window server's own display list, short enough that a
-/// lid does not cost a session.
-const GIVE_UP_ON_DISPLAY: Duration = Duration::from_secs(20);
+/// churn leaves in the window server's own display list, and long enough to
+/// outlast an ordinary unplug.
+///
+/// Measured, not guessed. Giving up on a display that does come back costs
+/// its trees: the return reports `replaced={}` for it and restores nothing,
+/// because the record no longer has it — the windows are not lost, but
+/// nothing puts them back either, and an empty desktop is left over. At
+/// twenty seconds that happened to a monitor unplugged for half a minute
+/// while the desktop was still being used, which is an ordinary thing to do.
+/// Two minutes still escapes a lid shut for the rest of a session, which is
+/// the case this exists for, and leaves a plain unplug alone.
+///
+/// The absence is only aged while reports keep arriving, so a machine left
+/// quiet with a display unplugged never gives up on it at all.
+const GIVE_UP_ON_DISPLAY: Duration = Duration::from_secs(120);
 
 /// How long a made desktop that a display keeps showing is retried before
 /// it is left alone.

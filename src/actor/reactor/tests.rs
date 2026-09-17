@@ -8991,7 +8991,7 @@ mod display_archive {
             .display_archive
             .record_mut()
             .unwrap()
-            .backdate_absence(std::time::Duration::from_secs(30));
+            .backdate_absence(std::time::Duration::from_secs(180));
         let dropped = f
             .reactor
             .display_archive
@@ -9018,7 +9018,7 @@ mod display_archive {
             .display_archive
             .record_mut()
             .unwrap()
-            .backdate_absence(std::time::Duration::from_secs(30));
+            .backdate_absence(std::time::Duration::from_secs(180));
         f.reactor
             .display_archive
             .record_mut()
