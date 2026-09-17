@@ -379,6 +379,14 @@ impl Reactor {
         display_space_ids: &HashMap<String, Vec<SpaceId>>,
     ) -> EventOutcome {
         let mut outcome = EventOutcome::default();
+        // Every report, whole or not: macOS mints its desktops mid-reshuffle,
+        // when the report is at its least coherent, and a desktop seen only
+        // then is exactly the one worth telling apart later.
+        let churning = crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < REAP_AFTER_CHURN);
+        if let Some(record) = self.display_archive.record.as_mut() {
+            record.note_listed(display_space_ids.values().flatten().copied(), churning);
+        }
         // The desktops and the displays come from different places —
         // SkyLight lists the first, the display list the second — and an
         // unplug parts them: SkyLight hands the departing display's desktops

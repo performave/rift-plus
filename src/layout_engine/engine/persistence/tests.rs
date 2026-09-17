@@ -2529,3 +2529,102 @@ fn app_close_removes_saved_fingerprints() {
     assert!(!engine.persistence.windows.contains_key(&window));
     assert!(!engine.persistence.pending_windows.contains(&window));
 }
+
+/// A display change can hand the engine a snapshot whose windows have all
+/// gone: it matches nothing, and every live window is re-projected instead.
+/// The order they go back in is the order they were in — sorting them by
+/// WindowId would let an unplug reorder tiles the user arranged, which is
+/// what swapped two windows round on every replug.
+#[test]
+fn a_restore_that_matches_nothing_keeps_the_order_the_windows_were_in() {
+    let space = SpaceId::new(131);
+    let size = CGSize::new(1200.0, 800.0);
+    let frame = objc2_core_foundation::CGRect::new(
+        objc2_core_foundation::CGPoint::new(10.0, 20.0),
+        CGSize::new(700.0, 500.0),
+    );
+    let saved = WindowId::new(70, 1);
+    // The tree order is the reverse of the WindowId order, so a sort by id
+    // is the one thing that cannot be mistaken for having preserved it.
+    let first = WindowId::new(96, 1);
+    let second = WindowId::new(95, 1);
+
+    let mut snapshot = test_engine();
+    let mut snapshot_store = WindowStore::default();
+    let _ = snapshot.handle_event(&mut snapshot_store, LayoutEvent::SpaceExposed(space, size));
+    let snapshot_workspace = snapshot.active_workspace(space).unwrap();
+    let snapshot_layout = snapshot.workspace_layouts.active(snapshot_workspace).unwrap();
+    snapshot
+        .workspace_tree_mut(snapshot_workspace)
+        .add_window_after_selection(snapshot_layout, saved);
+    snapshot.persistence.windows.insert(saved, WindowFingerprint {
+        window_server_id: Some(7001),
+        title: Some("Gone".into()),
+        width: 700.0,
+        height: 500.0,
+        app_id: Some("com.example.gone".into()),
+    });
+    let path = std::env::temp_dir().join(format!(
+        "rift-restore-order-test-{}-{}.ron",
+        std::process::id(),
+        space.get(),
+    ));
+    snapshot.save(path.clone()).unwrap();
+
+    let mut engine = test_engine();
+    let mut window_store = WindowStore::default();
+    let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, size));
+    let target_workspace = engine.active_workspace(space).unwrap();
+    let live_state = |title: &str, bundle_id: &str, window_server_id: u32| WindowState {
+        info: WindowInfo {
+            is_standard: true,
+            is_root: true,
+            is_minimized: false,
+            is_resizable: true,
+            min_size: None,
+            max_size: None,
+            title: title.into(),
+            frame,
+            sys_id: Some(WindowServerId::new(window_server_id)),
+            bundle_id: Some(bundle_id.into()),
+            path: None,
+            ax_role: None,
+            ax_subrole: None,
+        },
+        frame_monotonic: frame,
+        is_manageable: true,
+        manage_override: None,
+    };
+    window_store.insert_window(first, live_state("First", "com.example.first", 9601));
+    window_store.insert_window(second, live_state("Second", "com.example.second", 9501));
+    for window in [first, second] {
+        assert!(engine.virtual_workspace_manager.assign_window_to_workspace(
+            &mut window_store,
+            space,
+            window,
+            target_workspace,
+        ));
+        engine.add_window_to_layout(&mut window_store, space, window);
+    }
+    assert_eq!(engine.windows_on_space_in_layout_order(space), vec![
+        first, second
+    ]);
+
+    let report = engine
+        .restore_layout(
+            path.clone(),
+            RestoreRequest::new(RestoreScope::Workspace, space),
+            &mut window_store,
+            &VirtualWorkspaceSettings::default(),
+            &LayoutSettings::default(),
+        )
+        .unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert_eq!(report.matched, 0, "the snapshot's window is gone");
+    assert_eq!(
+        engine.windows_on_space_in_layout_order(space),
+        vec![first, second],
+        "the live windows keep the order they were in"
+    );
+}

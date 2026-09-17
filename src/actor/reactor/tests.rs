@@ -8816,6 +8816,132 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A report can carry a departure and a return at once — a pseudo
+    /// display appearing and going again across a replug does exactly that.
+    /// Settling for the departure then would file the desktops macOS mints
+    /// for the return among those seen while a display was away, and the
+    /// return would no longer know them for the replacements they are: the
+    /// destroyed desktop would stand on its stopgap for good, with macOS's
+    /// new one left empty beside it.
+    #[test]
+    fn a_settle_does_nothing_once_every_display_is_back() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra()],
+            merged,
+        );
+        assert!(
+            f.reactor.display_archive.record().is_some(),
+            "the takeover took a record"
+        );
+
+        // Both displays on screen again, the returning one listing the
+        // desktop macOS minted for it.
+        let fresh = SpaceId::new(13);
+        managed(vec![
+            ("test-display-0", vec![space2(), space2_extra()]),
+            (DISPLAY2, vec![fresh]),
+        ]);
+        let screens =
+            make_screen_snapshots(vec![screen1(), screen2()], vec![Some(space2()), Some(fresh)]);
+        f.reactor.settle_after_departure(&screens);
+        assert!(
+            !f.reactor.display_archive.record().unwrap().has_seen(fresh),
+            "the desktop minted for the return is not filed among those seen while away"
+        );
+        spaces_cleanup(&f, &[survivor_wsid]);
+    }
+
+    /// Which desktops may be retired at a return turns on who made them, and
+    /// the only honest witness is the window server's own account of when it
+    /// last moved windows for a reconfiguration. A desktop that appears while
+    /// it is still reshuffling is macOS's — it mints them freely across a
+    /// reconfiguration and never takes them away again — and one that appears
+    /// while it is quiet is the user's, and is kept whether or not it is empty.
+    #[test]
+    fn only_the_desktops_macos_mints_mid_churn_are_up_for_retirement() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra()],
+            merged,
+        );
+
+        // The user makes one while the window server is quiet.
+        let theirs = SpaceId::new(31);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(space2())],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![
+                    space2(),
+                    space2_extra(),
+                    theirs,
+                ]);
+            },
+        ));
+
+        // macOS mints one while it is still reshuffling.
+        let macos = SpaceId::new(32);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        f.reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(space2())],
+            move |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![
+                    space2(),
+                    space2_extra(),
+                    theirs,
+                    macos,
+                ]);
+            },
+        ));
+
+        let record = f.reactor.display_archive.record().unwrap();
+        assert!(
+            !record.has_minted(theirs),
+            "a desktop that appeared while the window server was quiet is the user's"
+        );
+        assert!(
+            record.has_minted(macos),
+            "a desktop that appeared mid-reshuffle is macOS's"
+        );
+        // Still the user's on a later sighting: only the first one counts.
+        assert!(
+            !record.has_minted(theirs),
+            "a desktop is judged by its first sighting, not its later ones"
+        );
+        spaces_cleanup(&f, &[survivor_wsid]);
+    }
+
     #[test]
     fn spaces_mode_puts_the_survivors_window_back_after_a_takeover() {
         let mut f = spaces_fixture();
@@ -9098,6 +9224,71 @@ mod display_archive {
             "the departure's layout is back"
         );
         spaces_cleanup(&f, &[]);
+    }
+
+    /// The window server goes on moving windows between desktops for a long
+    /// time after a display change — far past `CHURN_SETTLE`, which measures
+    /// from rift's own last sighting of a reshuffle. Over a long absence its
+    /// shuffling would otherwise be written into the record as the user's
+    /// intent, and every later pass would faithfully put a desktop's worth of
+    /// windows somewhere the user never asked for.
+    #[test]
+    fn a_window_the_window_server_is_still_moving_is_not_taken_for_the_users() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra()],
+            merged,
+        );
+
+        // Long enough since rift last saw a reshuffle, but the window server
+        // says it is still moving windows for the reconfiguration.
+        let moved = f.exiled[0];
+        let moved_wsid = f.exiled_wsids[0];
+        f.reactor
+            .display_archive
+            .record_mut()
+            .unwrap()
+            .backdate(std::time::Duration::from_secs(30));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        set_window_spaces(&[moved_wsid], space2_extra());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            moved_wsid,
+            space2_extra(),
+            SpaceEventKind::User,
+        ));
+        assert_ne!(
+            f.reactor.display_archive.record().unwrap().recorded_desktop(moved),
+            Some(space2_extra()),
+            "the window server's own shuffling is not the user's intent"
+        );
+
+        // Once it has stopped, the same arrival is the user's.
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            moved_wsid,
+            space2_extra(),
+            SpaceEventKind::User,
+        ));
+        assert_eq!(
+            f.reactor.display_archive.record().unwrap().recorded_desktop(moved),
+            Some(space2_extra()),
+            "with the window server quiet the record follows the user"
+        );
+        spaces_cleanup(&f, &[survivor_wsid]);
     }
 
     #[test]

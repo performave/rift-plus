@@ -71,6 +71,20 @@ pub(super) const RECORD_DEADLINE_KEY: &str = "record";
 /// still the window server's doing and not the user's.
 const CHURN_SETTLE: Duration = Duration::from_secs(10);
 
+/// How long after the window server last moved windows for a reconfiguration
+/// an arrival on another desktop is still its doing rather than the user's.
+///
+/// `CHURN_SETTLE` measures from rift's own last sighting of a reshuffle,
+/// which is a settle; the window server goes on moving windows well past
+/// that, and over a long absence — a monitor off for a minute — it crosses
+/// ten seconds easily. Asking the window server itself is the only honest
+/// answer. Erring long costs a placement the user made just after a churn,
+/// and the window then goes back where the record has it, which they can
+/// redo; erring short writes the window server's own shuffling into the
+/// record as the user's intent, and every later pass faithfully puts a
+/// desktop's worth of windows in the wrong place.
+const PLACEMENT_AFTER_CHURN: Duration = Duration::from_secs(30);
+
 /// How long a made desktop that a display keeps showing is retried before
 /// it is left alone.
 const RETIRE_GIVE_UP: Duration = Duration::from_secs(30);
@@ -101,6 +115,18 @@ pub(super) struct DisplayRecord {
     /// the return, and stands in for a destroyed one; one that is here came
     /// along with some display in the meantime and stands in for nothing.
     seen: HashSet<SpaceId>,
+    /// Every desktop any report has listed since the record was taken,
+    /// seeded with the ones it was taken with. Only ever read to tell a
+    /// desktop's first sighting from its later ones — `seen` cannot, because
+    /// it is written at a settle and says nothing about a desktop that came
+    /// and went between two of them, and widening `seen` instead would
+    /// change which desktops the return pairs.
+    met: HashSet<SpaceId>,
+    /// Of those, the ones first listed while the window server was still
+    /// moving windows for a reconfiguration: macOS's own, minted for a
+    /// departure or a return. One the user makes appears while the window
+    /// server is quiet, so it is never in here.
+    minted: HashSet<SpaceId>,
     /// When the window server was last seen reshuffling: the record's
     /// taking, and every settle since.
     churn_seen: Instant,
@@ -198,6 +224,34 @@ impl DisplayRecord {
 
     #[cfg(test)]
     pub(super) fn backdate(&mut self, by: Duration) { self.churn_seen -= by; }
+
+    /// Files every desktop listed now that the record has not met before.
+    /// One that turns up while the window server is still moving windows for
+    /// a reconfiguration is macOS's, and may be retired when it turns out to
+    /// hold nothing; one that turns up while it is quiet is the user's, and
+    /// is left alone whether or not it is empty.
+    pub(super) fn note_listed(&mut self, listed: impl Iterator<Item = SpaceId>, churning: bool) {
+        for space in listed {
+            if !self.met.insert(space) {
+                continue;
+            }
+            if churning {
+                self.minted.insert(space);
+            }
+        }
+    }
+
+    /// Whether `space` was first listed while the window server was moving
+    /// windows for a reconfiguration, and so is macOS's rather than the
+    /// user's.
+    #[cfg(test)]
+    pub(super) fn has_minted(&self, space: SpaceId) -> bool { self.minted.contains(&space) }
+
+    /// Whether the window server has listed `space` since the record was
+    /// taken. A desktop the return finds that is not one of these was
+    /// minted for the return.
+    #[cfg(test)]
+    pub(super) fn has_seen(&self, space: SpaceId) -> bool { self.seen.contains(&space) }
 
     /// A desktop the window server listed after the record was taken and
     /// lists no longer, with the displays as they were: the user destroyed
@@ -405,7 +459,9 @@ impl Reactor {
             placed: HashMap::default(),
             displays,
             survivor,
+            met: seen.clone(),
             seen,
+            minted: HashSet::default(),
             churn_seen: now,
             settled: false,
             stopgaps: Vec::new(),
@@ -436,6 +492,16 @@ impl Reactor {
         record.placed.retain(|_, (_, at)| at.elapsed() >= CHURN_SETTLE);
         let record = self.display_archive.record.as_ref().expect("checked above");
         let on_screen: Vec<&str> = screens.iter().map(|s| s.display_uuid.as_str()).collect();
+        // Every recorded display is on screen: this report is a return, and
+        // the return puts everything back itself. Settling for a departure
+        // here would add the desktops macOS mints for the return to the ones
+        // seen while a display was away, and the return would then take them
+        // for desktops the user made rather than the replacements they are —
+        // leaving the destroyed desktop standing on the stopgap for good and
+        // macOS's new one empty beside it.
+        if record.displays.iter().all(|d| on_screen.contains(&d.uuid.as_str())) {
+            return outcome;
+        }
         let Some(survivor) = record
             .displays
             .iter()
@@ -759,6 +825,8 @@ impl Reactor {
         }
         if record.pass.is_some()
             || record.churn_seen.elapsed() < CHURN_SETTLE
+            || crate::sys::display_churn::since_windows_last_moved()
+                .is_some_and(|since| since < PLACEMENT_AFTER_CHURN)
             || record.displays.iter().all(|d| on_screen.contains(&d.uuid.as_str()))
         {
             return;
@@ -852,18 +920,42 @@ impl Reactor {
         // Whatever is listed anywhere that the record does not know, no
         // destroyed desktop accounts for and rift did not make was made by
         // the user (or left behind by a display that came and went) while
-        // the display was away, and belongs to the display that stayed.
-        let unknown: Vec<SpaceId> = record
+        // the display was away, and belongs to the display that stayed —
+        // macOS files the survivor's desktops under a returning display as
+        // readily as it files anything else.
+        //
+        // One with nothing on it is not worth the trip. macOS mints desktops
+        // freely across a reconfiguration and never takes them away again,
+        // so an empty one of its making is litter: it is retired below
+        // rather than moved. Only ones it minted, though — a desktop first
+        // listed while the window server was quiet is the user's, and an
+        // empty one of those is kept. See `note_listed`.
+        let candidates: Vec<(String, SpaceId)> = record
             .displays
             .iter()
-            .flat_map(|d| now.get(&d.uuid).into_iter().flatten().copied())
-            .filter(|s| {
+            .flat_map(|d| {
+                now.get(&d.uuid).into_iter().flatten().copied().map(|s| (d.uuid.clone(), s))
+            })
+            .filter(|(_, s)| {
                 !recorded_all.contains(s)
                     && !paired.contains(s)
                     && !stopgaps.contains_key(s)
                     && !retiring.contains(s)
             })
             .collect();
+        let occupied: HashSet<SpaceId> = self
+            .state
+            .windows
+            .iter_tracked_window_server_ids()
+            .filter_map(crate::sys::window_server::window_space)
+            .collect();
+        let spare: Vec<SpaceId> = candidates
+            .iter()
+            .filter(|(_, s)| record.minted.contains(s) && !occupied.contains(s))
+            .map(|(_, s)| *s)
+            .collect();
+        let unknown: Vec<SpaceId> =
+            candidates.into_iter().map(|(_, s)| s).filter(|s| !spare.contains(s)).collect();
 
         // A desktop the user rearranged while away keeps its arrangement:
         // its tree is not put back from the record, and what it shows now
@@ -1105,6 +1197,20 @@ impl Reactor {
             &(desktop_moves, moved, waiting.len(), restores.len()),
         );
 
+        // The desktops macOS minted for the return that nothing claimed go
+        // the way of the ones rift makes: destroyed once no display is
+        // showing them, and left alone if one still is.
+        for space in spare {
+            if self.display_archive.retiring.iter().any(|(s, _)| *s == space) {
+                continue;
+            }
+            info!(
+                desktop = space.get(),
+                "A desktop macOS minted for the return holds nothing; retiring it"
+            );
+            self.display_archive.retiring.push((space, crate::sys::trace::now()));
+        }
+
         let immediate = waiting.is_empty();
         let record = self.display_archive.record.as_mut().expect("checked above");
         // Rewrite the record onto the new ids, for the restores that follow.
@@ -1258,6 +1364,12 @@ impl Reactor {
         }
         let listed: HashSet<SpaceId> =
             self.display_space_ids_now().into_values().flatten().collect();
+        let occupied: HashSet<SpaceId> = self
+            .state
+            .windows
+            .iter_tracked_window_server_ids()
+            .filter_map(crate::sys::window_server::window_space)
+            .collect();
         let retiring = std::mem::take(&mut self.display_archive.retiring);
         for (made, since) in retiring {
             if !listed.contains(&made) {
@@ -1272,6 +1384,17 @@ impl Reactor {
                 } else {
                     self.display_archive.retiring.push((made, since));
                 }
+                continue;
+            }
+            // Emptiness is decided when a desktop is put up for retirement,
+            // and the windows are still moving then. A window that landed on
+            // it after all is reason enough to leave it alone: destroying it
+            // would hand the window to whatever desktop macOS picks.
+            if occupied.contains(&made) {
+                info!(
+                    desktop = made.get(),
+                    "The desktop up for retirement has windows on it after all; leaving it"
+                );
                 continue;
             }
             if scripting_addition::destroy_space(made.get()) {

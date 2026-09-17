@@ -310,6 +310,30 @@ impl RestorePlan {
             .iter()
             .map(|workspace| (workspace.target_space, workspace.target_workspace))
             .collect::<Vec<_>>();
+        // Where the target spaces had their windows before the trees are
+        // replaced below. A restore whose snapshot has gone stale matches
+        // nothing, and every live window is then re-projected by the loop
+        // near the end of this function — in the order that loop walks them.
+        // Walking them in WindowId order would hand a display change the
+        // power to reorder tiles the user arranged, so their order now is
+        // the order they go back in; a window that was not on the space
+        // keeps sorting by id, after the ones that were.
+        let mut order_before: HashMap<WindowId, usize> = HashMap::default();
+        {
+            let mut spaces: Vec<SpaceId> = Vec::new();
+            for (space, _) in &restored_targets {
+                if !spaces.contains(space) {
+                    spaces.push(*space);
+                }
+            }
+            for space in spaces {
+                for (at, window) in
+                    engine.windows_on_space_in_layout_order(space).into_iter().enumerate()
+                {
+                    order_before.entry(window).or_insert(at);
+                }
+            }
+        }
         let workspaces_replaced = self.workspaces.len();
         for workspace in self.workspaces {
             engine.install_workspace_restore_state(workspace);
@@ -390,7 +414,9 @@ impl RestorePlan {
             ..RestoreReport::default()
         };
         let mut ordered_live_windows = live_windows.into_iter().collect::<Vec<_>>();
-        ordered_live_windows.sort_unstable_by_key(|(window, _)| *window);
+        ordered_live_windows.sort_unstable_by_key(|(window, _)| {
+            (order_before.get(window).copied().unwrap_or(usize::MAX), *window)
+        });
         for (live, fingerprint) in ordered_live_windows {
             if !window_store.contains_window(live) {
                 continue;

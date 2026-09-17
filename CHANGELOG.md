@@ -110,6 +110,62 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **The window server's own shuffling is no longer mistaken for the user
+  moving a window.** A window that turned up on another desktop while a
+  display was away was taken as deliberate, and where it landed became where
+  it belonged from then on. The test for "is the churn over?" measured from
+  rift's last sighting of a reshuffle, ten seconds; the window server goes on
+  moving windows far past that, and over a long absence — a monitor switched
+  off for a minute, a lid opened and closed — it crossed the threshold easily.
+  A desktop's worth of windows would then be filed where macOS had dumped
+  them, and every later pass faithfully put them there: two displays' contents
+  swapped over, with nothing in the layout engine wrong.
+
+  It now also asks the window server how long ago it last moved windows for a
+  reconfiguration, which the archive already treats as the only honest witness
+  for the same question about desktops. Erring long costs a placement made
+  just after a churn, and that window goes back where the record has it; erring
+  short corrupts the record, which is not recoverable without moving everything
+  back by hand.
+
+- **A replug no longer swaps two tiles round.** Two windows sharing a desktop
+  could come back from an unplug in the other order. When a display change
+  hands the layout engine a snapshot whose windows have all gone, the restore
+  matches nothing and every live window is re-projected instead — and they
+  were walked in `WindowId` order, which is process id then AX index. That has
+  nothing to do with where the user put them, so the tree came back sorted by
+  which app happened to launch first. The order the windows were in before the
+  trees are replaced is now the order they go back in, and a window that was
+  not on the desktop still sorts by id, after the ones that were.
+
+- **A replug no longer strands a desktop's windows on the stand-in made for
+  them.** macOS destroys a desktop on unplug and mints a fresh one on replug,
+  and rift pairs the two so the windows it parked on a stand-in desktop go
+  home and the stand-in is destroyed. The pairing turns on which desktops the
+  window server had listed before the displays came back — and a single report
+  can carry a departure and a return at once, as it does when a pseudo display
+  appears and goes again across a replug. Settling for that departure filed the
+  return's own fresh desktops among the ones seen while a display was away, so
+  the return read them as desktops the user had made: nothing was paired, the
+  stand-in became permanent, and macOS's new desktop was left empty beside it.
+  A settle is now skipped once every recorded display is back on screen, which
+  is the return's business anyway.
+
+- **An empty desktop macOS minted for a replug is now cleaned up.** It makes
+  them freely across a reconfiguration and never takes them away again, so they
+  accumulated, and a display churned often enough collected one after another.
+  One that no destroyed desktop accounts for and that holds no window rift
+  knows of is now retired the same way the stand-ins are — destroyed once no
+  display is showing it, and left alone if a window turns up on it after all.
+
+  Whose desktop it is turns on when it first appeared. The record notes every
+  desktop the window server lists and whether it was still moving windows for
+  a reconfiguration at the time, which is the one account of that worth
+  trusting: macOS mints its desktops mid-reshuffle, when the reports are least
+  coherent, and a desktop the user makes appears while the window server is
+  quiet. Only the first sighting counts, so a desktop of the user's that is
+  still listed through a later churn stays theirs, empty or not.
+
 - **A screen snapshot with no desktop on it no longer reports no active
   desktop.** Resolving the command space and the menu-bar space both ended at
   the desktops on the incoming screens, so a snapshot that arrived mid-churn
