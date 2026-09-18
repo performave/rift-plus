@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.5-plus.3] - 2026-09-18
+
 ### Added
 
 - **`only_first_window`, for apps whose other windows are documents.** An app
@@ -107,6 +109,17 @@ Entries describe this fork's changes relative to
   once carried the user away from an app they had just activated. The
   addition's destroy takes an arbitrary desktop id, so nothing here needed the
   target to be focused in the first place.
+
+- **Layout state is keyed by workspace rather than by native macOS space.** The
+  space in that key was redundant: workspace ids come from one slot map shared
+  by every space, so they identify a workspace on their own. It was also a key
+  macOS owns and re-mints — it destroys a desktop at an unplug and mints a fresh
+  one at the replug — so every layout had to be carried by hand from the dead id
+  onto the new one, and a carry that missed left a tree stranded under an id
+  nothing pointed at any more. That is how a stacked desktop came back tiled.
+  Keyed by the workspace there is nothing to carry, and one of the two
+  remap paths is gone outright. Layout files written by earlier versions are
+  migrated when they load.
 
 ### Fixed
 
@@ -485,19 +498,6 @@ Entries describe this fork's changes relative to
   gone, and the window sat floating over the layout until the next switch to
   that space. The order-in now puts a window with a fullscreen slot waiting
   back where it was.
-
-### Changed
-
-- **Layout state is keyed by workspace rather than by native macOS space.** The
-  space in that key was redundant: workspace ids come from one slot map shared
-  by every space, so they identify a workspace on their own. It was also a key
-  macOS owns and re-mints — it destroys a desktop at an unplug and mints a fresh
-  one at the replug — so every layout had to be carried by hand from the dead id
-  onto the new one, and a carry that missed left a tree stranded under an id
-  nothing pointed at any more. That is how a stacked desktop came back tiled.
-  Keyed by the workspace there is nothing to carry, and one of the two
-  remap paths is gone outright. Layout files written by earlier versions are
-  migrated when they load.
 
 ## [0.5.5-plus.2] - 2026-09-06
 
@@ -906,7 +906,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.2...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.3...HEAD
+[0.5.5-plus.3]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.2...v0.5.5-plus.3
 [0.5.5-plus.2]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.1...v0.5.5-plus.2
 [0.5.5-plus.1]: https://github.com/performave/rift-plus/compare/v0.5.3-plus.1...v0.5.5-plus.1
 [0.5.3-plus.1]: https://github.com/performave/rift-plus/compare/v0.5.3...v0.5.3-plus.1
