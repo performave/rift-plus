@@ -209,7 +209,9 @@ pub struct TileHaloWindow {
     /// `grow` with Reduce Motion applied: zero when the user has asked for
     /// less movement, which leaves the ring to fade in place.
     travel: Cell<f64>,
-    visible: Cell<bool>,
+    /// Whether we were the ones who last put the panel on screen. A
+    /// diagnostic only: whether it *is* on screen is asked of the panel.
+    asserted: Cell<bool>,
 }
 
 impl TileHaloWindow {
@@ -264,7 +266,7 @@ impl TileHaloWindow {
             kind: Cell::new(HaloKind::Tiled { stack_members: 0 }),
             started: Cell::new(None),
             travel: Cell::new(config.grow),
-            visible: Cell::new(false),
+            asserted: Cell::new(false),
         })
     }
 
@@ -322,7 +324,8 @@ impl TileHaloWindow {
     pub fn hide(&self) {
         self.started.set(None);
         *self.frame.borrow_mut() = None;
-        if self.visible.replace(false) {
+        self.asserted.set(false);
+        if self.panel.isVisible() {
             self.panel.orderOut(None);
         }
     }
@@ -394,12 +397,20 @@ impl TileHaloWindow {
             self.group.setOpacity(phase.opacity as f32);
         });
 
-        if !self.visible.replace(true) {
-            // orderFrontRegardless rather than orderFront: the flash has to
-            // appear without this process becoming active, or confirming a
-            // command would steal focus from the window it confirms.
-            self.panel.orderFrontRegardless();
+        if self.panel.isVisible() {
+            return;
         }
+        // Asked of the panel rather than remembered, for the reason spelled
+        // out in `drop_overlay`: a flag of our own stays true when something
+        // other than `hide` takes the panel off screen, and then the edge that
+        // would put it back never comes again.
+        if self.asserted.replace(true) {
+            warn!("tile halo was taken off screen behind our back; putting it back");
+        }
+        // orderFrontRegardless rather than orderFront: the flash has to appear
+        // without this process becoming active, or confirming a command would
+        // steal focus from the window it confirms.
+        self.panel.orderFrontRegardless();
     }
 }
 

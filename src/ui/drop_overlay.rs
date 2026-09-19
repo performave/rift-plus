@@ -68,7 +68,9 @@ pub struct DropOverlayWindow {
     /// panel-local coordinates.
     drawn: RefCell<Option<CGRect>>,
     target: RefCell<Option<CGRect>>,
-    visible: Cell<bool>,
+    /// Whether we were the ones who last put the panel on screen. A
+    /// diagnostic only: whether it *is* on screen is asked of the panel.
+    asserted: Cell<bool>,
 }
 
 impl DropOverlayWindow {
@@ -138,7 +140,7 @@ impl DropOverlayWindow {
             glass,
             drawn: RefCell::new(None),
             target: RefCell::new(None),
-            visible: Cell::new(false),
+            asserted: Cell::new(false),
         })
     }
 
@@ -186,7 +188,8 @@ impl DropOverlayWindow {
     pub fn hide(&self) {
         *self.target.borrow_mut() = None;
         *self.drawn.borrow_mut() = None;
-        if self.visible.replace(false) {
+        self.asserted.set(false);
+        if self.panel.isVisible() {
             self.panel.orderOut(None);
         }
     }
@@ -196,12 +199,25 @@ impl DropOverlayWindow {
             return;
         };
         self.glass.setFrame(frame);
-        if !self.visible.replace(true) {
-            // orderFrontRegardless rather than orderFront: the panel has to
-            // appear without this process becoming active, since the user is
-            // in the middle of dragging another application's window.
-            self.panel.orderFrontRegardless();
+        if self.panel.isVisible() {
+            return;
         }
+        // Whether the panel is up is asked of the panel, not remembered here.
+        // This used to keep a `visible` flag and order the panel front only on
+        // its edge from false to true, which is right exactly as long as
+        // nothing but `hide` ever takes the panel off screen. When something
+        // else does, the flag stays true, the edge never comes again, and the
+        // overlay is invisible for the rest of the session while the rest of
+        // the drag -- targets, zones, the swap itself -- goes on working. The
+        // window is only rebuilt by a config reload, so that is what it took
+        // to get the overlay back.
+        if self.asserted.replace(true) {
+            warn!("drop overlay was taken off screen behind our back; putting it back");
+        }
+        // orderFrontRegardless rather than orderFront: the panel has to appear
+        // without this process becoming active, since the user is in the middle
+        // of dragging another application's window.
+        self.panel.orderFrontRegardless();
     }
 }
 

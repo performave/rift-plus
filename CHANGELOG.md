@@ -11,6 +11,48 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The drop overlay no longer stops showing for the rest of the session.**
+  The overlay's panel is built once and kept, and it was ordered on screen only
+  on the edge of a `visible` flag kept beside it — correct exactly as long as
+  nothing but rift's own `hide` ever takes the panel off screen. When something
+  else did, the flag stayed true, the edge never came round again, and the
+  overlay was gone for good while every other part of the drag — the target,
+  the drop zones, the swap itself — went on working, which is what made it read
+  as random. Only a config reload brought it back, because a reload is the one
+  thing that throws the panel away. Both overlays now ask the panel whether it
+  is on screen instead of remembering, so any frame can put it back, and the
+  first one that has to says so in the log. The tile halo carried the same
+  latch and is fixed with it.
+
+- **A deactivated space no longer answers every layout command with silence.**
+  `toggle_space_activated` hands a macOS space back to macOS, and until now the
+  only trace of that was one `WARN` line per command in the log: the reactor
+  saw no active space, returned no change, and the CLI reported "Command
+  executed successfully". On a float-by-default configuration, where the tile
+  key is the only thing that ever tiles a window, a space left deactivated —
+  by an accidental keypress, or carried onto a fresh space id by display churn
+  — presents as two or three particular apps that "refuse to be tiled", since
+  the apps that happen to live on that desktop are the only ones affected.
+  Layout commands on an unmanaged space now fail with a message naming the
+  cause and the way back, so `rift execute ...` reports it and the log says it
+  once rather than once per keypress.
+
+- **A layout command aimed at an unmanaged window says so too.** The sibling
+  of the above, and the one that fires while the space is perfectly healthy:
+  a command targeting the focused window is dropped when that window is in
+  neither the tiling tree nor the floating set, which is the state a window
+  falls into after `WindowFocused ignored: ... not in active layout`. It was
+  an `INFO` line; it now fails the command with the window in front and the
+  engine's idea of focus named, which is the pair that identifies the stale
+  focus behind it.
+
+- **Space activation changes are logged.** Nothing recorded when a space was
+  deactivated or why, which left no way to tell an accidental toggle from a
+  disabled marker carried across a space id churn after a display came and
+  went. Both paths now log at `INFO`.
+
 ## [0.5.5-plus.3] - 2026-09-18
 
 ### Added
