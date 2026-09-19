@@ -136,8 +136,15 @@ pub fn handle_command_layout(
         }
         _ => {
             if visible_spaces.is_empty() {
-                warn!("Layout command ignored: no active spaces");
-                return Ok(EventOutcome::no_change());
+                // Not a no-op worth swallowing. Under a float-by-default
+                // config the tile key is the only thing that ever tiles a
+                // window, and a space handed back to macOS answers every
+                // press with silence -- which reads as "this app refuses to
+                // tile", not "this desktop is not managed".
+                return Ok(EventOutcome::command_failed(concat!(
+                    "rift is not managing this space, so the command did nothing; ",
+                    "`rift execute space toggle-activated` hands it back",
+                )));
             }
             layout.layout_engine.handle_command(
                 &mut state.windows,

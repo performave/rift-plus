@@ -2904,7 +2904,10 @@ impl Reactor {
     /// writes, then UI/platform presentation state is refreshed. Broadcast and
     /// discovery requests made directly by a workflow are consequently observed
     /// only after its model mutation is complete.
-    fn apply_event_outcome(&mut self, outcome: EventOutcome) {
+    fn apply_event_outcome(&mut self, mut outcome: EventOutcome) {
+        if let Some(message) = outcome.command_error.take() {
+            self.fail_command(message);
+        }
         if !outcome.window_server_updates.is_empty() {
             self.update_partial_window_server_info(outcome.window_server_updates);
         }
@@ -4213,12 +4216,16 @@ impl Reactor {
             },
         };
         if unmanaged {
-            info!(
-                ?command,
-                front = ?self.main_window(),
-                ?engine_focus,
-                "Ignoring layout command: the focused window is not managed"
-            );
+            // The same silence as an unmanaged space, from the other
+            // direction: the command is dropped and a CLI caller would
+            // otherwise be told it succeeded. The window in front is worth
+            // naming, because the usual cause is one rift is holding in
+            // neither the tiling tree nor the floating set.
+            let front_window = self.main_window();
+            info!(?command, front = ?front_window, ?engine_focus, "Ignoring layout command");
+            self.fail_command(format!(
+                "the focused window is not managed, so the command did nothing (front={front_window:?}, engine focus={engine_focus:?})"
+            ));
         }
         unmanaged
     }

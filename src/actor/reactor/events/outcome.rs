@@ -86,6 +86,11 @@ pub(crate) struct EventOutcome {
     pub(crate) refresh_window_notifications: bool,
     pub(crate) refresh_focus_follows_mouse: bool,
     pub(crate) refresh_layout_mode: bool,
+    /// Why the command in flight did nothing, when that is something the
+    /// caller can act on. Drained into `Reactor::fail_command`, so a CLI
+    /// caller is told instead of being answered "Command executed
+    /// successfully" by a command that changed nothing.
+    pub(crate) command_error: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -159,6 +164,7 @@ impl EventOutcome {
         self.refresh_window_notifications |= other.refresh_window_notifications;
         self.refresh_focus_follows_mouse |= other.refresh_focus_follows_mouse;
         self.refresh_layout_mode |= other.refresh_layout_mode;
+        self.command_error = other.command_error.or(self.command_error.take());
     }
 
     /// The event changed geometry or layout state and requires one arrange pass.
@@ -208,6 +214,7 @@ impl EventOutcome {
             refresh_window_notifications: false,
             refresh_focus_follows_mouse: false,
             refresh_layout_mode: true,
+            command_error: None,
         }
     }
 
@@ -230,6 +237,14 @@ impl EventOutcome {
         Self {
             focused_window,
             refresh_window_notifications,
+            ..Self::default()
+        }
+    }
+
+    /// The command could not be carried out, and the caller should be told why.
+    pub(crate) fn command_failed(message: impl Into<String>) -> Self {
+        Self {
+            command_error: Some(message.into()),
             ..Self::default()
         }
     }
