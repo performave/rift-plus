@@ -16,6 +16,7 @@ use crate::actor;
 use crate::common::config::Config;
 use crate::sys::dispatch::DispatchExt;
 use crate::ui::drop_overlay::{DropOverlayConfig, DropOverlayWindow};
+use crate::ui::stack_line::Color;
 
 /// Frame interval while the region is moving, in nanoseconds. Roughly 60Hz.
 ///
@@ -92,8 +93,11 @@ impl DropOverlay {
         DropOverlayConfig {
             corner_radius: settings.corner_radius,
             clear_style: settings.clear_style,
+            tint: settings
+                .tint
+                .map(|[r, g, b, a]| Color::new(r, g, b, a))
+                .unwrap_or(defaults.tint),
             follow_rate: settings.follow_rate,
-            ..defaults
         }
     }
 

@@ -11,6 +11,15 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Added
+
+- **`ui.drop_overlay.tint`.** The wash of colour over the drop region was a
+  fixed system blue at 0.28 alpha, and that alpha is most of what reads as
+  frost: it is laid *over* the Liquid Glass material rather than through it, so
+  no amount of `clear_style` gets past it. It is now `[r, g, b, a]` in the
+  config, left out for the blue it always was. Pair a lower alpha with
+  `clear_style = true` for a pane you see through rather than a tinted slab.
+
 ### Fixed
 
 - **The drop overlay no longer stops showing for the rest of the session.**

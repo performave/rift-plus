@@ -843,6 +843,12 @@ pub struct DropOverlaySettings {
     /// Use the clearer of the two Liquid Glass styles.
     #[serde(default = "no")]
     pub clear_style: bool,
+    /// The colour washed over the region, as `[r, g, b, a]` in 0..1. The alpha
+    /// is what reads as frost, since it is laid over the material rather than
+    /// through it: lower it for a clearer pane, raise it for a firmer promise.
+    /// Left out, it is the system blue at 0.28.
+    #[serde(default)]
+    pub tint: Option<[f64; 4]>,
     /// How far the region travels toward a new target each frame, 0..1.
     /// Higher is snappier; 1.0 removes the motion and snaps instead.
     #[serde(default = "default_drop_overlay_follow_rate")]
@@ -858,6 +864,7 @@ impl Default for DropOverlaySettings {
             enabled: false,
             corner_radius: default_drop_overlay_corner_radius(),
             clear_style: false,
+            tint: None,
             follow_rate: default_drop_overlay_follow_rate(),
         }
     }
