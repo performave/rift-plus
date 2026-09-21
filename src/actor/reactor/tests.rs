@@ -1750,7 +1750,10 @@ fn floating_drag_with_latched_swap_stores_the_release_frame() {
         Requested(false),
         Some(MouseState::Down),
     ));
-    assert!(matches!(reactor.drag_manager.drag_state, DragState::Active { .. }));
+    assert!(matches!(
+        reactor.drag_manager.drag_state,
+        DragState::Active { .. }
+    ));
     reactor.handle_event(Event::MouseUp);
 
     assert!(matches!(reactor.drag_manager.drag_state, DragState::Inactive));
@@ -7326,6 +7329,7 @@ mod mouse_follows_focus {
     /// The pointer stays where the user put it, even far from the window.
     #[test]
     fn focus_change_right_after_a_click_does_not_warp() {
+        crate::sys::event::set_key_pressed_since_mouse_up_override(Some(false));
         let (_apps, mut reactor, _a, b) = two_apps_focused_on_first();
         reactor.handle_event(Event::MouseUp);
         reactor.handle_event(Event::ApplicationDeactivated(1));
@@ -7336,6 +7340,7 @@ mod mouse_follows_focus {
             reactor.test_mouse_warps.is_empty(),
             "a focus change that follows a click does not move the pointer"
         );
+        crate::sys::event::set_key_pressed_since_mouse_up_override(None);
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
