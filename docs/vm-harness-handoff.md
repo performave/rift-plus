@@ -304,6 +304,25 @@ Worth knowing: modifier-drag **resize** works on the merged build and did
 nothing on the pre-merge one. Restoring the dragged-event subscription fixed
 more than it put back.
 
+## What this guest cannot test at all
+
+Worth knowing before trusting a clean run, because these are not gaps in
+coverage that more scenarios would close:
+
+- **Gestures.** `ioreg -c AppleMultitouchDevice` finds nothing here and there
+  is no trackpad, so the swipe and scroll paths — rift reads them from IOHID
+  directly — never fire. A good part of what upstream changed in the v0.5.10
+  sync lives there (`perf: gesture scrolling`, `fix: get rid of gesture
+  cooldown`, the gesture half of the combined tap) and none of it has been
+  exercised. `mtool` can post mouse events; it cannot manufacture a touch
+  device.
+- **Anything needing a second *physical* display.** `CGVirtualDisplay` gives a
+  real hotplug, but it is always the same synthetic panel: no mixed scale
+  factors, no real EDID, no display asleep while another is awake.
+- **The user's own hardware quirks.** The LG replug that started this work has
+  a pseudo-display phase (see `settle-and-return-in-one-report`) the virtual
+  display does not reproduce.
+
 ## Open work
 
 **Native fullscreen is drivable now, and round-trips correctly in the simple
