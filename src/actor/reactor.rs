@@ -1902,6 +1902,7 @@ impl Reactor {
                 if matches!(kind, SpaceEventKind::User)
                     && let Some(wid) = tracked_window
                 {
+                    self.correct_straggler_after_return(wid, sid);
                     self.note_window_appeared_while_away(wid, sid);
                 }
                 return topology_workflow::handle_window_server_appeared(

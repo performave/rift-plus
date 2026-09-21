@@ -845,10 +845,19 @@ impl SpacesActor {
                     .is_some_and(|listed| listed.contains(&space));
                 let snapshot_can_be_trusted =
                     allow_space_remap || (snapshot_is_coherent && display_owns_shown_space);
-                if snapshot_can_be_trusted
-                    && !source_is_now_owned_by_another_display
-                    && !source_still_exists
-                {
+                if !snapshot_can_be_trusted {
+                    // The snapshot cannot say whether this display switched
+                    // desktops or had one replaced, and writing the desktop it
+                    // is showing into the history answers the question anyway:
+                    // the next snapshot, coherent this time, sees nothing to
+                    // remap and the replaced desktop's layout is gone for
+                    // good. Leave the history alone and let that snapshot
+                    // decide -- it still tells a switch from a replacement,
+                    // because a desktop that was only switched away from is
+                    // still listed.
+                    continue;
+                }
+                if !source_is_now_owned_by_another_display && !source_still_exists {
                     remaps.push((previous_space, space));
                 }
             }

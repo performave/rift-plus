@@ -113,6 +113,28 @@ const GIVE_UP_ON_DISPLAY: Duration = Duration::from_secs(120);
 /// it is left alone.
 const RETIRE_GIVE_UP: Duration = Duration::from_secs(30);
 
+/// How long after the return pass a window turning up somewhere other than
+/// its recorded home is still the window server finishing the move, and is
+/// taken back.
+///
+/// The pass ends once every window it waited for has arrived, and it waits
+/// only for the ones that looked wrong at the instant it ran. The window
+/// server goes on reassigning window-to-desktop membership afterwards, and
+/// everything that could have put such a window right was dropped with the
+/// record: in the 2026-09-21 incident a window arrived on the wrong desktop
+/// 1.24s after `pass_done` -- a pass that reported `windows_waited_for=0` --
+/// and stayed wrong for 51s, until the user moved it by hand. rift had
+/// retained the correct home the whole time and had no trigger to act on it.
+///
+/// Short on purpose. The window server's own account of when it last moved
+/// windows (`PLACEMENT_AFTER_CHURN`) says the arrival belongs to the churn
+/// rather than to the user, but it is a coarse answer -- it stays true for
+/// half a minute -- so the tight bound is this one. It is the same trade the
+/// rest of the record makes: erring long costs a placement the user made in
+/// the seconds after a return, which they can redo; erring short leaves them
+/// with the state this exists to fix.
+const AFTERCARE: Duration = Duration::from_secs(5);
+
 pub(super) struct DisplayRecord {
     /// Every desktop's tree at departure, keyed by the desktop ids of then.
     layout: String,
@@ -211,6 +233,17 @@ enum Stage {
     Away,
     /// Putting everything back after return; the record is done.
     Back,
+}
+
+/// What the return pass leaves behind when it drops the record: where each
+/// window belonged, for as long as the window server may still be moving
+/// them. See `AFTERCARE`.
+pub(super) struct Aftercare {
+    /// Where each window belongs, on the desktop ids of now. A window is
+    /// taken home at most once -- the entry goes with the move -- so a
+    /// correction can never turn into a tug of war with the window server.
+    homes: HashMap<WindowId, SpaceId>,
+    ended: Instant,
 }
 
 impl DisplayRecord {
@@ -589,6 +622,9 @@ impl Reactor {
         );
         crate::sys::trace::act("record", &(windows.len(), displays.len()));
         let now = crate::sys::trace::now();
+        // A fresh departure supersedes whatever the last return was still
+        // watching for.
+        self.display_archive.aftercare = None;
         self.display_archive.record = Some(DisplayRecord {
             layout,
             members,
@@ -1588,6 +1624,77 @@ impl Reactor {
         }
     }
 
+    /// A window has turned up on a desktop the return pass did not put it
+    /// on, while the window server is still moving windows for the
+    /// reconfiguration. The pass is over and the record is gone, but the
+    /// home it worked out is not: send the window back to it.
+    ///
+    /// Only windows the record knew, only desktops the return put back, only
+    /// while `AFTERCARE` holds, and only while the window server itself says
+    /// it has been moving windows for a display change. A window the user
+    /// moves fails that last test and stays where they put it.
+    pub(super) fn correct_straggler_after_return(&mut self, wid: WindowId, space: SpaceId) {
+        let Some(aftercare) = self.display_archive.aftercare.as_ref() else {
+            return;
+        };
+        if aftercare.ended.elapsed() > AFTERCARE {
+            self.display_archive.aftercare = None;
+            return;
+        }
+        // A fresh departure has its own record, and that record owns the
+        // question from here.
+        if self.display_archive.record.is_some() {
+            self.display_archive.aftercare = None;
+            return;
+        }
+        let Some(home) = aftercare.homes.get(&wid).copied() else {
+            return;
+        };
+        if home == space {
+            return;
+        }
+        if !crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < PLACEMENT_AFTER_CHURN)
+        {
+            return;
+        }
+        let Some(wsid) = self.state.windows.window(wid).and_then(|state| state.info.sys_id) else {
+            return;
+        };
+        if !scripting_addition::is_available() {
+            warn!(
+                ?wid,
+                space = space.get(),
+                home = home.get(),
+                "A window came back on the wrong desktop after the return; sending it home needs the scripting addition"
+            );
+            return;
+        }
+        self.display_archive
+            .aftercare
+            .as_mut()
+            .expect("checked above")
+            .homes
+            .remove(&wid);
+        if scripting_addition::move_window_to_space(wsid.as_u32(), home.get()) {
+            self.note_window_sent_to_space(wsid);
+            info!(
+                ?wid,
+                landed = space.get(),
+                home = home.get(),
+                "The window server put a window on the wrong desktop after the return; sent it home"
+            );
+            crate::sys::trace::act("record_aftercare", &(wid.idx.get(), space.get(), home.get()));
+        } else {
+            warn!(
+                ?wid,
+                landed = space.get(),
+                home = home.get(),
+                "Could not send a window home after the return"
+            );
+        }
+    }
+
     /// Restores the pass's trees. After the return, the record is done and
     /// the desktops made at departure whose windows went back — empty by
     /// now — are destroyed once nothing shows them.
@@ -1650,6 +1757,23 @@ impl Reactor {
         }
         crate::sys::trace::act("pass_done", &(format!("{:?}", pass.stage), pass.restores.len()));
         if pass.stage == Stage::Back {
+            // The record answers "where does this window belong", and the
+            // window server is not necessarily finished asking. Keep that
+            // answer alive on its own for a few seconds past the pass.
+            let homes: HashMap<WindowId, SpaceId> = record
+                .windows
+                .keys()
+                .chain(record.placed.keys())
+                .copied()
+                .collect::<HashSet<WindowId>>()
+                .into_iter()
+                .filter_map(|wid| record.desired(wid).map(|space| (wid, space)))
+                .filter(|(_, space)| pass.ids.contains_key(space))
+                .collect();
+            self.display_archive.aftercare = (!homes.is_empty()).then(|| Aftercare {
+                homes,
+                ended: crate::sys::trace::now(),
+            });
             let record = self.display_archive.record.take().expect("taken above");
             for made in pass.retire {
                 self.display_archive.retiring.push((made, crate::sys::trace::now()));

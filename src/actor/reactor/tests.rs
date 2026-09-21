@@ -8758,6 +8758,103 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// Drive the whole round trip and leave the pass finished, with the
+    /// scripting addition log cleared so only what follows shows up in it.
+    fn round_trip(f: &mut Fixture) {
+        unplug(f);
+        managed(vec![
+            ("test-display-0", vec![space1()]),
+            (DISPLAY2, vec![space2_returned()]),
+        ]);
+        replug(f);
+        windows_land(f);
+        assert!(f.reactor.display_archive.is_empty(), "the pass is over");
+        sa::set_available(true);
+    }
+
+    /// The return pass waits only for the windows that looked wrong at the
+    /// instant it ran, and the window server goes on reassigning desktops
+    /// after it has finished. A window it moves in that moment used to be
+    /// left there for good: everything that knew where the window belonged
+    /// was dropped along with the record. Reproduced from a host trace where
+    /// a window arrived on the wrong desktop 1.24s after `pass_done` and
+    /// stayed wrong until the user moved it back by hand.
+    #[test]
+    fn a_window_the_window_server_moves_after_the_return_is_sent_home() {
+        let mut f = spaces_fixture();
+        round_trip(&mut f);
+
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let stray = f.exiled_wsids[0];
+        set_window_spaces(&[stray], space1());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            stray,
+            space1(),
+            SpaceEventKind::User,
+        ));
+
+        assert_eq!(
+            sa::window_moves(),
+            vec![(stray.as_u32(), space2_returned().get())],
+            "the window goes back to the desktop the record had for it"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// The same arrival with the window server quiet is the user moving the
+    /// window, and it stays where they put it.
+    #[test]
+    fn a_window_moved_after_the_return_with_the_window_server_quiet_stays_put() {
+        let mut f = spaces_fixture();
+        round_trip(&mut f);
+
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        let stray = f.exiled_wsids[0];
+        set_window_spaces(&[stray], space1());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            stray,
+            space1(),
+            SpaceEventKind::User,
+        ));
+
+        assert!(
+            sa::window_moves().is_empty(),
+            "a window the user moves is left alone"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// The window is taken home once. If the window server puts it back on
+    /// the wrong desktop again, rift does not answer -- two of them moving
+    /// the same window in turn is worse than the window being wrong.
+    #[test]
+    fn a_window_is_only_sent_home_once_after_the_return() {
+        let mut f = spaces_fixture();
+        round_trip(&mut f);
+
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let stray = f.exiled_wsids[0];
+        for _ in 0..3 {
+            set_window_spaces(&[stray], space1());
+            f.reactor.handle_event(Event::WindowServerAppeared(
+                stray,
+                space1(),
+                SpaceEventKind::User,
+            ));
+        }
+
+        assert_eq!(
+            sa::window_moves().len(),
+            1,
+            "one correction, however often the window server insists"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// macOS does not carry the desktop a departing display was showing over
     /// to the survivor: it destroys that one and merges its windows into
     /// whatever the survivor is showing, while the display's other desktops

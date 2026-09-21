@@ -77,6 +77,9 @@ pub(super) struct DisplayArchive {
     /// The last record's layout, kept after its return for
     /// `RestoreDepartureLayout`.
     pub(super) last_departure: Option<super::display_record::DepartureSnapshot>,
+    /// Where the last return decided each window belonged, kept for the few
+    /// seconds the window server may still be moving them. See `AFTERCARE`.
+    pub(super) aftercare: Option<super::display_record::Aftercare>,
     /// The displays as the window server last reported them whole — every
     /// screen showing a desktop, every managed display one of the screens.
     /// Mid-reshuffle it reports neither: a screen with no desktop, or the

@@ -47,6 +47,18 @@ Entries describe this fork's changes relative to
   instead of bootstrapping a second one beside it, which is the arrangement
   that leaves the loser respawning into the log every ten seconds.
 
+- **Windows are no longer stranded on the wrong desktop after a display comes
+  back.** The return pass waits only for the windows that look misplaced at the
+  instant it runs, and the window server goes on reassigning desktops for
+  several seconds after that. A window it moved in that window used to stay
+  wrong for good, because the record that knew where the window belonged was
+  dropped along with the pass — in one captured case a window arrived on the
+  wrong desktop 1.24s after the pass reported itself finished and sat there for
+  51s, until it was dragged back by hand. The record's answer now outlives it
+  by a few seconds: a window that turns up somewhere the pass did not put it is
+  sent home, once, and only while the window server itself says it has been
+  moving windows for a display change — so a window *you* move in those seconds
+  stays where you put it.
 
 ## [0.5.5-plus.4] - 2026-09-21
 

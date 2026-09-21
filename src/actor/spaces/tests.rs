@@ -976,6 +976,74 @@ fn a_snapshot_that_does_not_list_the_display_cannot_claim_a_replacement() {
     }
 }
 
+/// A snapshot too incomplete to tell a desktop switch from a desktop
+/// replacement used to answer the question anyway, by writing the desktop the
+/// display was showing into the history on its way past. The next snapshot --
+/// the one that could have told them apart -- then saw nothing to remap, and
+/// the replaced desktop's layout was gone for good. The history now waits for
+/// a snapshot that can be trusted.
+#[test]
+fn an_untrusted_snapshot_does_not_cost_the_remap_that_follows_it() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let shown_first = SpaceId::new(155);
+    let shown_next = SpaceId::new(257);
+    let other = SpaceId::new(5);
+
+    seed_display_desktops(&[("builtin", &[shown_first, other])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_first),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // The window server has not answered for the display yet.
+    seed_display_desktops(&[]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(
+            1,
+            "builtin",
+            0.0,
+            1000.0,
+            Some(shown_next),
+        )],
+        CoordinateConverter::from_height(800.0),
+    ));
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert!(state.space_remaps.is_empty(), "nothing can be concluded yet");
+            assert_eq!(
+                state.last_user_space_by_display.get("builtin"),
+                Some(&shown_first),
+                "and nothing is concluded"
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+
+    // Now it answers, and the desktop the display was showing is not in the
+    // list: it was replaced, not switched away from.
+    seed_display_desktops(&[("builtin", &[shown_next, other])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(shown_next)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(SpaceId::new(77))),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(state.space_remaps, vec![(shown_first, shown_next)]);
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
 #[test]
 fn sleep_wake_display_reattach_flushes_latest_stable_spaces_only() {
     let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
