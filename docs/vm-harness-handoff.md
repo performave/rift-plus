@@ -203,12 +203,20 @@ believed:
   `scenario_start` now takes a fresh snapshot after the reset and hands *that*
   to the scenario; the residue the reset could not clear is printed instead of
   being folded into a verdict.
-- **Native fullscreen is only detectable while a display is showing it.** Apps
-  reopen in the state they were closed in, so a reboot restores a fullscreen
-  Safari onto a desktop nothing is showing, where `displays_showing_fullscreen`
-  cannot see it — and its oversized frame then fails
-  `check_frames_within_display` in whichever scenario happens to look next.
-  `fullscreen_suspected` uses that frame as the tell.
+- **Native fullscreen is not detectable at all when its space is not shown,
+  and often not even when it is.** Apps reopen in the state they were closed
+  in, so a reboot restores a fullscreen Safari onto a desktop nothing is
+  showing, where `displays_showing_fullscreen` cannot see it. The obvious
+  substitute — look for a window whose frame covers a whole display — does not
+  work either, because rift drops a fullscreen space's windows from `query
+  windows`; measured on 2026-09-21, Safari fullscreen *and in front* listed no
+  window whatsoever. Nothing distinguishes that state from "nothing is
+  fullscreen" except fronting each app and looking, so
+  `reset_between_scenarios` runs `clear_native_fullscreen` unconditionally.
+  Guarding it on a detector is guarding it on the one question that cannot be
+  answered without running it — and the run where it was guarded left Safari
+  fullscreen through the whole battery, failing `check_frames_within_display`
+  in scenario after unrelated scenario.
 - **`vm-ab` piped the summary through `head -30`.** Fifteen scenarios' reasons
   do not fit, so the last few came back blank — which reads exactly like
   scenarios that failed without saying why.

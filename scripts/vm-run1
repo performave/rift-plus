@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# gx1 <command...> -- run one command inside the guest's Aqua session via a
+# throwaway LaunchAgent, and print its output. rift-cli resolves rift by mach
+# bootstrap lookup, which an ssh session cannot reach.
+set -uo pipefail
+SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CMD="$*"
+LOG=/tmp/gx1.log
+"$SC/vm-ssh" "U=\$(id -u)
+launchctl bootout gui/\$U/gx1 2>/dev/null
+: > $LOG
+cat > ~/Library/LaunchAgents/gx1.plist <<PLIST
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\"><dict>
+  <key>Label</key><string>gx1</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string><string>$CMD</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict></plist>
+PLIST
+launchctl bootstrap gui/\$U ~/Library/LaunchAgents/gx1.plist"
+DEADLINE=$(( SECONDS + ${GX_TIMEOUT:-300} ))
+while (( SECONDS < DEADLINE )); do
+    S="$("$SC/vm-ssh" "launchctl print gui/\$(id -u)/gx1 2>/dev/null | grep -m1 -E '^[[:space:]]*state = '")"
+    [[ "$S" == *"not running"* ]] && break
+    sleep 3
+done
+"$SC/vm-ssh" "cat $LOG; launchctl bootout gui/\$(id -u)/gx1 2>/dev/null" 

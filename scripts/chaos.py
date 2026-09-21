@@ -121,7 +121,7 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
     for _ in range(tries):
         sh(f'open -a "{app}"')
         time.sleep(2.5)
-        if bool(displays_showing_fullscreen()) == want:
+        if app_fullscreen(app) == want:
             return True
         # Ask twice. Fronting an app that is already fullscreen does not always
         # take the display to its space within one read, and treating that as
@@ -129,7 +129,7 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
         # in, leaving a trail of extra slot records for the assertions to trip
         # over.
         time.sleep(2.0)
-        if bool(displays_showing_fullscreen()) == want:
+        if app_fullscreen(app) == want:
             return True
         # `open -a` picks the app, not the window, and three TextEdit documents
         # make "the front window" a coin toss. rift's own focus names the one
@@ -142,7 +142,68 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
         time.sleep(2.5)
     sh(f'open -a "{app}"')
     time.sleep(2.0)
-    return bool(displays_showing_fullscreen()) == want
+    return app_fullscreen(app) == want
+
+
+def cg_display_bounds() -> list:
+    """Full CoreGraphics bounds per display, menu bar and dock included.
+
+    rift's own `frame` is the *visible* frame, inset by both. A natively
+    fullscreen window covers the whole screen, so it matches these and not
+    those -- which is what makes this the one test for fullscreen that does
+    not depend on the space being shown.
+    """
+    out = []
+    for line in sh(f"{DTOOL} list").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or "x" not in parts[1] or "@" not in parts[1]:
+            continue
+        size, origin = parts[1].split("@", 1)
+        try:
+            w, h = (float(v) for v in size.split("x", 1))
+            x, y = (float(v) for v in origin.split(",", 1))
+        except ValueError:
+            continue
+        out.append((x, y, w, h))
+    return out
+
+
+def fullscreen_windows(app: str = None) -> list:
+    """Windows whose frame covers a whole display -- a supplement, not a test.
+
+    It would be convenient if this could stand in for
+    `displays_showing_fullscreen`, since that one only answers for a space some
+    display is currently showing. It cannot: rift drops the windows of a
+    fullscreen space from `query windows`, sometimes even while that space is
+    shown, so a genuinely fullscreen app is frequently absent here. Measured on
+    2026-09-21: Safari fullscreen and in front listed nothing at all.
+
+    Nothing observable distinguishes "no app is fullscreen" from "an app is
+    fullscreen on a space nothing is showing", which is the state a reboot
+    restores. Fronting each app in turn is the only way to find out, so
+    `reset_between_scenarios` clears unconditionally instead of asking first.
+    """
+    bounds = cg_display_bounds()
+    if not bounds:
+        return []
+    found = []
+    for w in (rift("windows") or []):
+        if app is not None and w.get("app_name") != app:
+            continue
+        fr = w.get("frame") or {}
+        o, sz = fr.get("origin", {}), fr.get("size", {})
+        x, y = o.get("x", 0), o.get("y", 0)
+        cw, ch = sz.get("width", 0), sz.get("height", 0)
+        for bx, by, bw, bh in bounds:
+            if abs(x - bx) <= 2 and abs(y - by) <= 2 \
+                    and abs(cw - bw) <= 2 and abs(ch - bh) <= 2:
+                found.append(w)
+                break
+    return found
+
+
+def app_fullscreen(app: str) -> bool:
+    return bool(fullscreen_windows(app)) or bool(displays_showing_fullscreen())
 
 
 def display_count() -> int:
@@ -305,8 +366,17 @@ def reset_between_scenarios() -> str:
     notes = []
     unplug(quiet=True)
     settle(2)
-    if fullscreen_suspected():
-        notes.append("cleared fullscreen" if clear_native_fullscreen() else "STILL FULLSCREEN")
+    # Unconditionally, and it is worth the ten seconds. A fullscreen window on
+    # a space nothing is showing cannot be detected at all: rift drops it from
+    # `query windows` along with the rest of that space, so neither the shown-
+    # space test nor the frame test sees anything. What *does* reveal it is
+    # fronting the app, which is the first thing the clear does anyway --
+    # so guarding the clear on a detector is guarding it on the one question
+    # that cannot be answered before running it.
+    if clear_native_fullscreen():
+        notes.append("fullscreen clear ok")
+    else:
+        notes.append("STILL FULLSCREEN")
     for name, was, now in show_the_desktop_holding_the_windows():
         notes.append(f"{name}: showed empty {was}, switched to {now}")
     # `setmain` is permanent, so an earlier scenario's arrangement outlives it.
@@ -372,25 +442,6 @@ def displays_showing_fullscreen() -> list:
     the wrong one.
     """
     return [d.get("name") for d in (rift("displays") or []) if d.get("space") is None]
-
-
-def fullscreen_suspected() -> bool:
-    """Whether any test app is in native fullscreen, shown or not.
-
-    `displays_showing_fullscreen` only sees it while a display is *showing*
-    that space. An app that went fullscreen on a desktop nothing is showing --
-    which is what a reboot restores, since apps reopen in the state they were
-    closed in -- is invisible to it, and its window sits at the display's full
-    size with no menu-bar inset, failing `check_frames_within_display` in
-    whichever scenario happens to look next. The oversized frame is the tell.
-    """
-    if displays_showing_fullscreen():
-        return True
-    try:
-        check_frames_within_display(snapshot("fullscreen probe"), "probe")
-    except Violation:
-        return True
-    return False
 
 
 def clear_native_fullscreen(tries: int = 3) -> bool:
