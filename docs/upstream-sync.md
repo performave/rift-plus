@@ -125,6 +125,22 @@ good proxy for "merges without argument":
   reasoning this codebase borrowed. Attribution is cheap to keep.
 - `7a59369b` reverts `6baa565a`; take both or neither.
 
+## The workflows come too
+
+Easy to miss, because they are not conflicts and they do not fail until the
+merge is *pushed*: upstream ships GitHub Actions workflows, and a sync adds
+them to this fork, pointed at upstream's infrastructure and firing on this
+fork's pushes.
+
+The v0.5.10 sync brought two. `docs.yml` dispatches a docs rebuild at
+`acsandmann/rift-docs` and fails on every qualifying push with "Resource not
+accessible by personal access token" — declined. `tag.yml` tags any push to
+`main` that changes `Cargo.toml`, so the sync's own version bump auto-created
+and pushed `v0.5.10-plus.1`, which nobody asked for; the tag was deleted.
+
+So: after resolving, before pushing, diff `.github/workflows/` and decide on
+each new file deliberately. `git diff --name-status <base> HEAD -- .github/`.
+
 ## Order of operations
 
 1. `git fetch upstream --tags`, then merge in a throwaway detached worktree

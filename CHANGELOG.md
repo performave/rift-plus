@@ -45,6 +45,12 @@ Entries describe this fork's changes relative to
   careful fix in the same place -- `remove_stale_windows` for apps that never
   fire window-closed, and `is_current_window_element` so a late destroy for a
   superseded element cannot tear down its replacement.
+- `9d6913cb` / `a3e6bfb7` (the docs workflows). `docs.yml` dispatches a
+  rebuild at **acsandmann/rift-docs**, upstream's own docs repository, and
+  fails with "Resource not accessible by personal access token" on every push
+  touching `Cargo.toml`, `Cargo.lock`, `config.rs`, `rift-cli.rs`,
+  `rift.default.toml` or the protocol crate. Removed for the same reason as
+  the release workflow: it targets upstream's infrastructure.
 - `072411b4` (release workflow). It targets upstream's tap on macos-14 and
   undoes this fork's pinned runner, hardened-runtime signing and notarization.
 - The direct `CGEventSource::button_state` read in `sys/event.rs`. This fork's
