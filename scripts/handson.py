@@ -57,6 +57,30 @@ def shown_spaces():
     return [d.get("space") for d in (q("displays") or []) if d.get("space") is not None]
 
 
+def window_frames(space):
+    """Every window on `space`, tiled or floating."""
+    out = {}
+    for w in (q("windows", "--space-id", str(space)) or []):
+        f = w.get("frame") or {}
+        o, s = f.get("origin", {}), f.get("size", {})
+        out[str(w.get("window_server_id"))] = (
+            round(o.get("x", 0)), round(o.get("y", 0)),
+            round(s.get("width", 0)), round(s.get("height", 0)))
+    return out
+
+
+def focus(w):
+    wid = w.get("id") or {}
+    if wid.get("pid") is None:
+        return False
+    arg = json.dumps({"pid": wid.get("pid"), "idx": wid.get("idx")})
+    return "success" in sh(f"{CLI} execute window focus --window-id '{arg}'").lower()
+
+
+def rift(*args):
+    return q(*args)
+
+
 def tiled_frames(space):
     """window server id -> (x, y, w, h) for every tiled window on `space`."""
     out = {}
@@ -100,23 +124,44 @@ def main():
 
     # ---------------------------------------------------------------- edges
     step("drag the boundary between two tiles (mouse.edge_resize)")
-    # The boundary is the right edge of the left-most window; grab it at its
-    # vertical middle, well away from the corners so only one axis moves.
-    ordered = sorted(frames.items(), key=lambda kv: kv[1][0])
-    left_id, left = ordered[0]
-    right_id, right = ordered[1]
+    # A boundary only exists between two windows that are side by side *and*
+    # overlap vertically. Sorting by x and taking the first two finds neither:
+    # in a bsp spiral the two left-most windows are usually stacked one above
+    # the other, and the "boundary" between them is a point in empty space.
+    pair = None
+    for a_id, a in frames.items():
+        for b_id, b in frames.items():
+            if a_id == b_id:
+                continue
+            side_by_side = abs(b[0] - (a[0] + a[2])) < 40 and b[0] > a[0]
+            overlap = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+            # The window that has to give up width must have width to give.
+            # One already at its app minimum refuses, the boundary does not
+            # move, and the result says nothing about what rift asked for.
+            if side_by_side and overlap > 120 and a[2] > 420:
+                pair = (a_id, a, b_id, b)
+                break
+        if pair:
+            break
+    if pair is None:
+        fail("no two tiles share a vertical boundary; nothing to grab")
+        return 1
+    left_id, left, right_id, right = pair
     edge_x = left[0] + left[2]
-    edge_y = left[1] + left[3] // 2
-    target_x = edge_x - 120
-    note(f"boundary at x={edge_x}, pulling it to {target_x}")
+    edge_y = max(left[1], right[1]) + min(left[1] + left[3], right[1] + right[3]) \
+        - max(left[1], right[1])
+    edge_y = max(left[1], right[1]) + (min(left[1] + left[3], right[1] + right[3])
+                                       - max(left[1], right[1])) // 2
+    target_x = edge_x + 120
+    note(f"boundary at x={edge_x}, pushing it to {target_x} (growing the left tile)")
     sh(f"{MTOOL} drag {edge_x} {edge_y} {target_x} {edge_y} '' 30", timeout=40)
     settle(3)
     shot("after-edge-drag")
     after = tiled_frames(space)
     if left_id in after and right_id in after:
         new_left, new_right = after[left_id], after[right_id]
-        moved = left[2] - new_left[2]
-        note(f"left  {left[2]} -> {new_left[2]} (narrower by {moved})")
+        moved = new_left[2] - left[2]
+        note(f"left  {left[2]} -> {new_left[2]} (wider by {moved})")
         note(f"right {right[2]} -> {new_right[2]} at x={new_right[0]}")
         if moved < 40:
             fail(f"the boundary did not move: left width {left[2]} -> {new_left[2]}")
@@ -129,23 +174,43 @@ def main():
         fail("a window vanished from the tree during the edge drag")
 
     # ------------------------------------------------------- modifier drag
-    step("modifier-drag resize (cmd+alt inside a window)")
+    step("modifier-drag resize (the modifier's action2 button)")
+    # `mouse.modifier` + action1 on the left button and action2 on the right,
+    # and the config here maps action1=move, action2=resize -- so a resize test
+    # that sends the left button is testing move and will report nothing.
+    # Float it first: the modifier gestures are for floating windows, and on a
+    # tiled one they correctly do nothing -- which reads as a failure if the
+    # test never says which kind of window it is holding.
     frames = tiled_frames(space)
-    ordered = sorted(frames.items(), key=lambda kv: kv[1][0])
-    wid, box = ordered[0]
-    inside = (box[0] + box[2] // 2, box[1] + box[3] // 2)
-    note(f"holding cmd+alt and dragging from inside {wid}")
-    sh(f"{MTOOL} drag {inside[0]} {inside[1]} {inside[0] + 150} {inside[1]} cmd+alt 30",
-       timeout=40)
-    settle(3)
-    shot("after-modifier-drag")
-    after = tiled_frames(space)
-    if wid not in after:
-        fail("the window left the tree during a modifier drag")
-    elif after[wid] == box:
-        fail(f"modifier-drag changed nothing: still {box}")
+    wid, box = max(frames.items(), key=lambda kv: kv[1][2] * kv[1][3])
+    target = next((w for w in (rift("windows", "--space-id", str(space)) or [])
+                   if str(w.get("window_server_id")) == wid), None)
+    if target is None:
+        fail("could not find the window to float")
     else:
-        note(f"{box} -> {after[wid]}")
+        if focus(target):
+            sh(f"{CLI} execute window toggle-float")
+            settle(3)
+        floated = window_frames(space).get(wid)
+        note(f"floated {wid}: {floated}")
+        if floated is None:
+            fail("the window vanished when floated")
+        else:
+            x, y, w, h = floated
+            inside = (x + w * 3 // 4, y + h // 2)
+            note(f"holding cmd+alt and right-dragging from inside {wid}")
+            sh(f"{MTOOL} drag {inside[0]} {inside[1]} {inside[0] + 140} {inside[1]} "
+               f"cmd+alt 30 right", timeout=40)
+            settle(3)
+            shot("after-modifier-drag")
+            now = window_frames(space).get(wid)
+            if now == floated:
+                fail(f"modifier-drag changed nothing: still {floated}")
+            else:
+                note(f"{floated} -> {now}")
+            if focus(target):
+                sh(f"{CLI} execute window toggle-float")
+                settle(3)
 
     # ------------------------------------------------------------ stacking
     step("stack and unstack")

@@ -49,32 +49,41 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         return 0;
     }
 
-    // drag x1 y1 x2 y2 [modifiers] [steps]
+    // drag x1 y1 x2 y2 [modifiers] [steps] [left|right]
     if (!strcmp(cmd, "drag") && argc > 5) {
         CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
         CGPoint b = CGPointMake(atof(argv[4]), atof(argv[5]));
         CGEventFlags flags = argc > 6 ? parse_flags(argv[6]) : 0;
         int steps = argc > 7 ? atoi(argv[7]) : 24;
         if (steps < 2) steps = 2;
+        // rift gives the modifier's two buttons different jobs -- `action1` on
+        // the left, `action2` on the right -- so a resize test that only ever
+        // sends the left button is testing move.
+        int right = argc > 8 && !strcmp(argv[8], "right");
+        CGMouseButton button = right ? kCGMouseButtonRight : kCGMouseButtonLeft;
+        CGEventType downType = right ? kCGEventRightMouseDown : kCGEventLeftMouseDown;
+        CGEventType moveType = right ? kCGEventRightMouseDragged : kCGEventLeftMouseDragged;
+        CGEventType upType = right ? kCGEventRightMouseUp : kCGEventLeftMouseUp;
 
         post(kCGEventMouseMoved, a, 0, flags);
         usleep(80000);
-        post(kCGEventLeftMouseDown, a, kCGMouseButtonLeft, flags);
+        post(downType, a, button, flags);
         usleep(80000);
         for (int i = 1; i <= steps; i++) {
             double t = (double)i / steps;
             CGPoint p = CGPointMake(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-            post(kCGEventLeftMouseDragged, p, kCGMouseButtonLeft, flags);
+            post(moveType, p, button, flags);
             usleep(16000);   // ~60Hz, the rate a hand produces
         }
         usleep(80000);
-        post(kCGEventLeftMouseUp, b, kCGMouseButtonLeft, flags);
-        printf("dragged %.0f,%.0f -> %.0f,%.0f flags=0x%llx steps=%d\n",
-               a.x, a.y, b.x, b.y, (unsigned long long)flags, steps);
+        post(upType, b, button, flags);
+        printf("dragged %.0f,%.0f -> %.0f,%.0f flags=0x%llx steps=%d button=%s\n",
+               a.x, a.y, b.x, b.y, (unsigned long long)flags, steps,
+               right ? "right" : "left");
         return 0;
     }
 
     fprintf(stderr, "usage: mtool move <x> <y> | click <x> <y> | "
-                    "drag <x1> <y1> <x2> <y2> [cmd+alt+ctrl+shift] [steps]\n");
+                    "drag <x1> <y1> <x2> <y2> [cmd+alt+ctrl+shift] [steps] [left|right]\n");
     return 1;
 } }
