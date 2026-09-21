@@ -11,6 +11,43 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Changed
+
+- **The fork answers to a name of its own: `com.performave.rift-plus`.** Every
+  identifier rift is known by was still upstream's `git.acsandmann.rift` — the
+  bundle id, the launchd label `rift service install` writes, the Mach
+  bootstrap name the CLI looks up, and the scripting addition's two bundles.
+  Sharing all four with upstream means a rift-plus and a stock rift cannot tell
+  each other apart, and on a machine with both, one quietly answers for the
+  other.
+
+  **This costs you the Accessibility grant once.** macOS keys that grant on the
+  signing identifier, which is taken from the bundle id, so the first rift-plus
+  to start under the new name is a stranger to it: rift exits 1 until you
+  approve it again under System Settings → Privacy & Security → Accessibility.
+  The old entry is left behind and can be deleted.
+
+  Nothing else needs doing by hand. An agent installed under the old label is
+  unloaded and replaced the next time `rift service install` or `rift service
+  start` runs, and until then `status`, `stop` and `restart` still find it; a
+  `rift-cli` from this release still reaches a rift that started under the old
+  Mach name, which is what keeps the CLI answering in the window between the
+  binaries being swapped and the service restarting.
+
+### Fixed
+
+- **`rift service restart` no longer calls a healthy install missing.** On a
+  Homebrew install — which is every install from the tap — the launchd job
+  holding rift is Homebrew's, under `sh.brew.rift-plus`, and `rift service`
+  only ever looked for the plist it writes itself. `restart` and `stop` failed
+  with `service file '…/git.acsandmann.rift.plist' is not installed` while rift
+  was running perfectly well in front of you. Both now act on whichever known
+  job is actually loaded — the one `rift status` has been naming all along.
+  `rift service start` learned it too, so it kickstarts the job already there
+  instead of bootstrapping a second one beside it, which is the arrangement
+  that leaves the loser respawning into the log every ten seconds.
+
+
 ## [0.5.5-plus.4] - 2026-09-21
 
 ### Added

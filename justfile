@@ -51,7 +51,9 @@ _install profile:
     done
 
 # Two services can run rift: the per-user launchd agent that
-# `rift service install` writes (`git.acsandmann.rift`), and Homebrew's own.
+# `rift service install` writes (`com.performave.rift-plus`, or
+# `git.acsandmann.rift` if it was installed before the rename), and Homebrew's
+# own.
 # Only one of them holds the process, so when the agent is loaded it is the
 # rift serving your code — and `brew services restart` then restarts the
 # *other* one, which starts, finds rift already up, exits 1, and says nothing.
@@ -64,7 +66,7 @@ _install profile:
 restart:
     #!/usr/bin/env bash
     set -euo pipefail
-    if launchctl print "gui/$UID/git.acsandmann.rift" >/dev/null 2>&1; then
+    if [ -n "$(just _agent-label)" ]; then
         if launchctl print "gui/$UID/sh.brew.{{formula}}" >/dev/null 2>&1; then
             echo "just: Homebrew's {{formula}} service is loaded beside the agent; stopping it" >&2
             brew services stop {{formula}}
@@ -77,11 +79,24 @@ restart:
 stop:
     #!/usr/bin/env bash
     set -euo pipefail
-    if launchctl print "gui/$UID/git.acsandmann.rift" >/dev/null 2>&1; then
+    if [ -n "$(just _agent-label)" ]; then
         "$(brew --prefix {{formula}})/bin/rift" service stop
     else
         brew services stop {{formula}}
     fi
+
+# Print the label of rift's own agent if one is loaded, else nothing. The
+# pre-rename label is still out there on installs that predate it.
+[private]
+_agent-label:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for label in com.performave.rift-plus git.acsandmann.rift; do
+        if launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+            echo "$label"
+            exit 0
+        fi
+    done
 
 # Is everything actually up? Service, payload, and the last errors.
 status:

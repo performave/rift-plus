@@ -134,7 +134,7 @@ fn osax_plist() -> String {
 <key>CFBundleExecutable</key>
 <string>loader</string>
 <key>CFBundleIdentifier</key>
-<string>git.acsandmann.rift-osax</string>
+<string>com.performave.rift-plus-osax</string>
 <key>CFBundleInfoDictionaryVersion</key>
 <string>6.0</string>
 <key>CFBundleName</key>
@@ -164,7 +164,7 @@ fn payload_plist() -> String {
 <key>CFBundleExecutable</key>
 <string>payload</string>
 <key>CFBundleIdentifier</key>
-<string>git.acsandmann.rift-sa</string>
+<string>com.performave.rift-plus-sa</string>
 <key>CFBundleInfoDictionaryVersion</key>
 <string>6.0</string>
 <key>CFBundleName</key>

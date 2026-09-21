@@ -20,7 +20,12 @@ use serde_json::Value;
 use thiserror::Error;
 
 const MAX_MESSAGE_SIZE: usize = 262_144;
-const DEFAULT_SERVICE_NAME: &str = "git.acsandmann.rift";
+const DEFAULT_SERVICE_NAME: &str = "com.performave.rift-plus";
+/// The name rift registered under before this fork took an identity of its
+/// own. A Homebrew upgrade swaps both binaries at once but leaves the old
+/// process running until the service restarts, so for that window a current
+/// client is talking to a rift that only answers to the old name.
+const LEGACY_SERVICE_NAME: &str = "git.acsandmann.rift";
 
 type KernReturn = c_int;
 type MachPort = u32;
@@ -80,17 +85,12 @@ impl RiftMachClient {
     ///
     /// Service discovery happens when a request is sent, allowing callers to
     /// construct the client before Rift has finished starting.
-    pub fn connect() -> Result<Self, ClientError> {
-        Ok(Self)
-    }
+    pub fn connect() -> Result<Self, ClientError> { Ok(Self) }
 
     /// Returns whether Rift's bootstrap service is currently registered.
     pub fn is_available(&self) -> bool {
-        let service_port = service_name()
-            .ok()
-            .and_then(|name| unsafe { lookup_service(&name).ok() })
-            .map(ServicePort::new);
-        service_port.is_some()
+        service_names()
+            .is_ok_and(|names| names.iter().any(|name| unsafe { lookup_service(name).is_ok() }))
     }
 
     /// Sends one request and blocks until Rift responds.
@@ -165,9 +165,7 @@ impl RiftMachClient {
 
     /// Returns the current configuration as JSON until the config model is
     /// moved into `rift-protocol`.
-    pub fn get_config(&self) -> Result<Value, ClientError> {
-        self.request(RiftRequest::GetConfig)
-    }
+    pub fn get_config(&self) -> Result<Value, ClientError> { self.request(RiftRequest::GetConfig) }
 
     /// Executes a typed Rift command.
     pub fn execute(&self, command: RiftCommand) -> Result<Value, ClientError> {
@@ -212,17 +210,13 @@ pub struct RiftMachSubscription {
 
 impl RiftMachSubscription {
     /// Blocks until the next event arrives on this subscription.
-    pub fn recv_event(&self) -> Result<RiftEvent, ClientError> {
-        self.recv_event_as()
-    }
+    pub fn recv_event(&self) -> Result<RiftEvent, ClientError> { self.recv_event_as() }
 
     /// Blocks until the next event arrives and returns its raw JSON payload.
     ///
     /// This is useful for compatibility with clients that intentionally handle
     /// newer event variants without upgrading their protocol types.
-    pub fn recv_event_value(&self) -> Result<Value, ClientError> {
-        self.recv_event_as()
-    }
+    pub fn recv_event_value(&self) -> Result<Value, ClientError> { self.recv_event_as() }
 
     /// Blocks until the next event arrives and decodes it into the requested
     /// type.
@@ -248,6 +242,18 @@ fn parse_json_payload<T: DeserializeOwned>(
 fn service_name() -> Result<CString, ClientError> {
     let name = std::env::var("RIFT_BS_NAME").unwrap_or_else(|_| DEFAULT_SERVICE_NAME.to_owned());
     CString::new(name).map_err(|_| ClientError::InvalidServiceName)
+}
+
+/// The bootstrap names to try, in order. An explicit `RIFT_BS_NAME` is an
+/// override and stands alone; otherwise the legacy name is a fallback.
+fn service_names() -> Result<Vec<CString>, ClientError> {
+    if std::env::var_os("RIFT_BS_NAME").is_some() {
+        return Ok(vec![service_name()?]);
+    }
+    [DEFAULT_SERVICE_NAME, LEGACY_SERVICE_NAME]
+        .iter()
+        .map(|name| CString::new(*name).map_err(|_| ClientError::InvalidServiceName))
+        .collect()
 }
 
 #[repr(C)]
@@ -358,9 +364,7 @@ struct ServicePort {
 }
 
 impl ServicePort {
-    fn new(name: MachPort) -> Self {
-        Self { name }
-    }
+    fn new(name: MachPort) -> Self { Self { name } }
 }
 
 impl Drop for ServicePort {
@@ -438,10 +442,12 @@ unsafe fn lookup_service(name: &CStr) -> Result<MachPort, ClientError> {
 }
 
 unsafe fn find_service_with_retry() -> Result<ServicePort, ClientError> {
-    let name = service_name()?;
+    let names = service_names()?;
     for attempt in 0..5 {
-        if let Ok(port) = unsafe { lookup_service(&name) } {
-            return Ok(ServicePort::new(port));
+        for name in &names {
+            if let Ok(port) = unsafe { lookup_service(name) } {
+                return Ok(ServicePort::new(port));
+            }
         }
         thread::sleep(Duration::from_millis(50 * (1 << attempt)));
     }
@@ -532,9 +538,7 @@ unsafe fn receive_message(reply_port: MachPort) -> Result<Vec<u8>, ClientError> 
     Ok(payload)
 }
 
-const fn message_bits(remote: u32, local: u32) -> u32 {
-    remote | (local << 8)
-}
+const fn message_bits(remote: u32, local: u32) -> u32 { remote | (local << 8) }
 
 #[cfg(test)]
 mod tests {

@@ -12,7 +12,11 @@ use clap::Subcommand;
 use nix::unistd::getuid;
 
 const LAUNCHCTL_PATH: &str = "/bin/launchctl";
-const RIFT_PLIST: &str = "git.acsandmann.rift";
+const RIFT_PLIST: &str = "com.performave.rift-plus";
+/// The label this fork used before it took an identity of its own. An install
+/// that predates the rename still has a plist under it, and that job is still
+/// the one holding rift, so every lookup here has to keep finding it.
+const LEGACY_RIFT_PLIST: &str = "git.acsandmann.rift";
 /// The agent binary launchd starts. `rift-cli` has to look for it by name;
 /// `rift` is it.
 const RIFT_AGENT_BIN: &str = "rift";
@@ -51,12 +55,16 @@ pub fn handle_service_command(cmd: &ServiceCommands) -> Result<&'static str, Str
     }
 }
 
-fn plist_path() -> io::Result<PathBuf> {
+fn plist_path_for(label: &str) -> io::Result<PathBuf> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "HOME not set"))?;
-    Ok(home.join("Library").join("LaunchAgents").join(format!("{RIFT_PLIST}.plist")))
+    Ok(home.join("Library").join("LaunchAgents").join(format!("{label}.plist")))
 }
+
+fn plist_path() -> io::Result<PathBuf> { plist_path_for(RIFT_PLIST) }
+
+fn legacy_plist_path() -> io::Result<PathBuf> { plist_path_for(LEGACY_RIFT_PLIST) }
 
 fn find_rift_executable_in_path(path_env: &std::ffi::OsStr) -> io::Result<Option<PathBuf>> {
     let mut current_dir: Option<PathBuf> = None;
@@ -236,9 +244,10 @@ fn spawn_launchctl(args: &[&str]) -> io::Result<()> {
 /// rift's label reports a perfectly healthy install as "not installed".
 ///
 /// Homebrew renamed its labels from `homebrew.mxcl.*` to `sh.brew.*`; both
-/// are still out there.
+/// are still out there, as is the label this fork used before the rename.
 const KNOWN_LABELS: &[&str] = &[
     RIFT_PLIST,
+    LEGACY_RIFT_PLIST,
     "sh.brew.rift-plus",
     "sh.brew.rift",
     "homebrew.mxcl.rift-plus",
@@ -275,7 +284,21 @@ fn job_is_running(label: &str) -> bool {
     run_launchctl(&["print", &service_target], true).is_ok_and(|code| code == 0)
 }
 
-fn service_is_running() -> io::Result<bool> { Ok(job_is_running(RIFT_PLIST)) }
+/// The launchd job `start`, `stop` and `restart` should act on: whichever
+/// known label is actually loaded, rift's own first.
+///
+/// Only `rift service install` writes the plist at [`plist_path`]. A Homebrew
+/// install is started by `brew services` under Homebrew's label instead, and
+/// that job is the one holding rift — so keying off rift's plist alone told a
+/// perfectly healthy install its service file "is not installed", and would
+/// have bootstrapped a second job beside the first had it been there.
+fn loaded_label() -> Option<&'static str> {
+    KNOWN_LABELS.iter().copied().find(|label| job_is_running(label))
+}
+
+fn service_is_running() -> io::Result<bool> {
+    Ok(job_is_running(RIFT_PLIST) || job_is_running(LEGACY_RIFT_PLIST))
+}
 
 pub fn service_install_internal(plist_path: &Path) -> io::Result<()> {
     let plist = plist_contents()?;
@@ -307,12 +330,30 @@ pub fn service_install() -> io::Result<()> {
             format!("service file '{}' is already installed", plist_path.display()),
         ));
     }
+    // An agent installed before the rename would otherwise stay loaded beside
+    // the new one, and two jobs racing for a single process leaves the loser
+    // respawning into the log every ten seconds. Take its place instead.
+    retire_legacy_agent()?;
     service_install_internal(&plist_path)
+}
+
+/// Unload and delete the pre-rename agent, if one is there.
+fn retire_legacy_agent() -> io::Result<()> {
+    let legacy = legacy_plist_path()?;
+    if !legacy.is_file() {
+        return Ok(());
+    }
+    if job_is_running(LEGACY_RIFT_PLIST) {
+        let target = format!("gui/{}/{}", getuid(), LEGACY_RIFT_PLIST);
+        let _ = run_launchctl(&["bootout", &target], true);
+    }
+    fs::remove_file(legacy)
 }
 
 pub fn service_uninstall() -> io::Result<()> {
     let plist_path = plist_path()?;
-    if !plist_path.is_file() {
+    let legacy_path = legacy_plist_path()?;
+    if !plist_path.is_file() && !legacy_path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("service file '{}' is not installed", plist_path.display()),
@@ -324,13 +365,36 @@ pub fn service_uninstall() -> io::Result<()> {
             "service is still running; stop it first with `rift service stop` before uninstalling",
         ));
     }
-    fs::remove_file(plist_path)?;
+    if plist_path.is_file() {
+        fs::remove_file(plist_path)?;
+    }
+    // A pre-rename install leaves its plist here and nowhere else; `uninstall`
+    // is meant to leave nothing of rift's own behind either way.
+    retire_legacy_agent()?;
     Ok(())
 }
 
 pub fn service_start() -> io::Result<()> {
+    // Another known job — Homebrew's, normally — already holds rift. Writing
+    // rift's own plist and bootstrapping it beside that one leaves two jobs
+    // racing for a single process, with the loser respawning into the log
+    // every ten seconds. Kickstart the one that is already there instead.
+    if let Some(label) = loaded_label().filter(|label| *label != RIFT_PLIST) {
+        let service_target = format!("gui/{}/{}", getuid(), label);
+        let code = run_launchctl(&["kickstart", &service_target], false)?;
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("kickstart {} failed (exit {})", service_target, code),
+            ))
+        };
+    }
+
     let plist_path = plist_path()?;
     if !plist_path.is_file() {
+        retire_legacy_agent()?;
         service_install_internal(&plist_path).map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -400,66 +464,68 @@ pub fn service_start() -> io::Result<()> {
 }
 
 pub fn service_restart() -> io::Result<()> {
-    let plist_path = plist_path()?;
-    if !plist_path.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("service file '{}' is not installed", plist_path.display()),
-        ));
-    }
+    let label = match loaded_label() {
+        Some(label) => label,
+        None => {
+            // Nothing is loaded, so there is no job to kickstart. If rift's
+            // own plist is there, starting it is what "restart" means.
+            let plist_path = plist_path()?;
+            if plist_path.is_file() {
+                return service_start();
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no rift launchd job is loaded and service file '{}' is not installed \
+                     (`rift service install`, or `brew services start rift-plus`)",
+                    plist_path.display()
+                ),
+            ));
+        }
+    };
 
-    let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
+    let service_target = format!("gui/{}/{}", getuid(), label);
     let code = run_launchctl(&["kickstart", "-k", &service_target], false)?;
     if code == 0 {
         Ok(())
     } else {
         Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("kickstart -k failed (exit {})", code),
+            format!("kickstart -k {} failed (exit {})", service_target, code),
         ))
     }
 }
 
 pub fn service_stop() -> io::Result<()> {
-    let plist_path = plist_path()?;
-    if !plist_path.is_file() {
+    // Nothing loaded is nothing to stop, whatever the plist says: booting out
+    // a target launchd has never heard of only fails.
+    let Some(label) = loaded_label() else {
+        return Ok(());
+    };
+
+    let service_target = format!("gui/{}/{}", getuid(), label);
+    let code = run_launchctl(&["bootout", &service_target], false)?;
+    if code != 0 {
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("service file '{}' is not installed", plist_path.display()),
+            io::ErrorKind::Other,
+            format!("bootout {} failed (exit {})", service_target, code),
         ));
     }
 
-    let uid = getuid();
-    let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
-    let domain_target = format!("gui/{}", uid);
-
-    let is_bootstrapped = run_launchctl(&["print", &service_target], true).unwrap_or(1);
-
-    if is_bootstrapped != 0 {
-        let code = run_launchctl(&["kill", "SIGTERM", &service_target], false)?;
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(
+    // Disabling is what keeps rift's own agent down across a login, but it
+    // persists past a `bootstrap`, so doing it to Homebrew's label would leave
+    // a later `brew services start` failing for no visible reason. That job is
+    // Homebrew's to disable.
+    if label == RIFT_PLIST {
+        let code = run_launchctl(&["disable", &service_target], false)?;
+        if code != 0 {
+            return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("kill SIGTERM failed (exit {})", code),
-            ))
-        }
-    } else {
-        let code1 =
-            run_launchctl(&["bootout", &domain_target, plist_path.to_str().unwrap()], false)?;
-        let code2 = run_launchctl(&["disable", &service_target], false)?;
-
-        if code1 == 0 && code2 == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("bootout exit {}, disable exit {}", code1, code2),
-            ))
+                format!("disable {} failed (exit {})", service_target, code),
+            ));
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

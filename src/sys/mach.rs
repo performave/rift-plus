@@ -16,20 +16,23 @@ use std::vec::Vec;
 use tracing::{debug, error, info};
 
 const MAX_MESSAGE_SIZE: u32 = 262_144;
-const MACH_BS_NAME_FMT_PREFIX: &str = "git.";
-static G_NAME: &str = "acsandmann.rift";
+/// The bootstrap name rift registers its Mach server under. `rift-client`
+/// holds the same string; the two must agree or nothing can reach rift.
+static BS_NAME: &str = "com.performave.rift-plus";
+/// The name used before this fork took an identity of its own. A rift that
+/// started before an upgrade is still registered under it.
+static LEGACY_BS_NAME: &str = "git.acsandmann.rift";
 
 fn bs_name() -> CString {
     if let Ok(name) = std::env::var("RIFT_BS_NAME") {
         return CString::new(name).unwrap();
     }
-    CString::new(format!("{}{}", MACH_BS_NAME_FMT_PREFIX, G_NAME)).unwrap()
+    CString::new(BS_NAME).unwrap()
 }
 
-pub fn is_mach_server_registered() -> bool {
-    let bs_name = bs_name();
+fn bs_name_is_registered(name: &CStr) -> bool {
     unsafe {
-        let service_port = mach_get_bs_port(&bs_name);
+        let service_port = mach_get_bs_port(name);
         if service_port == 0 {
             return false;
         }
@@ -37,6 +40,22 @@ pub fn is_mach_server_registered() -> bool {
         let _ = mach_port_deallocate(mach_task_self(), service_port);
         true
     }
+}
+
+/// Whether some rift already holds the server port.
+///
+/// This is the guard against two rifts running at once, so it has to see a
+/// pre-rename instance too: during an upgrade the binaries swap while the old
+/// process keeps running, and missing it there would start a second one.
+/// An explicit `RIFT_BS_NAME` is an override and answers for itself.
+pub fn is_mach_server_registered() -> bool {
+    if std::env::var_os("RIFT_BS_NAME").is_some() {
+        return bs_name_is_registered(&bs_name());
+    }
+    [BS_NAME, LEGACY_BS_NAME]
+        .iter()
+        .filter_map(|name| CString::new(*name).ok())
+        .any(|name| bs_name_is_registered(&name))
 }
 
 type kern_return_t = c_int;
@@ -83,9 +102,7 @@ const BOOTSTRAP_NAME_IN_USE: kern_return_t = 1101;
 const BOOTSTRAP_UNKNOWN_SERVICE: kern_return_t = 1102;
 
 #[inline]
-const fn MACH_MSGH_BITS(remote: u32, local: u32) -> u32 {
-    remote | (local << 8)
-}
+const fn MACH_MSGH_BITS(remote: u32, local: u32) -> u32 { remote | (local << 8) }
 
 #[inline]
 const fn MACH_MSGH_BITS_SET(remote: u32, local: u32, voucher: u32, other: u32) -> u32 {
@@ -93,14 +110,10 @@ const fn MACH_MSGH_BITS_SET(remote: u32, local: u32, voucher: u32, other: u32) -
 }
 
 #[inline]
-const fn MACH_MSGH_BITS_REMOTE(bits: u32) -> u32 {
-    bits & 0xff
-}
+const fn MACH_MSGH_BITS_REMOTE(bits: u32) -> u32 { bits & 0xff }
 
 #[inline]
-const fn MACH_MSGH_BITS_LOCAL(bits: u32) -> u32 {
-    (bits >> 8) & 0xff
-}
+const fn MACH_MSGH_BITS_LOCAL(bits: u32) -> u32 { (bits >> 8) & 0xff }
 
 type CFIndex = isize;
 type CFAllocatorRef = *const c_void;
@@ -584,7 +597,7 @@ unsafe fn create_connection_server_port() -> mach_port_t {
     msg.0.magic2 = 0x110000;
     msg.0.magic3 = 0x110000;
 
-    let bundle = b"com.acsandmann.rift";
+    let bundle = b"com.performave.rift-plus";
     let copy_len = bundle.len().min(msg.0.bundle_name.len());
     msg.0.bundle_name[..copy_len].copy_from_slice(&bundle[..copy_len]);
     if bundle.len() > copy_len {
@@ -817,9 +830,7 @@ impl OwnedMachReply {
         Some(Self { header })
     }
 
-    pub fn header_mut(&mut self) -> &mut mach_msg_header_t {
-        &mut self.header
-    }
+    pub fn header_mut(&mut self) -> &mut mach_msg_header_t { &mut self.header }
 }
 
 impl Drop for OwnedMachReply {

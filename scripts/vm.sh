@@ -63,6 +63,7 @@ cmd_deploy() {
     # Restart through launchd rather than exec'ing rift over ssh, so it comes
     # up inside the GUI session with the Accessibility grant it was given.
     gui "${REMOTE_DIR}/bin/rift service restart" \
+        || gui "launchctl kickstart -k gui/\$(id -u ${GUEST_USER})/com.performave.rift-plus" \
         || gui "launchctl kickstart -k gui/\$(id -u ${GUEST_USER})/git.acsandmann.rift"
     echo "vm.sh: deployed to $HOST"
 }

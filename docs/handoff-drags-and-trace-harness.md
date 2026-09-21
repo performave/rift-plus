@@ -264,7 +264,7 @@ failed its own validation (workspaces on unexposed spaces — healed on snapshot
 ## Build / install (the running rift is this branch, not Homebrew's)
 
     cargo build --release
-    codesign -f -s "Developer ID Application: Eric Wang (8UR4G77744)" -i git.acsandmann.rift --timestamp target/release/rift
+    codesign -f -s "Developer ID Application: Eric Wang (8UR4G77744)" -i com.performave.rift-plus --timestamp target/release/rift
     install -m 555 target/release/rift /opt/homebrew/opt/rift/bin/rift
     install -m 555 target/release/rift-cli /opt/homebrew/Cellar/rift/0.5.3/bin/rift-cli
     brew services restart acsandmann/tap/rift
