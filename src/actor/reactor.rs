@@ -1348,7 +1348,10 @@ impl Reactor {
                 // across a mouse-up or a frame change.
                 let collapsible = matches!(
                     (pending.as_ref().map(|(_, e)| e), &next.1),
-                    (Some(Event::MouseModifierDrag { .. }), Event::MouseModifierDrag { .. })
+                    (
+                        Some(Event::MouseModifierDrag { .. }),
+                        Event::MouseModifierDrag { .. }
+                    )
                 );
                 if collapsible {
                     pending = Some(next);
@@ -2412,7 +2415,12 @@ impl Reactor {
                 self.begin_mouse_modifier_drag(window, at, action);
                 return Ok(EventOutcome::default());
             }
-            Event::MouseEdgeDragBegin { window, at: _, horizontal, vertical } => {
+            Event::MouseEdgeDragBegin {
+                window,
+                at: _,
+                horizontal,
+                vertical,
+            } => {
                 self.begin_mouse_edge_drag(window, horizontal, vertical);
                 return Ok(EventOutcome::default());
             }

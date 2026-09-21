@@ -834,7 +834,9 @@ impl EventTap {
             let mut horizontal = None;
             if within_y {
                 if (loc.x - l).abs() <= tol
-                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.x + g.size.width, l))
+                    && frames
+                        .iter()
+                        .any(|&(o, _, g)| o != wsid && faces(g.origin.x + g.size.width, l))
                 {
                     horizontal = Some(true);
                 } else if (loc.x - r).abs() <= tol
@@ -847,7 +849,9 @@ impl EventTap {
             let mut vertical = None;
             if within_x {
                 if (loc.y - t).abs() <= tol
-                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.y + g.size.height, t))
+                    && frames
+                        .iter()
+                        .any(|&(o, _, g)| o != wsid && faces(g.origin.y + g.size.height, t))
                 {
                     vertical = Some(true);
                 } else if (loc.y - b).abs() <= tol
