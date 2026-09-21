@@ -83,7 +83,47 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         return 0;
     }
 
+    // gesture dock-swipe [phase] | gesture processed [phase]
+    //
+    // rift reads gestures off the event tap as CGEvents of type 29 (gesture)
+    // and 30 (dock control), pulling the IOHID event out of them only for a
+    // *raw* contact frame. Two of its three decode paths never touch IOHID:
+    // a horizontal dock swipe is fields 110 and 123, and a processed gesture
+    // is a non-zero phase in field 132. Both of those are ordinary CGEvent
+    // integer fields, so they can be posted from here -- which is the
+    // difference between "this VM has no trackpad so gestures are untestable"
+    // and "the raw touch-frame path is untestable". Only the last needs a
+    // virtual HID digitizer.
+    if (!strcmp(cmd, "gesture") && argc > 2) {
+        const int kGestureType = 29, kDockControlType = 30;
+        const int kHidTypeField = 110, kSwipeMotionField = 123, kPhaseField = 132;
+        const int kDockSwipe = 23, kHorizontal = 1;
+        int phase = (argc > 3) ? atoi(argv[3]) : 1;
+
+        CGEventRef e = CGEventCreate(NULL);
+        if (!e) { fprintf(stderr, "could not create the event\n"); return 2; }
+
+        if (!strcmp(argv[2], "dock-swipe")) {
+            CGEventSetType(e, (CGEventType)kDockControlType);
+            CGEventSetIntegerValueField(e, (CGEventField)kHidTypeField, kDockSwipe);
+            CGEventSetIntegerValueField(e, (CGEventField)kSwipeMotionField, kHorizontal);
+            CGEventSetIntegerValueField(e, (CGEventField)kPhaseField, phase);
+        } else if (!strcmp(argv[2], "processed")) {
+            CGEventSetType(e, (CGEventType)kGestureType);
+            CGEventSetIntegerValueField(e, (CGEventField)kPhaseField, phase);
+        } else {
+            CFRelease(e);
+            fprintf(stderr, "gesture takes dock-swipe or processed\n");
+            return 1;
+        }
+        CGEventPost(kCGHIDEventTap, e);
+        printf("posted %s gesture, phase=%d\n", argv[2], phase);
+        CFRelease(e);
+        return 0;
+    }
+
     fprintf(stderr, "usage: mtool move <x> <y> | click <x> <y> | "
-                    "drag <x1> <y1> <x2> <y2> [cmd+alt+ctrl+shift] [steps] [left|right]\n");
+                    "drag <x1> <y1> <x2> <y2> [cmd+alt+ctrl+shift] [steps] [left|right] | "
+                    "gesture dock-swipe|processed [phase]\n");
     return 1;
 } }
