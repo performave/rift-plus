@@ -13,6 +13,15 @@ Entries describe this fork's changes relative to
 
 ### Added
 
+- **`mouse.edge_resize`.** Drag the boundary between two tiled windows to
+  resize them, with no modifier held — what every other window manager does and
+  what a stock rift does not, where resizing means reaching for a floating
+  window's edge. The drag moves the boundary, so both neighbours resize
+  together, and it changes the split ratio rather than writing a frame. Only
+  interior boundaries are grabbed: the outer rim of the layout has nothing to
+  trade space with, so an app's own edge-resize there is left alone.
+  `mouse.edge_grab_px` sets how close the pointer has to be (default 8).
+
 - **`ui.drop_overlay.tint`.** The wash of colour over the drop region was a
   fixed system blue at 0.28 alpha, and that alpha is most of what reads as
   frost: it is laid *over* the Liquid Glass material rather than through it, so
@@ -21,6 +30,22 @@ Entries describe this fork's changes relative to
   `clear_style = true` for a pane you see through rather than a tinted slab.
 
 ### Fixed
+
+- **Modifier-drag resize is smooth rather than stepped.** Updates were rate
+  limited to one every 68ms — yabai's interval — which is a visible 15Hz
+  staircase. The limit was not arbitrary: each update lays out the workspace,
+  the reactor's channel is unbounded, and a rate it could not drain grew a
+  queue until the window trailed the cursor and went on moving after the button
+  came up. The reactor now collapses a run of drag updates into its last
+  sample, which is lossless because each one carries the movement since the
+  press rather than since the previous update. An update it cannot keep up with
+  is dropped instead of queued, so the gesture clocks itself and the interval
+  could come down to 8ms.
+
+- **A modifier-drag resize no longer animates.** The arrange it requested was
+  not marked as a resize, so with `layout.animate` on, every update started a
+  fresh animation that the next update replaced — the window never reached the
+  frame it was given and permanently lagged the cursor.
 
 - **The space switch animation survives a Dock restart.** The animation lives
   inside Dock, because that is where the addition's payload lives, so anything

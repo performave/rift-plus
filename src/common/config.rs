@@ -626,9 +626,9 @@ impl<'de> Deserialize<'de> for MouseModifier {
 /// equivalent in a stock rift: dragging a window there means grabbing its title
 /// bar, and resizing means hitting its edge.
 ///
-/// Both actions apply to floating windows. A tiled window's geometry belongs to
-/// its layout, so a modifier-drag on one is ignored rather than fought with.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, Default)]
+/// A modifier-drag resize works on a tiled window too: the pointer moves the
+/// boundary it grabbed, which changes the split ratio rather than the frame.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 pub struct MouseSettings {
     /// Modifier that turns a drag into a move or resize. Omit to disable
@@ -650,6 +650,31 @@ pub struct MouseSettings {
     /// drag-to-menu-bar), which no heuristic can tell apart from a move.
     #[serde(default)]
     pub takeover_float_drags: bool,
+    /// Resize a tiled window by dragging its edge, with no modifier held --
+    /// the thing every other window manager does and a stock rift does not.
+    /// The drag moves the boundary between two tiles, so both neighbours
+    /// resize together; only interior boundaries are grabbed, leaving an
+    /// app's own edge-resize on the outside of the layout alone.
+    #[serde(default)]
+    pub edge_resize: bool,
+    /// How close to an edge the pointer has to be to grab it, in points.
+    #[serde(default = "default_edge_grab_px")]
+    pub edge_grab_px: f64,
+}
+
+fn default_edge_grab_px() -> f64 { 8.0 }
+
+impl Default for MouseSettings {
+    fn default() -> Self {
+        Self {
+            modifier: None,
+            action1: MouseAction::default(),
+            action2: MouseAction::default(),
+            takeover_float_drags: false,
+            edge_resize: false,
+            edge_grab_px: default_edge_grab_px(),
+        }
+    }
 }
 
 impl MouseSettings {

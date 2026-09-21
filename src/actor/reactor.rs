@@ -186,18 +186,29 @@ fn half_of(frame: CGRect, direction: Direction) -> CGRect {
 ///
 /// Chosen from where the press landed, like grabbing a corner: the halves the
 /// cursor is in are the ones that follow it.
+/// `None` on an axis means that axis is not being dragged at all.
+///
+/// A modifier drag grabs a corner, so both axes move. Grabbing one edge of a
+/// tile moves only its own axis: a right-edge drag must leave the window's
+/// height alone, or it would also move whichever split owns its top or bottom
+/// boundary and the drag would shove two boundaries at once.
 #[derive(Clone, Copy, Debug, Default)]
 struct ResizeEdges {
-    left: bool,
-    top: bool,
+    horizontal: Option<bool>,
+    vertical: Option<bool>,
 }
 
 impl ResizeEdges {
     fn from_press(frame: CGRect, at: CGPoint) -> Self {
         Self {
-            left: at.x < frame.mid().x,
-            top: at.y < frame.mid().y,
+            horizontal: Some(at.x < frame.mid().x),
+            vertical: Some(at.y < frame.mid().y),
         }
+    }
+
+    /// The edges a tile-edge grab moves: whichever the pointer actually caught.
+    fn from_grabbed(horizontal: Option<bool>, vertical: Option<bool>) -> Self {
+        Self { horizontal, vertical }
     }
 
     /// The frame after dragging `dx`/`dy` from where the press landed.
@@ -206,30 +217,34 @@ impl ResizeEdges {
     /// the opposite edge stays put; a right-edge drag only changes the width.
     fn apply(self, frame: CGRect, dx: f64, dy: f64) -> CGRect {
         let mut out = frame;
-        if self.left {
-            out.origin.x = frame.origin.x + dx;
-            out.size.width = frame.size.width - dx;
-        } else {
-            out.size.width = frame.size.width + dx;
+        match self.horizontal {
+            Some(true) => {
+                out.origin.x = frame.origin.x + dx;
+                out.size.width = frame.size.width - dx;
+            }
+            Some(false) => out.size.width = frame.size.width + dx,
+            None => {}
         }
-        if self.top {
-            out.origin.y = frame.origin.y + dy;
-            out.size.height = frame.size.height - dy;
-        } else {
-            out.size.height = frame.size.height + dy;
+        match self.vertical {
+            Some(true) => {
+                out.origin.y = frame.origin.y + dy;
+                out.size.height = frame.size.height - dy;
+            }
+            Some(false) => out.size.height = frame.size.height + dy,
+            None => {}
         }
         // Never let a fast drag invert the window through zero. Clamping the
         // size alone would let a left drag keep walking the origin, so the
         // origin is pinned to the edge that is not moving.
         if out.size.width < MIN_MODIFIER_DRAG_SIZE {
             out.size.width = MIN_MODIFIER_DRAG_SIZE;
-            if self.left {
+            if self.horizontal == Some(true) {
                 out.origin.x = frame.origin.x + frame.size.width - MIN_MODIFIER_DRAG_SIZE;
             }
         }
         if out.size.height < MIN_MODIFIER_DRAG_SIZE {
             out.size.height = MIN_MODIFIER_DRAG_SIZE;
-            if self.top {
+            if self.vertical == Some(true) {
                 out.origin.y = frame.origin.y + frame.size.height - MIN_MODIFIER_DRAG_SIZE;
             }
         }
@@ -370,6 +385,21 @@ pub enum Event {
         at: CGPoint,
         action: crate::common::config::MouseAction,
     },
+    /// A plain drag that grabbed a tiled window's edge, at `at` in
+    /// window-server coordinates.
+    ///
+    /// Distinct from `MouseModifierDragBegin` because the edges are decided by
+    /// which boundary the pointer actually caught, not by which quadrant of the
+    /// window the press landed in: dragging a right edge must move only the
+    /// vertical boundary, leaving the window's height alone. `None` on an axis
+    /// means that axis is not part of the drag.
+    MouseEdgeDragBegin {
+        window: WindowServerId,
+        #[serde(with = "CGPointDef")]
+        at: CGPoint,
+        horizontal: Option<bool>,
+        vertical: Option<bool>,
+    },
     /// The window server ordered a window in or out.
     ///
     /// Closing the window of an app that keeps running orders the window out
@@ -478,6 +508,8 @@ pub struct Reactor {
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
+    /// See `sync_tile_frames`.
+    last_tile_frames: Vec<(u32, i32, CGRect)>,
     /// When the mouse button last came up. A focus change that follows a
     /// click is the pointer's doing; the pointer is not moved for it.
     last_mouse_up: Option<std::time::Instant>,
@@ -642,6 +674,7 @@ impl Reactor {
             modifier_drag: None,
             modifier_drag_ended: None,
             last_float_strips: Vec::new(),
+            last_tile_frames: Vec::new(),
             last_mouse_up: None,
             focus_left_from: None,
             menu_manager: managers::MenuManager {
@@ -1295,13 +1328,39 @@ impl Reactor {
         const MAX_EVENT_BATCH: usize = 64;
 
         while let Some((span, event)) = events.recv().await {
-            let _guard = span.enter();
-            Self::handle_thread_event(&reactor, event);
+            let mut pending = Some((span, event));
             // Drain a bounded batch to reduce recv/select overhead.
             for _ in 1..MAX_EVENT_BATCH {
-                let Ok((span, event)) = events.try_recv() else {
-                    break;
-                };
+                let Ok(next) = events.try_recv() else { break };
+                // Collapse a run of drag updates into its last sample. The tap
+                // reports dx/dy measured from where the press started, not from
+                // the previous sample, so the newest one already carries every
+                // earlier one -- handling the intermediates costs a full arrange
+                // each and changes nothing on screen.
+                //
+                // This is what lets the gesture be self-clocking. Without it the
+                // tap's fixed interval has to be slow enough for the reactor to
+                // keep up, because the channel is unbounded: too fast and the
+                // queue grows until the window trails the cursor and keeps
+                // moving after the button comes up.
+                //
+                // Only strictly adjacent drags collapse, so nothing is reordered
+                // across a mouse-up or a frame change.
+                let collapsible = matches!(
+                    (pending.as_ref().map(|(_, e)| e), &next.1),
+                    (Some(Event::MouseModifierDrag { .. }), Event::MouseModifierDrag { .. })
+                );
+                if collapsible {
+                    pending = Some(next);
+                    continue;
+                }
+                if let Some((span, event)) = pending.take() {
+                    let _guard = span.enter();
+                    Self::handle_thread_event(&reactor, event);
+                }
+                pending = Some(next);
+            }
+            if let Some((span, event)) = pending {
                 let _guard = span.enter();
                 Self::handle_thread_event(&reactor, event);
             }
@@ -1582,6 +1641,7 @@ impl Reactor {
         self.note_explicit_window_intent(&event);
         self.sync_drag_notification_silence();
         self.sync_float_drag_strips();
+        self.sync_tile_frames();
         // Focus reported on a window that is not admitted — an app's child
         // window, such as Lightroom's filmstrip, which the window server and
         // AX both happily report as focused — is focus on the top-level
@@ -2352,11 +2412,19 @@ impl Reactor {
                 self.begin_mouse_modifier_drag(window, at, action);
                 return Ok(EventOutcome::default());
             }
+            Event::MouseEdgeDragBegin { window, at: _, horizontal, vertical } => {
+                self.begin_mouse_edge_drag(window, horizontal, vertical);
+                return Ok(EventOutcome::default());
+            }
             Event::MouseModifierDrag { dx, dy } => {
-                let outcome = EventOutcome::default();
+                // Marked as a resize so the arrange skips animation. Animating
+                // here is worse than pointless: each update starts a fresh
+                // animation that the next one replaces a few milliseconds
+                // later, so the window never reaches the frame it was given and
+                // permanently trails the cursor.
                 return Ok(match self.handle_mouse_modifier_drag(dx, dy) {
-                    Some(event) => outcome.with_layout_event(event).with_arrange_passes(1),
-                    None => outcome,
+                    Some(event) => EventOutcome::layout_changed(true).with_layout_event(event),
+                    None => EventOutcome::default(),
                 });
             }
             Event::MouseDragged { x, y } => {
@@ -4288,7 +4356,8 @@ impl Reactor {
                     windows.push(dragged);
                 }
             }
-            Event::MouseModifierDragBegin { window, .. } => {
+            Event::MouseModifierDragBegin { window, .. }
+            | Event::MouseEdgeDragBegin { window, .. } => {
                 if let Some(wid) = self.state.windows.tracked_window_id(*window) {
                     windows.push(wid);
                 }
@@ -4362,6 +4431,35 @@ impl Reactor {
             ));
         }
         self.last_float_strips = strips;
+    }
+
+    /// Keeps the event tap's picture of where the tiled windows are, so a
+    /// press can be hit-tested against their edges without asking the reactor
+    /// and waiting for an answer. Pushed only when it changes.
+    ///
+    /// The tap needs the whole set rather than just the window under the
+    /// pointer: with inner gaps the press that grabs a boundary usually lands
+    /// in the gutter between two tiles, which is inside neither of them.
+    fn sync_tile_frames(&mut self) {
+        let frames: Vec<(u32, i32, CGRect)> = if self.config.settings.mouse.edge_resize {
+            self.state
+                .windows
+                .iter_windows()
+                .filter(|(wid, _)| !self.layout_manager.layout_engine.is_window_floating(*wid))
+                .filter_map(|(wid, state)| {
+                    Some((state.info.sys_id?.as_u32(), wid.pid, state.frame_monotonic))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if frames == self.last_tile_frames {
+            return;
+        }
+        if let Some(event_tap_tx) = &self.communication_manager.event_tap_tx {
+            _ = event_tap_tx.send(crate::actor::event_tap::Request::SetTileFrames(frames.clone()));
+        }
+        self.last_tile_frames = frames;
     }
 
     /// While the user drags a floating window across the display seam, keep
@@ -5294,6 +5392,34 @@ impl Reactor {
         });
     }
 
+    /// Records what an edge drag started on.
+    ///
+    /// Same state as a modifier drag -- from here the two are the same gesture
+    /// -- except that the edges come from the hit test rather than from which
+    /// quadrant the press landed in, and the action is always a resize.
+    fn begin_mouse_edge_drag(
+        &mut self,
+        window_server_id: WindowServerId,
+        horizontal: Option<bool>,
+        vertical: Option<bool>,
+    ) {
+        self.modifier_drag = None;
+        let Some(wid) = self.state.windows.tracked_window_id(window_server_id) else {
+            return;
+        };
+        let Some(window) = self.state.windows.window(wid) else {
+            return;
+        };
+        let frame = window.frame_monotonic;
+        self.modifier_drag = Some(ModifierDragState {
+            window: wid,
+            action: crate::common::config::MouseAction::Resize,
+            origin_frame: frame,
+            last_target: frame,
+            edges: ResizeEdges::from_grabbed(horizontal, vertical),
+        });
+    }
+
     /// Applies movement during a modifier drag.
     ///
     /// `dx`/`dy` are measured from where the drag began and applied to the
@@ -5329,7 +5455,7 @@ impl Reactor {
                 "wid": wid.idx.get(),
                 "action": format!("{:?}", drag.action),
                 "floating": floating,
-                "edges": [drag.edges.left, drag.edges.top],
+                "edges": [drag.edges.horizontal, drag.edges.vertical],
                 "origin": [drag.origin_frame.origin.x, drag.origin_frame.size.width],
                 "old": [old_frame.origin.x, old_frame.size.width],
                 "new": [target.origin.x, target.size.width],

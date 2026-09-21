@@ -65,6 +65,9 @@ pub enum Request {
     /// The grab strips (title/tab bars) of the floating windows, for the
     /// plain-drag takeover: `(window server id, pid, strip)`.
     SetFloatDragStrips(Vec<(u32, i32, CGRect)>),
+    /// Where the tiled windows are, for the edge-resize hit test:
+    /// `(window server id, pid, frame)`.
+    SetTileFrames(Vec<(u32, i32, CGRect)>),
 }
 
 pub struct EventTap {
@@ -78,6 +81,8 @@ pub struct EventTap {
     modifier_drag: Cell<Option<ModifierDrag>>,
     /// See `Request::SetFloatDragStrips`.
     float_strips: RefCell<Vec<(u32, i32, CGRect)>>,
+    /// See `Request::SetTileFrames`.
+    tile_frames: RefCell<Vec<(u32, i32, CGRect)>>,
     /// A press that landed on a float's grab strip: `(down point, wsid,
     /// pid)`. Becomes a takeover once the pointer moves past the threshold;
     /// forgotten on release (it was a click).
@@ -136,14 +141,22 @@ struct ModifierDrag {
 
 /// Minimum gap between modifier-drag updates sent to the reactor.
 ///
-/// The tap sees drag events at the pointer's full report rate, and resizing a
-/// tiled window lays out the whole workspace, so forwarding every one of them
-/// makes the drag crawl. Movement in between is accumulated rather than
-/// dropped, so the window still tracks the cursor exactly — it just arrives in
-/// fewer, larger steps.
-/// Matches the interval yabai uses for the same gesture. Each update lays out
-/// the whole workspace, so a higher rate buys nothing but load.
-const MODIFIER_DRAG_INTERVAL: Duration = Duration::from_millis(68);
+/// The tap sees drag events at the pointer's full report rate, and each update
+/// lays out the workspace, so this used to have to be slow enough for the
+/// reactor to keep up on its own: the channel is unbounded, so a rate it could
+/// not drain grew a queue until the window trailed the cursor and went on
+/// moving after the button came up. 68ms — yabai's interval — was slow enough,
+/// at the cost of a visibly stepped 15Hz gesture.
+///
+/// The reactor now collapses a run of these into its last sample, so an update
+/// it cannot keep up with is discarded rather than queued and the gesture
+/// clocks itself. That makes a short interval safe, and the remaining limit is
+/// how fast the reactor can actually arrange.
+///
+/// Movement in between is accumulated rather than dropped either way: the tap
+/// reports dx/dy from where the press started, so the window tracks the cursor
+/// exactly regardless of how many samples survive.
+const MODIFIER_DRAG_INTERVAL: Duration = Duration::from_millis(8);
 
 #[derive(Clone, Copy, Default)]
 struct MouseWindow {
@@ -340,6 +353,7 @@ impl EventTap {
             mouse_window: Cell::new(MouseWindow::default()),
             modifier_drag: Cell::new(None),
             float_strips: RefCell::new(Vec::new()),
+            tile_frames: RefCell::new(Vec::new()),
             pending_float_grab: Cell::new(None),
             tap: RefCell::new(None),
             tap_generation: Cell::new(0),
@@ -533,6 +547,9 @@ impl EventTap {
             Request::SetFloatDragStrips(strips) => {
                 *self.float_strips.borrow_mut() = strips;
             }
+            Request::SetTileFrames(frames) => {
+                *self.tile_frames.borrow_mut() = frames;
+            }
             Request::SetLowPowerMode(enabled) => {
                 if state.low_power_mode != enabled {
                     debug!("low_power_mode changed in event tap: {}", enabled);
@@ -650,6 +667,31 @@ impl EventTap {
                     return false;
                 }
 
+                // A press on the boundary between two tiles: rift takes the
+                // whole gesture. Checked before the float-strip grab because a
+                // tile edge is the more specific match, and swallowed outright
+                // rather than deferred to a drag threshold -- the app would
+                // otherwise start its own edge-resize on the press and fight
+                // the layout for the length of the drag.
+                if event_type == CGEventType::LeftMouseDown
+                    && let Some((wsid, _pid, horizontal, vertical)) = self.tile_edge_at(loc)
+                {
+                    debug!(?wsid, ?horizontal, ?vertical, "grabbing a tile edge");
+                    _ = self.events_tx.send(Event::MouseEdgeDragBegin {
+                        window: WindowServerId::new(wsid),
+                        at: loc,
+                        horizontal,
+                        vertical,
+                    });
+                    self.modifier_drag.set(Some(ModifierDrag {
+                        button: MouseButton::Left,
+                        origin: loc,
+                        last: loc,
+                        last_sent: Instant::now(),
+                    }));
+                    return false;
+                }
+
                 // A press on a floating window's grab strip: remember it.
                 // The press reaches the app (it is a click until proven a
                 // drag); the takeover begins only past the drag threshold.
@@ -746,6 +788,72 @@ impl EventTap {
         }
 
         true
+    }
+
+    /// Which tile edge, if any, this press grabbed.
+    ///
+    /// Returns the window and the edges to move: `Some(true)` on an axis means
+    /// the near edge (left / top), `Some(false)` the far one, `None` that the
+    /// axis is not being dragged. A press near a corner grabs both.
+    ///
+    /// Only *interior* boundaries count -- ones with another tile on the far
+    /// side. The outer rim of the layout has nothing to trade space with, so
+    /// grabbing it would do nothing except swallow the app's own edge-resize.
+    fn tile_edge_at(&self, loc: CGPoint) -> Option<(u32, i32, Option<bool>, Option<bool>)> {
+        let state = self.state.borrow();
+        if !state.mouse.edge_resize {
+            return None;
+        }
+        let tol = state.mouse.edge_grab_px;
+        drop(state);
+
+        let frames = self.tile_frames.borrow();
+        // A boundary is interior when some other tile's opposite edge sits
+        // across the gutter from it. The gutter is whatever the inner gap is,
+        // so rather than read the config here, accept any neighbour within a
+        // generous span -- a false negative just means the drag is ignored.
+        const NEIGHBOUR_SPAN: f64 = 64.0;
+        let faces = |a: f64, b: f64| (a - b).abs() <= NEIGHBOUR_SPAN;
+
+        for &(wsid, pid, f) in frames.iter() {
+            let (l, r) = (f.origin.x, f.origin.x + f.size.width);
+            let (t, b) = (f.origin.y, f.origin.y + f.size.height);
+            // The pointer has to be beside the window on the other axis, or
+            // every press in a distant corner of the screen would match.
+            let within_y = loc.y >= t - tol && loc.y <= b + tol;
+            let within_x = loc.x >= l - tol && loc.x <= r + tol;
+
+            let mut horizontal = None;
+            if within_y {
+                if (loc.x - l).abs() <= tol
+                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.x + g.size.width, l))
+                {
+                    horizontal = Some(true);
+                } else if (loc.x - r).abs() <= tol
+                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.x, r))
+                {
+                    horizontal = Some(false);
+                }
+            }
+
+            let mut vertical = None;
+            if within_x {
+                if (loc.y - t).abs() <= tol
+                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.y + g.size.height, t))
+                {
+                    vertical = Some(true);
+                } else if (loc.y - b).abs() <= tol
+                    && frames.iter().any(|&(o, _, g)| o != wsid && faces(g.origin.y, b))
+                {
+                    vertical = Some(false);
+                }
+            }
+
+            if horizontal.is_some() || vertical.is_some() {
+                return Some((wsid, pid, horizontal, vertical));
+            }
+        }
+        None
     }
 
     /// Turns a pending float-strip grab into a rift-driven drag once the
