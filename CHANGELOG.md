@@ -60,6 +60,13 @@ Entries describe this fork's changes relative to
   moving windows for a display change — so a window *you* move in those seconds
   stays where you put it.
 
+- **An unreadable config no longer stops rift from starting.** A config key the
+  running binary does not know — after a downgrade, or a rollback — used to
+  abort the parse, which launchd answered by respawning, so a single line left
+  you with no window manager and a restart loop. Unknown keys are now reported
+  and skipped, and the rest of the file still applies; a config that is broken
+  in some other way is reported and rift starts on the defaults.
+
 ## [0.5.5-plus.4] - 2026-09-21
 
 ### Added

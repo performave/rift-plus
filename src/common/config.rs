@@ -370,16 +370,98 @@ fn migrate_legacy_resize_bindings(document: &mut toml::Value) -> bool {
     migrated
 }
 
-fn parse_config_file(buf: &str) -> Result<ConfigFile, toml::de::Error> {
-    toml::from_str(buf).or_else(|original_error| {
-        let Ok(mut document) = toml::from_str::<toml::Value>(buf) else {
-            return Err(original_error);
-        };
-        if !migrate_legacy_resize_bindings(&mut document) {
-            return Err(original_error);
+/// The most a single parse will drop before it gives up and reports the
+/// error. A file that needs more than this is not a version skew.
+const MAX_UNKNOWN_KEYS: usize = 16;
+
+/// Cut the entry an "unknown field" error names out of the source, returning
+/// the key and the file without it.
+///
+/// The error's span covers the key, not its value, so the extent to cut is
+/// found by trying each following line break in turn and keeping the first
+/// cut that still parses as TOML. `key = value` on one line is cut by its own
+/// line; a value spread over several leaves a dangling fragment that does not
+/// parse, so the search walks on to the line that closes it.
+fn strip_unknown_key(buf: &str, error: &toml::de::Error) -> Option<(String, String)> {
+    if !error.message().starts_with("unknown field") {
+        return None;
+    }
+    let span = error.span()?;
+    let key = buf.get(span.clone())?.trim().trim_matches('"').to_string();
+
+    // Only a key that starts its own line can be cut by lines. One inside an
+    // inline table shares a line with entries that must survive.
+    let line_start = buf[..span.start].rfind('\n').map_or(0, |at| at + 1);
+    if !buf[line_start..span.start].trim().is_empty() {
+        return None;
+    }
+
+    let mut end = span.end;
+    loop {
+        let mut candidate = String::with_capacity(buf.len());
+        candidate.push_str(&buf[..line_start]);
+        candidate.push_str(&buf[end..]);
+        if toml::from_str::<toml::Value>(&candidate).is_ok() {
+            return Some((key, candidate));
         }
-        document.try_into()
-    })
+        match buf[end..].find('\n') {
+            Some(at) => end += at + 1,
+            // The last line carries no break of its own; cutting to the end
+            // of the file is the one candidate left.
+            None if end < buf.len() => end = buf.len(),
+            None => return None,
+        }
+    }
+}
+
+fn parse_config_file(buf: &str) -> Result<ConfigFile, toml::de::Error> {
+    // A key this binary does not know is almost always a config written by a
+    // newer rift -- a downgrade, or a rollback after an upgrade. Every
+    // settings struct is `deny_unknown_fields`, which catches typos and is
+    // worth keeping, but on its own it meant one such key rejected the whole
+    // file and left the user with no config at all. Drop the key the parse
+    // names, say so, and try again; everything else still applies.
+    //
+    // Both repairs work on the source text rather than on a parsed document,
+    // because it is the parse error's span into that text that says which key
+    // to cut. The legacy migration therefore writes its result back out as
+    // TOML -- the comments are lost, but the string is only ever re-parsed.
+    let mut source = std::borrow::Cow::Borrowed(buf);
+    let mut dropped: Vec<String> = Vec::new();
+    let mut migrated = false;
+    loop {
+        let error = match toml::from_str::<ConfigFile>(&source) {
+            Ok(config) => {
+                if !dropped.is_empty() {
+                    tracing::warn!(
+                        keys = ?dropped,
+                        "Ignored config keys this version of rift does not know; \
+                         the rest of the file was applied"
+                    );
+                }
+                return Ok(config);
+            }
+            Err(error) => error,
+        };
+        if dropped.len() < MAX_UNKNOWN_KEYS
+            && let Some((key, candidate)) = strip_unknown_key(&source, &error)
+        {
+            dropped.push(key);
+            source = std::borrow::Cow::Owned(candidate);
+            continue;
+        }
+        if !migrated {
+            migrated = true;
+            if let Ok(mut document) = toml::from_str::<toml::Value>(&source)
+                && migrate_legacy_resize_bindings(&mut document)
+                && let Ok(rewritten) = toml::to_string(&document)
+            {
+                source = std::borrow::Cow::Owned(rewritten);
+                continue;
+            }
+        }
+        return Err(error);
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -2140,6 +2222,48 @@ mod tests {
     use crate::actor::reactor;
     use crate::actor::wm_controller::ConfiguredLayoutCommand;
     use crate::layout_engine::{LayoutCommand, ResizeOrientation};
+
+    /// A config written by a newer rift must still load on an older one: the
+    /// key it does not know is dropped, not the whole file.
+    #[test]
+    fn an_unknown_key_is_dropped_rather_than_rejecting_the_config() {
+        let default = include_str!("../../rift.default.toml");
+        let from_the_future = default.replacen(
+            "[settings]\n",
+            "[settings]\nsomething_only_a_newer_rift_has = true\n",
+            1,
+        );
+        let config = Config::parse(&from_the_future).expect("unknown key should not be fatal");
+        assert_eq!(
+            config.settings.focus_follows_mouse,
+            Config::default().settings.focus_follows_mouse
+        );
+        assert_eq!(config.keys.len(), Config::default().keys.len());
+    }
+
+    /// The error's span covers the key alone, so a value spread over several
+    /// lines has to be cut by finding where it closes.
+    #[test]
+    fn an_unknown_key_with_a_multi_line_value_is_dropped_whole() {
+        let default = include_str!("../../rift.default.toml");
+        let from_the_future = default.replacen(
+            "[settings]\n",
+            "[settings]\nsomething_new = [\n  1,\n  2,\n]\n",
+            1,
+        );
+        let config = Config::parse(&from_the_future).expect("unknown key should not be fatal");
+        assert_eq!(config.keys.len(), Config::default().keys.len());
+    }
+
+    /// Dropping unknown keys must not turn a genuinely broken file into a
+    /// silent half-config; a wrong *type* is still an error.
+    #[test]
+    fn a_malformed_value_is_still_an_error() {
+        let default = include_str!("../../rift.default.toml");
+        let broken =
+            default.replacen("animation_duration = 0.3", "animation_duration = \"soon\"", 1);
+        assert!(Config::parse(&broken).is_err());
+    }
 
     #[test]
     fn layout_insertion_point_supports_global_default_and_per_mode_override() {

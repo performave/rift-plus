@@ -186,10 +186,21 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
     }
 
     let config_path = opt.config.clone().unwrap_or_else(|| config_file());
-    let mut config = if config_path.exists() {
-        Config::read(&config_path).unwrap()
-    } else {
-        Config::default()
+    // A config rift cannot parse used to panic here, and launchd answers a
+    // panic by respawning -- so a single stray line left the user with no
+    // window manager at all and a restart loop. Say what is wrong and carry
+    // on with the defaults, which is at least a rift they can use to fix it.
+    let mut config = match Config::read(&config_path) {
+        Ok(config) => config,
+        Err(_) if !config_path.exists() => Config::default(),
+        Err(error) => {
+            eprintln!(
+                "Rift could not read its config at {}: {error}\n\
+                 Continuing with the default settings; nothing in that file was applied.",
+                config_path.display()
+            );
+            Config::default()
+        }
     };
     config.settings.animate &= !opt.no_animate;
     config.settings.default_disable |= opt.default_disable;
