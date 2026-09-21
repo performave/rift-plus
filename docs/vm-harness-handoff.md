@@ -183,8 +183,39 @@ worktree — not against whatever old binary is lying around in the guest, which
 differs by far more than the change under test. Give both sides the same
 starting conditions, explicitly: quitting the apps first is what turned "my
 build wedges and HEAD does not" into "both wedge, and the difference was
-whether Safari happened to be running". The `ab` helper in the scratchpad does
-exactly that and nothing else.
+whether Safari happened to be running". [`scripts/vm-ab`](../scripts/vm-ab)
+does exactly that and nothing else; it drives
+[`scripts/vm-run`](../scripts/vm-run), which drives
+[`scripts/vm-ssh`](../scripts/vm-ssh).
+
+### What a comparable run costs
+
+Four separate defects made two "identical" batteries disagree, none of them in
+rift. Each is worth knowing about because each one produced a number I
+believed:
+
+- **The guest keeps its own copy of `chaos.py`, and nothing used to push it.**
+  A run therefore measured whatever revision was last copied across by hand.
+  `vm-run` now `scp`s it on every invocation; if you add a runner, do the same.
+- **Every scenario was judged against one snapshot taken before the first of
+  them.** The ninth scenario was charged with everything the previous eight
+  left behind, which is how one slot reordering got reported three times.
+  `scenario_start` now takes a fresh snapshot after the reset and hands *that*
+  to the scenario; the residue the reset could not clear is printed instead of
+  being folded into a verdict.
+- **Native fullscreen is only detectable while a display is showing it.** Apps
+  reopen in the state they were closed in, so a reboot restores a fullscreen
+  Safari onto a desktop nothing is showing, where `displays_showing_fullscreen`
+  cannot see it — and its oversized frame then fails
+  `check_frames_within_display` in whichever scenario happens to look next.
+  `fullscreen_suspected` uses that frame as the tell.
+- **`vm-ab` piped the summary through `head -30`.** Fifteen scenarios' reasons
+  do not fit, so the last few came back blank — which reads exactly like
+  scenarios that failed without saying why.
+
+Until a battery repeats itself twice in a row, treat its count as a symptom of
+the harness, not a verdict on the build. Two runs of the same build on the same
+binary disagreed on six of fifteen before these four were fixed.
 
 ## Traps inside the harness itself
 

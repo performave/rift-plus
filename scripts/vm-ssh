@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run a command in the rift test VM, as the guest's own login user.
+#
+# No sudo anywhere: this guest's sshd session can already reach both
+# CoreGraphics and the `gui/<uid>` launchd domain, so the `launchctl asuser`
+# bridge the harness spec assumed turns out to be unnecessary.
+set -euo pipefail
+OPTS=(-i "$HOME/.ssh/id_rift_vm" -o IdentitiesOnly=yes
+      -o UserKnownHostsFile="$HOME/.ssh/known_hosts_rift_vm"
+      -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10)
+exec ssh "${OPTS[@]}" "vm@${RIFT_VM_IP:-192.168.64.6}" "$@"

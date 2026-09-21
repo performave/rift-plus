@@ -259,6 +259,35 @@ def spawn_windows() -> None:
     time.sleep(10)
 
 
+def scenario_start(name: str, base: dict) -> dict:
+    """The state a scenario should be judged against: the one it starts in.
+
+    `base` is taken once, before the first scenario. Judging the ninth
+    scenario against it charges that scenario with everything the previous
+    eight left behind -- which is how a run reported the same slot reordering
+    three times over, once for the churn that caused it and twice for churns
+    that merely inherited it. The reset above re-establishes the baseline as
+    far as anything short of a reboot can; what it could not undo belongs in
+    the record, not in the next scenario's verdict.
+    """
+    pre = snapshot(f"{name} pre")
+    drift = []
+    was = sum(1 for r in base["windows"].values() if r[2])
+    now = sum(1 for r in pre["windows"].values() if r[2])
+    if was != now:
+        drift.append(f"{was} tiled -> {now}")
+    if len(base["windows"]) != len(pre["windows"]):
+        drift.append(f"{len(base['windows'])} window(s) -> {len(pre['windows'])}")
+    try:
+        check_frames_within_display(pre, "pre")
+    except Violation as exc:
+        drift.append(str(exc).split(": ", 1)[-1])
+    if drift:
+        print(f"    (residue the reset could not clear: {'; '.join(drift)})",
+              flush=True)
+    return pre
+
+
 def reset_between_scenarios() -> str:
     """Put the guest back to the state the baseline was taken in.
 
@@ -276,7 +305,7 @@ def reset_between_scenarios() -> str:
     notes = []
     unplug(quiet=True)
     settle(2)
-    if displays_showing_fullscreen():
+    if fullscreen_suspected():
         notes.append("cleared fullscreen" if clear_native_fullscreen() else "STILL FULLSCREEN")
     for name, was, now in show_the_desktop_holding_the_windows():
         notes.append(f"{name}: showed empty {was}, switched to {now}")
@@ -343,6 +372,25 @@ def displays_showing_fullscreen() -> list:
     the wrong one.
     """
     return [d.get("name") for d in (rift("displays") or []) if d.get("space") is None]
+
+
+def fullscreen_suspected() -> bool:
+    """Whether any test app is in native fullscreen, shown or not.
+
+    `displays_showing_fullscreen` only sees it while a display is *showing*
+    that space. An app that went fullscreen on a desktop nothing is showing --
+    which is what a reboot restores, since apps reopen in the state they were
+    closed in -- is invisible to it, and its window sits at the display's full
+    size with no menu-bar inset, failing `check_frames_within_display` in
+    whichever scenario happens to look next. The oversized frame is the tell.
+    """
+    if displays_showing_fullscreen():
+        return True
+    try:
+        check_frames_within_display(snapshot("fullscreen probe"), "probe")
+    except Violation:
+        return True
+    return False
 
 
 def clear_native_fullscreen(tries: int = 3) -> bool:
@@ -1452,9 +1500,10 @@ def main() -> int:
                 reset = reset_between_scenarios()
                 if reset:
                     print(f"    (reset: {reset})", flush=True)
+                pre = scenario_start(name, base)
                 started = time.time()
                 try:
-                    SCENARIOS[name](base)
+                    SCENARIOS[name](pre)
                     verdict, detail = "PASS", ""
                 except Violation as exc:
                     verdict, detail = "FAIL", str(exc)
@@ -1541,9 +1590,10 @@ def main() -> int:
         reset = reset_between_scenarios()
         if reset:
             print(f"    (reset: {reset})", flush=True)
+        pre = scenario_start(name, base)
         started = time.time()
         try:
-            SCENARIOS[name](base)
+            SCENARIOS[name](pre)
             res = (name, "PASS", f"{time.time()-started:.0f}s", "")
         except Violation as exc:
             res = (name, "FAIL", f"{time.time()-started:.0f}s", str(exc))

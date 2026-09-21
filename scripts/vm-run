@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# run <chaos.py args...> -- run the harness inside the guest's Aqua session and
+# stream its log back. The harness must live in that session (rift-cli resolves
+# rift by mach bootstrap lookup), but it also has to outlive this SSH command,
+# so it goes in as a LaunchAgent and we tail the log it writes.
+set -uo pipefail
+SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARGS="$*"
+LOG=/tmp/chaos.log
+
+# Push the harness every time. The guest keeps its own copy, and a run against
+# a stale one produces numbers that cannot be attributed to any revision --
+# which is exactly how two "identical" batteries came to disagree.
+REPO="${RIFT_REPO:-$(cd "$SC/.." && pwd)}"
+scp -q -i "$HOME/.ssh/id_rift_vm" -o IdentitiesOnly=yes \
+    -o UserKnownHostsFile="$HOME/.ssh/known_hosts_rift_vm" \
+    -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 \
+    "$REPO/scripts/chaos.py" \
+    "vm@${RIFT_VM_IP:-192.168.64.6}:rift-harness/chaos.py" || {
+    echo "could not push chaos.py to the guest" >&2; exit 3; }
+
+"$SC/vm-ssh" "U=\$(id -u)
+launchctl bootout gui/\$U/chaos 2>/dev/null
+: > $LOG
+cat > ~/Library/LaunchAgents/chaos.plist <<PLIST
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\"><dict>
+  <key>Label</key><string>chaos</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>/usr/bin/python3 /Users/vm/rift-harness/chaos.py $ARGS</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict></plist>
+PLIST
+launchctl bootstrap gui/\$U ~/Library/LaunchAgents/chaos.plist"
+
+# Poll until the job leaves the domain, echoing new output as it lands.
+DEADLINE=$(( SECONDS + ${CHAOS_TIMEOUT:-1800} ))
+SEEN=0
+while (( SECONDS < DEADLINE )); do
+    # The job stays registered after its process exits -- `launchctl print`
+    # succeeding says nothing. Its own `state` field is the one that answers.
+    OUT="$("$SC/vm-ssh" "cat $LOG 2>/dev/null; echo '---MARK---'; launchctl print gui/\$(id -u)/chaos 2>/dev/null | grep -m1 -E '^\s*state = ' | grep -q 'not running' && echo GONE || echo RUNNING")"
+    BODY="${OUT%%---MARK---*}"
+    STATE="${OUT##*---MARK---}"
+    NEW="$(printf '%s' "$BODY" | tail -n +$((SEEN + 1)))"
+    if [[ -n "$NEW" ]]; then
+        printf '%s\n' "$NEW"
+        SEEN=$(printf '%s' "$BODY" | wc -l | tr -d ' ')
+    fi
+    [[ "$STATE" == *GONE* ]] && break
+    sleep 5
+done

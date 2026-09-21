@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# abrun <binary-basename-in-/tmp> <scenario...>
+#
+# Give each side of an A/B the same start: apps quit, the saved layout thrown
+# away (a skewed split ratio outlives everything else and manufactures overlap
+# failures), the display arrangement put back (setmain writes permanently), the
+# probe display detached, rift restarted on the binary under test, and only
+# then the baseline built. Anything less and the comparison is between two
+# piles of residue, not two builds.
+set -uo pipefail
+SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$1"; shift
+
+# Reboot first. Desktops the scenarios create outlive everything short of one,
+# and a guest with a dozen of them holding stale windows fails
+# `check_frames_within_display` on windows parked far off screen -- a failure
+# about the guest's history, not about the build under test.
+"$SC/vm-ssh" "sudo shutdown -r now" >/dev/null 2>&1
+sleep 55
+for _ in $(seq 1 24); do
+    OUT="$("$SC/vm-ssh" "uptime" 2>/dev/null)"
+    [[ "$OUT" == *"up 1 min"* ]] && break
+    sleep 10
+done
+sleep 55
+
+"$SC/vm-ssh" "U=\$(id -u)
+killall Safari TextEdit 2>/dev/null; sleep 4
+launchctl bootout gui/\$U/vdisp 2>/dev/null
+launchctl bootout gui/\$U/rift-harness 2>/dev/null; sleep 2
+cp ~/rift-harness/builds/$BIN ~/rift-harness/bin/rift || exit 1
+cp ~/rift-harness/builds/$BIN-cli ~/rift-harness/bin/rift-cli || exit 1
+codesign --force --sign - ~/rift-harness/bin/rift ~/rift-harness/bin/rift-cli >/dev/null 2>&1
+rm -f ~/.rift/layout.ron
+: > /tmp/rift.err
+launchctl bootstrap gui/\$U ~/Library/LaunchAgents/rift-harness.plist
+sleep 10
+sudo ~/rift-harness/bin/rift sa load 2>&1 | tail -1
+~/rift-harness/bin/dtool setmain 1 >/dev/null 2>&1; sleep 3
+~/rift-harness/bin/rift --version | head -1"
+# Twice: the first pass opens the apps, the second tiles them once they have
+# all settled onto the shown desktop.
+CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
+"$SC/vm-ssh" "killall Safari TextEdit 2>/dev/null; sleep 4"
+CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
+BASE="$("$SC/vm-ssh" "grep -m1 'tiled' /tmp/chaos.log")"
+echo "baseline: $BASE"
+if [[ "$BASE" == *"tiled 0 "* ]]; then
+    echo "  refusing to compare: nothing tiled, every result below would be vacuous"
+    exit 2
+fi
+# No `head` here. Fifteen scenarios' failure reasons do not fit in thirty
+# lines, and truncating them is how a run came back with its last five reasons
+# missing -- which reads exactly like five scenarios that failed silently.
+CHAOS_TIMEOUT=1800 "$SC/vm-run" run "$@" 2>&1 | sed -n '/=== summary ===/,$p'
