@@ -25,6 +25,20 @@ most time are worth repeating:
   and leaves every `toggle-float` landing on whatever was already focused.
 - `rift-cli query` needs the literal `query` subcommand; `rift-cli displays`
   returns empty rather than erroring visibly.
+- **Deploy `rift` and `rift-cli` together, never one alone.** rift-plus answers
+  to `com.performave.rift-plus` as of the identifier rename; a client from
+  before it looks up `git.acsandmann.rift` and finds nothing. The fallback runs
+  the other way only — a *new* client still reaches an *old* rift — so
+  upgrading the daemon on its own is the combination that breaks, and it breaks
+  looking exactly like the wedge below: every query empty, no error.
+
+  What that rename does *not* cost, here: Accessibility. macOS keys the grant
+  on the signing identifier, so a real install has to be re-approved, but this
+  guest's rows were inserted by hand with `client_type = 1` — keyed on the
+  absolute path — and a binary replaced at the same path keeps the grant
+  whatever its identity. `sudo sqlite3 '/Library/Application Support/com.apple.TCC/TCC.db'
+  "select service, client, client_type, auth_value from access where client like '%rift%';"`
+  is how to check before assuming it is gone.
 
 ## `space: null` is almost never the wedge — check for fullscreen first
 
@@ -215,6 +229,15 @@ Four more, found the hard way on 2026-09-21:
 - **Two identifier namespaces.** `window_map` keys on the window server id; a
   tree's leaves are rift's own `pid:idx`. Comparing one against the other finds
   nothing and says so as "the window is not tiled".
+- **A split ratio survives in `layout.ron` and poisons every later run.** After
+  an afternoon of dragging boundaries about, the guest had a `ratio:0.95` saved
+  — a 5% slot, about 115px — and every geometry scenario then failed on
+  "tiled windows overlap", because TextEdit will not render that narrow and
+  spills into its neighbour. Same shape as the app-minimum confound above, with
+  a cause that outlives a reboot. `rift execute layout balance` resets every
+  split in the active workspace to an even share; run it before a battery, and
+  suspect it first when an overlap appears out of nowhere. The saved file says
+  so plainly: `grep -oE 'ratio:[0-9.]+' ~/.rift/layout.ron`.
 
 And in the `run` wrapper itself: a launchd job **stays registered after its
 process exits**, so `launchctl print` succeeding says nothing about whether the
@@ -230,6 +253,49 @@ switch-to` + `space destroy` to tidy up left the window server showing a
 desktop rift could not name, with every desktop inactive and nothing
 manageable. That state survived a rift restart and needed a guest reboot. The
 leak is noise; this cure is worse.
+
+## What only a hand on the mouse found
+
+The upstream sync (`docs/upstream-sync.md`) compiled clean, passed all 790
+tests, and gave **identical** results to the pre-merge build across the whole
+churn battery — and had killed every mouse gesture rift owns.
+
+Upstream's event tap subscribes to mouse *down* and *up* and not *dragged*,
+because it acquires drags through AX. This fork drives modifier drags, the
+tile-edge grab and the float-strip takeover from the tap itself, so it needs
+the whole sequence. Taking upstream's mask captured every press and left
+nothing to continue it. Nothing failed to compile; no test noticed; the churn
+scenarios do not touch the pointer, so they did not notice either.
+
+`scripts/handson.py` with `scripts/mtool` is what noticed: it posts real
+pointer input as CGEvents and then reads the frames back. Anything that changes
+`src/actor/input.rs` — a merge above all — has to be run through it.
+
+Its own failures were all aim, and each is a trap in its own right:
+
+- **The two left-most windows are not side by side.** In a bsp spiral they are
+  usually stacked one above the other, so the "boundary" between them is a
+  point in empty space. Require a pair that is horizontally adjacent *and*
+  overlaps vertically.
+- **Drag the boundary in the direction that grows.** An app at its minimum
+  width refuses to shrink and the boundary does not move — Safari's floor is
+  574px, which is exactly what a balanced five-window spiral hands it on this
+  display. Growing always works; shrinking is the app's decision.
+- **The modifier's two buttons do different jobs.** `action1` is on the left
+  and `action2` on the right, and this config maps move and resize
+  respectively — so a resize test that sends the left button is testing move.
+- **Modifier gestures are for floating windows.** On a tiled one they correctly
+  do nothing. Float the window first, and grab three-quarters across rather
+  than dead centre: the resize takes an edge, and the middle has no nearer one.
+
+With those right, the merge passes: the boundary moves by exactly what it was
+dragged and both neighbours follow with the gutter unchanged, a floated window
+resizes by exactly the drag, stacking round-trips, native fullscreen returns
+every window to its desktop, and a plug/unplug survives.
+
+Worth knowing: modifier-drag **resize** works on the merged build and did
+nothing on the pre-merge one. Restoring the dragged-event subscription fixed
+more than it put back.
 
 ## Open work
 
@@ -280,11 +346,37 @@ Three things it had to learn, each of which had it silently testing nothing:
   (`"churn settling; slot kept"`) — correct behaviour, and it means the
   scenario would be measuring the previous run's leftovers.
 
-Its one substantive result so far: the slot machinery came through clean — no
-bad outcomes, the window tiled again — while a window was left carrying a
-fullscreen-sized frame (`(0,0,1443,886)`, exactly display 1's full bounds) on a
-desktop nothing was showing. Whether rift re-lays-out a desktop only when it is
-exposed, which would make that correct, is the next thing to establish.
+**The result: native fullscreen round-trips correctly across a display churn.**
+Two consecutive clean runs once the harness stopped racing itself (below).
+The trace reads `recorded → ordered in; restoring → restored` for the window,
+repeatedly, with none of the three failure outcomes, and the tree at rest is
+the same leaves in the same order with the window back in its slot — checked
+directly against `query layout --space-id`, not only through the harness.
+
+Everything the scenario reported before that was the scenario measuring the
+guest mid-toggle, and both wrong answers are worth knowing because they are so
+convincing:
+
+- **A window "missing from its tree" after the round trip.** The trace said
+  `restored`, and the harness said the window was tiled on a desktop whose tree
+  did not contain it — the window-limbo signature exactly. At rest it was in
+  the tree, in its slot. A posted key is not a transaction: `open -a` can front
+  the app a beat after the state was read, and the retry toggles the window
+  back *into* fullscreen. The scenario now clears fullscreen unconditionally
+  and settles before it measures anything.
+- **A window "left carrying a fullscreen-sized frame"** — `(0,0,1443,886)`,
+  exactly display 1's full bounds — on a desktop nothing was showing. Same
+  cause, and not reproduced since. Do not report a geometry reading taken while
+  an app might be mid-transition; a fullscreen frame on a window that is
+  fullscreen is not a finding.
+
+Two things had to be true before the assertions meant anything, on top of the
+three above: `"stale slot replaced"` is only a failure *during* the churn (it
+is the mechanism working when it drops a slot an earlier run left behind), and
+the whole leaf list cannot be compared for equality, because a churn
+legitimately moves other windows onto the desktop. The order of the windows
+that were already there is the invariant; a subsequence check is what states
+it.
 
 **The straggler bug, from the 2026-09-21 host trace — fixed.** A separate root
 cause from the replug remap bug, and the better-understood of the two:
