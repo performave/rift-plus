@@ -8,6 +8,7 @@ CMD="$*"
 LOG=/tmp/gx1.log
 "$SC/vm-ssh" "U=\$(id -u)
 launchctl bootout gui/\$U/gx1 2>/dev/null
+rm -f ~/Library/LaunchAgents/gx1.plist
 : > $LOG
 cat > ~/Library/LaunchAgents/gx1.plist <<PLIST
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -22,7 +23,8 @@ cat > ~/Library/LaunchAgents/gx1.plist <<PLIST
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict></plist>
 PLIST
-launchctl bootstrap gui/\$U ~/Library/LaunchAgents/gx1.plist"
+launchctl bootstrap gui/\$U ~/Library/LaunchAgents/gx1.plist
+rm -f ~/Library/LaunchAgents/gx1.plist"
 DEADLINE=$(( SECONDS + ${GX_TIMEOUT:-300} ))
 while (( SECONDS < DEADLINE )); do
     S="$("$SC/vm-ssh" "launchctl print gui/\$(id -u)/gx1 2>/dev/null | grep -m1 -E '^[[:space:]]*state = '")"

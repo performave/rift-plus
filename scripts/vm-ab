@@ -11,6 +11,21 @@ set -uo pipefail
 SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$1"; shift
 
+# Every one-shot the harness has ever bootstrapped is still in
+# ~/Library/LaunchAgents with RunAtLoad, and this script's first act is a
+# reboot -- so each of them fires at the login that follows. A guest was found
+# running five of them at once behind a battery, `handson.py` among them,
+# dragging the same windows the scenarios were measuring. Nothing about that is
+# visible in the results: they just stop repeating. Refuse rather than measure
+# through it.
+STRAY="$("$SC/vm-ssh" "ls ~/Library/LaunchAgents/ 2>/dev/null \
+    | grep -v -e '^rift-harness.plist$' -e '^vdisp.plist$' | tr '\n' ' '")"
+if [[ -n "${STRAY// /}" ]]; then
+    echo "  refusing to run: stray LaunchAgents in the guest: $STRAY"
+    echo "  each fires at the login this script's reboot causes; remove them first"
+    exit 2
+fi
+
 # Reboot first. Desktops the scenarios create outlive everything short of one,
 # and a guest with a dozen of them holding stale windows fails
 # `check_frames_within_display` on windows parked far off screen -- a failure
@@ -45,8 +60,14 @@ CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 BASE="$("$SC/vm-ssh" "grep -m1 'tiled' /tmp/chaos.log")"
 echo "baseline: $BASE"
-if [[ "$BASE" == *"tiled 0 "* ]]; then
-    echo "  refusing to compare: nothing tiled, every result below would be vacuous"
+# The scenarios are written against five tiled windows. Refusing only at zero
+# let a run proceed on a baseline of one -- which is what a guest still busy
+# with a phantom battery hands you, and every geometry result below it is then
+# about the wrong number of windows.
+TILED="$(sed -n 's/.*tiled \([0-9][0-9]*\) window.*/\1/p' <<<"$BASE")"
+if [[ -z "$TILED" || "$TILED" -lt 5 ]]; then
+    echo "  refusing to compare: baseline has ${TILED:-no} tiled window(s), expected 5"
+    echo "  (a guest still running an earlier battery looks exactly like this)"
     exit 2
 fi
 # No `head` here. Fifteen scenarios' failure reasons do not fit in thirty

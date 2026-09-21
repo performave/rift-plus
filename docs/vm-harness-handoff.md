@@ -367,28 +367,40 @@ coverage that more scenarios would close:
 The upstream v0.5.10 sync is on `main` and the fork is level with upstream for
 the first time. `just check` is green, and the hands-on pass is clean.
 
-**The battery's numbers are not yet trustworthy for long runs.** Two passes of
-the same fifteen scenarios on the same binary disagreed on six of them, because
-scenarios inherited each other's leftovers. `reset_between_scenarios` was added
-to fix that and **has not been run to completion even once** — the run was
-stopped partway. So the first job next time is: run the fifteen with the reset
-in place, on `rift-final` and on `rift-pre` (both staged under
-`~/rift-harness/builds`, which survives a guest reboot), and see what the
-numbers look like when the order stops mattering.
+### The sync, measured
 
-Until then, what can be said about the sync is what the *short* comparisons
-said, which were sound because they were short: four churn scenarios, identical
-results on both builds, the one failure being the known slot reordering with
-the same exact-reversal signature either side.
+Fifteen scenarios, run on the merged build and on the fork's `main` at the
+merge base, back to back on one guest with the same harness and the same
+`vm-ab` preamble:
 
-Five scenarios failed on the merged build in the last long run and want
-individual attention once the reset makes that meaningful:
-`short-unplug` (Safari joined a group it had not been in — no prior sighting of
-this one), `churn-during-space-switch` (5px overlap), `resolution-churn` (two
-windows at identical frames — finding 5), `stack-across-churn` (finding 4), and
-`native-fullscreen-across-churn` (precondition, harness state).
+| | pre-merge `0.5.5-plus.5` | merged `0.5.10-plus.1` |
+| --- | --- | --- |
+| failed | 11 of 15 | 13 of 15 |
+| identical on both | 11 fail, 2 pass | — |
+| differed | `transient-glitch`, `straggler-after-return` — passed before, failed after |
 
-Also never run: `matrix`, so `float` and `tile` restoration modes are
+**Eleven of the fifteen fail the same way on both builds**, and
+`Safari at (2600,260,1324,856)` — the same stranded frame, to the pixel —
+appears in both columns. That family is rift's pre-existing behaviour under
+churn; the sync did not introduce it and is not what to look at for it.
+
+The two that differ are not yet regressions. `straggler-after-return` failed on
+the merged side while building its *own preconditions* — "external needs two
+desktops and has 1", which is `space create` acting on whichever display owns
+the menu bar, not a churn result. `transient-glitch` saw overlap in 33 mid-churn
+samples on merged and none on pre-merge, from a sampler that runs *during* the
+churn, where timing decides what it catches. A difference that does not repeat
+is timing; re-run both on both builds before believing either.
+
+### What a number from this battery is worth
+
+Judge a count against the other column, never on its own. On the merged build
+alone the same suite has read 5, 10 and 13 failures on the same binary within
+one afternoon, each time because the harness changed underneath -- see
+[the four measurement defects](#what-a-comparable-run-costs) above. The A/B is
+robust to exactly that: whatever the harness gets wrong, it gets wrong twice.
+
+Still never run: `matrix`, so `float` and `tile` restoration modes are
 unexercised against the sync.
 
 ## Open work
