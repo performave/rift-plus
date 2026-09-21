@@ -280,11 +280,36 @@ Three things it had to learn, each of which had it silently testing nothing:
   (`"churn settling; slot kept"`) — correct behaviour, and it means the
   scenario would be measuring the previous run's leftovers.
 
-Its one substantive result so far: the slot machinery came through clean — no
-bad outcomes, the window tiled again — while a window was left carrying a
-fullscreen-sized frame (`(0,0,1443,886)`, exactly display 1's full bounds) on a
-desktop nothing was showing. Whether rift re-lays-out a desktop only when it is
-exposed, which would make that correct, is the next thing to establish.
+**The result: native fullscreen round-trips correctly across a display churn.**
+The trace reads `recorded → ordered in; restoring → restored` for the window,
+repeatedly, with none of the three failure outcomes, and the tree at rest is
+the same leaves in the same order with the window back in its slot — checked
+directly against `query layout --space-id`, not only through the harness.
+
+Everything the scenario reported before that was the scenario measuring the
+guest mid-toggle, and both wrong answers are worth knowing because they are so
+convincing:
+
+- **A window "missing from its tree" after the round trip.** The trace said
+  `restored`, and the harness said the window was tiled on a desktop whose tree
+  did not contain it — the window-limbo signature exactly. At rest it was in
+  the tree, in its slot. A posted key is not a transaction: `open -a` can front
+  the app a beat after the state was read, and the retry toggles the window
+  back *into* fullscreen. The scenario now clears fullscreen unconditionally
+  and settles before it measures anything.
+- **A window "left carrying a fullscreen-sized frame"** — `(0,0,1443,886)`,
+  exactly display 1's full bounds — on a desktop nothing was showing. Same
+  cause, and not reproduced since. Do not report a geometry reading taken while
+  an app might be mid-transition; a fullscreen frame on a window that is
+  fullscreen is not a finding.
+
+Two things had to be true before the assertions meant anything, on top of the
+three above: `"stale slot replaced"` is only a failure *during* the churn (it
+is the mechanism working when it drops a slot an earlier run left behind), and
+the whole leaf list cannot be compared for equality, because a churn
+legitimately moves other windows onto the desktop. The order of the windows
+that were already there is the invariant; a subsequence check is what states
+it.
 
 **The straggler bug, from the 2026-09-21 host trace — fixed.** A separate root
 cause from the replug remap bug, and the better-understood of the two:

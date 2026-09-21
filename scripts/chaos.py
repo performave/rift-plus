@@ -123,6 +123,14 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
         time.sleep(2.5)
         if bool(displays_showing_fullscreen()) == want:
             return True
+        # Ask twice. Fronting an app that is already fullscreen does not always
+        # take the display to its space within one read, and treating that as
+        # "the key did not land" posts it again -- which toggles back out, then
+        # in, leaving a trail of extra slot records for the assertions to trip
+        # over.
+        time.sleep(2.0)
+        if bool(displays_showing_fullscreen()) == want:
+            return True
         # `open -a` picks the app, not the window, and three TextEdit documents
         # make "the front window" a coin toss. rift's own focus names the one
         # meant, and has to be redone on every attempt because `open -a` moves
@@ -301,6 +309,11 @@ def displays_showing_fullscreen() -> list:
 
 
 def clear_native_fullscreen(tries: int = 3) -> bool:
+    # One display only, or this cannot tell whose fullscreen it is seeing:
+    # "some display shows fullscreen" stays true after fronting an app that is
+    # not the one in fullscreen, and the corrective key then puts *that* app
+    # into fullscreen instead. Callers that may have two displays attached
+    # should unplug first, or name the app themselves with `fullscreen_key`.
     """Take every test app out of native fullscreen.
 
     Apps restore their saved window state, so a scenario that leaves Safari
@@ -1078,31 +1091,66 @@ def s_native_fullscreen_churn(base):
             f"({idx}); some other window went fullscreen instead: {others[-4:]}")
 
     # The churn, with the window still away in its own space.
+    churn_ms = max((ms for ms, _, _ in trace_acts({"fullscreen_slot"})), default=mark_ms)
     unplug(); settle(3)
     plug(); settle(5)
 
     left = fullscreen_key(app, want=False, window=window)
     settle(8)
-    if not left or displays_showing_fullscreen():
-        # The second key did not land. Leaving it would poison every later run,
-        # so clear it here and say so rather than in an unrelated failure.
-        cleared = clear_native_fullscreen()
-        raise Violation(
-            "native-fullscreen-across-churn: the window did not leave "
-            f"fullscreen (cleared afterwards: {cleared})")
+    # Nothing is posted from here on. A posted key is not a transaction:
+    # `open -a` can front the app a beat after the state was read, and a
+    # "corrective" second key then toggles the window back *into* fullscreen --
+    # the harness manufacturing the very race it goes on to measure. Measuring
+    # in that window showed the tree without the window and called a correct
+    # restore a failure; at rest the tree was identical to before, with the
+    # window back in its slot. So: settle, measure, and clean up at the end.
+    if not left:
+        print("      (the exit key needed more than one pass)", flush=True)
+    settle(10)
 
     slots = [(ms, d) for ms, _, d in trace_acts({"fullscreen_slot"})
              if ms > mark_ms and isinstance(d, list) and len(d) > 1]
     mine = [d[1] for _, d in slots if d[0] == idx]
-    bad = [o for o in mine
-           if o in ("landed elsewhere; dropped", "nothing matched", "stale slot replaced")]
+    # "stale slot replaced" is only a failure once the churn is under way --
+    # that is the window rift is meant to answer with "churn settling; slot
+    # kept". Before the churn it is the mechanism working: a slot left behind
+    # by an earlier run, on a desktop that no longer means anything, being
+    # dropped in favour of this one.
+    during = [d[1] for ms, d in slots if d[0] == idx and ms > churn_ms]
+    bad = [o for o in mine if o in ("landed elsewhere; dropped", "nothing matched")]
+    bad += [o for o in during if o == "stale slot replaced"]
     if bad:
         raise Violation("native-fullscreen-across-churn: the slot did not survive "
                         f"the churn: {bad}\n      this window: {mine}"
                         f"\n      every window: {[d for _, d in slots]}")
+    # The slot has to be *used*, not merely survive. A window that comes back
+    # with no restore at all leaves the same trace as one nobody asked about,
+    # and the tree check downstream only says the order is wrong.
+    if not any(o in ("restored", "re-anchored", "ordered in; restoring") for o in mine):
+        raise Violation(
+            "native-fullscreen-across-churn: the window came back without its "
+            f"slot being used at all\n      this window: {mine}"
+            f"\n      every window: {[d for _, d in slots]}")
 
-    after = snapshot("after native fullscreen + churn")
-    back = after["windows"].get(ident)
+    # Re-read rather than judge on one look. macOS is still finishing the
+    # fullscreen exit for a few seconds after it reports itself done, and a
+    # window that is briefly out of its tree on the way back is not the failure
+    # this scenario is about -- `transient-glitch` and the Sampler are where
+    # sub-second breakage is caught, deliberately and with frames.
+    def settled_tree():
+        for attempt in range(3):
+            snap = snapshot("after native fullscreen + churn")
+            rec = snap["windows"].get(ident)
+            if rec is not None and rec[2]:
+                shape = tree_shape(rec[0])
+                if shape.get("absent") or any(l.endswith(f":{idx}")
+                                              for l in leaf_order(shape)):
+                    return snap, rec, shape
+            if attempt < 2:
+                settle(6)
+        return snap, rec, (None if rec is None else tree_shape(rec[0]))
+
+    after, back, now_shape = settled_tree()
     if back is None:
         raise Violation(f"native-fullscreen-across-churn: {app} is on no desktop at all")
     if not back[2]:
@@ -1112,23 +1160,37 @@ def s_native_fullscreen_churn(base):
     # what has to match, and check_full covers the rest. A desktop no display
     # is showing has no readable tree, so there is nothing to compare -- the
     # grouping and frame checks in check_full still apply to it.
-    now_shape = tree_shape(back[0])
+    was, now = leaf_order(before_shape), leaf_order(now_shape)
+    # A subsequence, not an equality: the churn legitimately moves other
+    # windows onto this desktop, and the question here is whether the windows
+    # that were already in the tree kept their order relative to each other --
+    # including the one that went away to fullscreen and came back. Demanding
+    # the whole list match called a correct restore a failure whenever the
+    # churn brought a neighbour along.
+    def is_subsequence(small, big):
+        it = iter(big)
+        return all(any(x == y for y in it) for x in small)
+
     if now_shape.get("absent"):
         print(f"      (desktop {back[0]} is not shown; tree order not compared)",
               flush=True)
-    elif leaf_order(before_shape) != leaf_order(now_shape):
+    elif not is_subsequence(was, now):
         raise Violation(
-            "native-fullscreen-across-churn: the tree came back in a different "
-            f"order\n      this window: {mine}"
+            "native-fullscreen-across-churn: the windows that were in the tree "
+            f"came back in a different order\n      this window: {mine}"
             f"\n      every window: {[d for _, d in slots]}"
-            f"\n      before: {leaf_order(before_shape)}"
-            f"\n      after:  {leaf_order(now_shape)}")
+            f"\n      before: {was}"
+            f"\n      after:  {now}")
     check_full(a, after, "native-fullscreen-across-churn")
-    # Whatever happened above, the app must not be left in fullscreen: it
-    # restores that state on its next launch, and the next run would start on a
-    # display with no desktop at all.
-    clear_native_fullscreen()
+    # Last thing, and only now, and only for the app this scenario fullscreened.
+    # `clear_native_fullscreen` walks every test app, and with two displays
+    # attached "some display is showing fullscreen" stays true after fronting an
+    # app that is not the one in fullscreen -- so it posts the key and puts
+    # *that* app into fullscreen instead. The trace showed a second window
+    # picking up a slot it had no business having. Unplug first, so the question
+    # has one display to be about.
     unplug(); settle()
+    fullscreen_key(app, want=False, window=window, tries=2)
 
 
 @scenario("straggler-after-return",
