@@ -323,6 +323,35 @@ coverage that more scenarios would close:
   a pseudo-display phase (see `settle-and-return-in-one-report`) the virtual
   display does not reproduce.
 
+## Where this left off (2026-09-21)
+
+The upstream v0.5.10 sync is on `main` and the fork is level with upstream for
+the first time. `just check` is green, and the hands-on pass is clean.
+
+**The battery's numbers are not yet trustworthy for long runs.** Two passes of
+the same fifteen scenarios on the same binary disagreed on six of them, because
+scenarios inherited each other's leftovers. `reset_between_scenarios` was added
+to fix that and **has not been run to completion even once** — the run was
+stopped partway. So the first job next time is: run the fifteen with the reset
+in place, on `rift-final` and on `rift-pre` (both staged under
+`~/rift-harness/builds`, which survives a guest reboot), and see what the
+numbers look like when the order stops mattering.
+
+Until then, what can be said about the sync is what the *short* comparisons
+said, which were sound because they were short: four churn scenarios, identical
+results on both builds, the one failure being the known slot reordering with
+the same exact-reversal signature either side.
+
+Five scenarios failed on the merged build in the last long run and want
+individual attention once the reset makes that meaningful:
+`short-unplug` (Safari joined a group it had not been in — no prior sighting of
+this one), `churn-during-space-switch` (5px overlap), `resolution-churn` (two
+windows at identical frames — finding 5), `stack-across-churn` (finding 4), and
+`native-fullscreen-across-churn` (precondition, harness state).
+
+Also never run: `matrix`, so `float` and `tile` restoration modes are
+unexercised against the sync.
+
 ## Open work
 
 **Native fullscreen is drivable now, and round-trips correctly in the simple
