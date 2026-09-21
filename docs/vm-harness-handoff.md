@@ -229,6 +229,15 @@ Four more, found the hard way on 2026-09-21:
 - **Two identifier namespaces.** `window_map` keys on the window server id; a
   tree's leaves are rift's own `pid:idx`. Comparing one against the other finds
   nothing and says so as "the window is not tiled".
+- **A split ratio survives in `layout.ron` and poisons every later run.** After
+  an afternoon of dragging boundaries about, the guest had a `ratio:0.95` saved
+  — a 5% slot, about 115px — and every geometry scenario then failed on
+  "tiled windows overlap", because TextEdit will not render that narrow and
+  spills into its neighbour. Same shape as the app-minimum confound above, with
+  a cause that outlives a reboot. `rift execute layout balance` resets every
+  split in the active workspace to an even share; run it before a battery, and
+  suspect it first when an overlap appears out of nowhere. The saved file says
+  so plainly: `grep -oE 'ratio:[0-9.]+' ~/.rift/layout.ron`.
 
 And in the `run` wrapper itself: a launchd job **stays registered after its
 process exits**, so `launchctl print` succeeding says nothing about whether the
