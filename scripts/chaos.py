@@ -33,7 +33,10 @@ UID = os.getuid()
 LAYOUT = f"{HOME}/.rift/layout.ron"
 VDISP_PLIST = f"{HOME}/Library/LaunchAgents/vdisp.plist"
 
-TEST_APPS = ["TextEdit", "Calculator", "Dictionary", "Chess", "Font Book", "Contacts"]
+# Four windows, all of which resize freely. Calculator and Chess are
+# effectively fixed-size: they refuse their slot and the overflow reads as rift
+# overlapping windows. Four also keeps every slot far above any app minimum.
+TEST_APPS = ["TextEdit", "Safari"]
 CONFIG = f"{HOME}/.config/rift/config.toml"
 
 
@@ -43,7 +46,7 @@ class Violation(Exception):
 
 # ---------------------------------------------------------------- primitives
 
-def sh(cmd: str, timeout: int = 45) -> str:
+def sh(cmd: str, timeout: int = 20) -> str:
     try:
         r = subprocess.run(["/bin/bash", "-lc", cmd], capture_output=True,
                            text=True, timeout=timeout)
@@ -177,7 +180,7 @@ def spawn_windows() -> None:
     sh("open -a TextEdit /tmp/doc1.txt /tmp/doc2.txt /tmp/doc3.txt")
     for app in TEST_APPS[1:]:
         sh(f'open -a "{app}"')
-    time.sleep(8)
+    time.sleep(10)
 
 
 def focus(w: dict) -> bool:
@@ -575,20 +578,45 @@ class Sampler:
         self._thread = None
 
     def _loop(self):
+        """One cheap query per sample.
+
+        A full snapshot costs a rift-cli call per desktop for windows and
+        another for the layout -- twenty-odd round trips once churn has left a
+        pile of desktops behind, which cannot finish inside the sampling
+        interval and starves the scenario it is supposed to be watching. The
+        unfiltered window list is one call and carries the frames, which is all
+        an overlap check needs.
+        """
         while not self._stop:
             try:
-                snap = snapshot("sample")
+                ws = rift("windows") or []
                 self.samples += 1
-                for fn in (check_frames, check_frames_within_display):
-                    try:
-                        fn(snap, f"{self.label} transient")
-                    except Violation as exc:
-                        text = str(exc)
-                        if text not in self.worst:
-                            self.worst.append(text)
+                rects = []
+                for w in ws:
+                    if w.get("is_floating"):
+                        continue
+                    fr = w.get("frame") or {}
+                    o, sz = fr.get("origin", {}), fr.get("size", {})
+                    rects.append((w.get("app_name") or "?",
+                                  round(o.get("x", 0)), round(o.get("y", 0)),
+                                  round(sz.get("width", 0)), round(sz.get("height", 0))))
+                for i in range(len(rects)):
+                    an, ax, ay, aw, ah = rects[i]
+                    if aw <= 1 or ah <= 1:
+                        self._note(f"{an} degenerate {aw}x{ah}")
+                    for j in range(i + 1, len(rects)):
+                        bn, bx, by, bw, bh = rects[j]
+                        ox = min(ax + aw, bx + bw) - max(ax, bx)
+                        oy = min(ay + ah, by + bh) - max(ay, by)
+                        if ox > 2 and oy > 2:
+                            self._note(f"{an} and {bn} overlap by {ox}x{oy}px")
             except Exception:
                 pass
-            time.sleep(0.4)
+            time.sleep(0.5)
+
+    def _note(self, text: str) -> None:
+        if text not in self.worst:
+            self.worst.append(text)
 
     def __enter__(self):
         import threading
@@ -723,6 +751,16 @@ def s_resolution_churn(base):
 
 @scenario("stack-across-churn", doc="a stack keeps its members and axis across a churn")
 def s_stack_churn(base):
+    # bsp has no stacked containers -- `apply_stacking_to_parent_of_selection`
+    # is a hard no-op there, and scrolling moves the window to the next column
+    # instead. Only traditional (and the `stack` mode itself) can hold one.
+    rift_exec("workspace set-layout traditional")
+    settle(2)
+    # toggle-stack acts on the selected *container*, not on a window, so the
+    # selection has to be walked up to the parent split first -- without the
+    # ascend the command is a no-op and the scenario silently tests nothing.
+    rift_exec("layout ascend")
+    settle(1)
     rift_exec("layout toggle-stack")
     settle(2)
     a = snapshot("stacked")
@@ -742,6 +780,13 @@ def s_stack_churn(base):
 @scenario("stack-swallow", doc="displaced windows must not be absorbed into an existing stack")
 def s_stack_swallow(base):
     plug(); settle()
+    rift_exec("workspace set-layout traditional")
+    settle(2)
+    # toggle-stack acts on the selected *container*, not on a window, so the
+    # selection has to be walked up to the parent split first -- without the
+    # ascend the command is a no-op and the scenario silently tests nothing.
+    rift_exec("layout ascend")
+    settle(1)
     rift_exec("layout toggle-stack")
     settle(2)
     a = snapshot("stacked with display")
@@ -785,6 +830,93 @@ def s_transient(base):
         raise Violation(f"transient glitch(es) seen in {sampler.samples} samples "
                         f"mid-churn, even though the settled state may be fine:\n      "
                         + "\n      ".join(sampler.worst[:3]))
+
+
+@scenario("straggler-after-return",
+          doc="a window on the external's NON-shown desktop is left behind by the return")
+def s_straggler(base):
+    """The Back pass declares itself finished before the window server has
+    finished reassigning window->space membership, and then stops watching.
+
+    `finish_pass` takes the record on Stage::Back, and every straggler guard
+    (CHURN_SETTLE, PLACEMENT_AFTER_CHURN) reads through that record, so they all
+    die with it -- the log says `windows_waited_for=0`. A window the window
+    server re-homes a second later is then filed as an ordinary user action and
+    never brought back.
+
+    Three preconditions, all load-bearing:
+      * the survivor has exactly one desktop with a tiled window, so macOS
+        destroys it on unplug and rift has to mint a stand-in;
+      * the external owns two desktops, is SHOWING an empty one, and holds the
+        tiled pair on the other -- the straggler comes off the non-shown one;
+      * the unplug lasts ~2.8s: long enough for a full Away pass, short enough
+        that macOS is still migrating display_space_ids when Back completes.
+    """
+    plug(); settle()
+
+    # `space create` acts on the display that owns the menu bar, so the
+    # external has to be made main first or the extra desktop lands on the
+    # survivor and the scenario tests nothing. setmain is permanent, so the
+    # original is put back before leaving.
+    before_main = None
+    for line in sh(f"{DTOOL} list").splitlines():
+        parts = line.split()
+        if len(parts) > 3 and "main=1" in line:
+            before_main = parts[0]
+            break
+    ext = next((d for d in (rift("displays") or [])
+                if d.get("name") == "rift-vm-probe"), None)
+    if not ext:
+        raise Violation("external display not visible to rift")
+    make_main(int(ext["screen_id"]))
+    settle(3)
+
+    rift_exec("space create")
+    settle(3)
+    rift_exec("space switch right")
+    settle(3)
+    a = snapshot("attached, external showing an empty desktop")
+
+    external = [d for d in a["displays"] if d.get("name") == "rift-vm-probe"]
+    if not external:
+        raise Violation("external display not visible to rift")
+    desktops = len(external[0].get("active_space_ids") or []) \
+        + len(external[0].get("inactive_space_ids") or [])
+    if desktops < 2:
+        raise Violation(
+            "external needs two desktops for this scenario and has "
+            f"{desktops}. `space create` needs the scripting addition and acts "
+            "on whichever display owns the menu bar -- check `rift sa status`.")
+
+    with Sampler("straggler") as sampler:
+        unplug(quiet=True)
+        time.sleep(2.8)          # deliberately not settle(): the timing is the bug
+        plug()
+        settle(8.0)              # past pass_done and CHURN_SETTLE
+
+    try:
+        after = snapshot("returned")
+        # The tell: a window that was on the external is now on the survivor.
+        moved = []
+        for ident, rec in after["windows"].items():
+            if ident in a["windows"] and rec[0] != a["windows"][ident][0]:
+                moved.append((rec[1], a["windows"][ident][0], rec[0]))
+        if moved:
+            raise Violation("straggler-after-return: window(s) left behind by "
+                            "the return and never brought home: "
+                            + ", ".join(f"{app} desktop {was} -> {now}"
+                                        for app, was, now in moved))
+        check_full(a, after, "straggler-after-return")
+    finally:
+        # setmain is permanent, so this has to run even when the assertion
+        # above fires -- otherwise every later scenario measures geometry
+        # against a display arrangement this one skewed.
+        if before_main:
+            make_main(int(before_main))
+            settle(2)
+    if sampler.worst:
+        raise Violation("straggler-after-return: transient breakage mid-return:\n      "
+                        + "\n      ".join(sampler.worst[:2]))
 
 
 @scenario("long-absence", doc="stay away past GIVE_UP_ON_DISPLAY (120s)")

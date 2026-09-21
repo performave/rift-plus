@@ -31,6 +31,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A press no longer panics the input thread when `mouse.edge_resize` is on.**
+  The edge hit test read the mouse settings off the tap's own state cell, which
+  the mouse-down handler already holds mutably, so the first click killed the
+  input thread with "RefCell already mutably borrowed". The settings are passed
+  in now.
+
 - **Modifier-drag resize is smooth rather than stepped.** Updates were rate
   limited to one every 68ms — yabai's interval — which is a visible 15Hz
   staircase. The limit was not arbitrary: each update lays out the workspace,

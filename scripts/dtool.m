@@ -105,6 +105,28 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return e == kCGErrorSuccess ? 0 : 3;
     }
 
-    fprintf(stderr, "usage: dtool count|list|mon [seconds]|setmain <id>\n");
+    if (!strcmp(cmd, "fullscreen")) {
+        // Ctrl-Cmd-F, posted straight to the event stream. Apple Events are
+        // the obvious way to do this and hang indefinitely inside a LaunchAgent
+        // in the guest even with every relevant TCC grant in place, so this
+        // goes underneath them: it is the same key the green button is.
+        const CGKeyCode kF = 3;
+        CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+        CGEventRef down = CGEventCreateKeyboardEvent(src, kF, true);
+        CGEventRef up   = CGEventCreateKeyboardEvent(src, kF, false);
+        CGEventFlags mods = kCGEventFlagMaskControl | kCGEventFlagMaskCommand;
+        CGEventSetFlags(down, mods);
+        CGEventSetFlags(up, mods);
+        CGEventPost(kCGHIDEventTap, down);
+        usleep(60000);
+        CGEventPost(kCGHIDEventTap, up);
+        if (down) CFRelease(down);
+        if (up) CFRelease(up);
+        if (src) CFRelease(src);
+        printf("posted ctrl-cmd-f\n");
+        return 0;
+    }
+
+    fprintf(stderr, "usage: dtool count|list|mon [seconds]|setmain <id>|fullscreen\n");
     return 1;
 } }

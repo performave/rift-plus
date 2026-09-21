@@ -674,7 +674,8 @@ impl EventTap {
                 // otherwise start its own edge-resize on the press and fight
                 // the layout for the length of the drag.
                 if event_type == CGEventType::LeftMouseDown
-                    && let Some((wsid, _pid, horizontal, vertical)) = self.tile_edge_at(loc)
+                    && let Some((wsid, _pid, horizontal, vertical)) =
+                        self.tile_edge_at(loc, &state.mouse)
                 {
                     debug!(?wsid, ?horizontal, ?vertical, "grabbing a tile edge");
                     _ = self.events_tx.send(Event::MouseEdgeDragBegin {
@@ -799,13 +800,20 @@ impl EventTap {
     /// Only *interior* boundaries count -- ones with another tile on the far
     /// side. The outer rim of the layout has nothing to trade space with, so
     /// grabbing it would do nothing except swallow the app's own edge-resize.
-    fn tile_edge_at(&self, loc: CGPoint) -> Option<(u32, i32, Option<bool>, Option<bool>)> {
-        let state = self.state.borrow();
-        if !state.mouse.edge_resize {
+    ///
+    /// The settings come in as an argument rather than off `self.state`: the
+    /// caller is inside the mouse-down arm, which already holds that RefCell
+    /// mutably, and borrowing it again panics the input thread on the first
+    /// click.
+    fn tile_edge_at(
+        &self,
+        loc: CGPoint,
+        mouse: &MouseSettings,
+    ) -> Option<(u32, i32, Option<bool>, Option<bool>)> {
+        if !mouse.edge_resize {
             return None;
         }
-        let tol = state.mouse.edge_grab_px;
-        drop(state);
+        let tol = mouse.edge_grab_px;
 
         let frames = self.tile_frames.borrow();
         // A boundary is interior when some other tile's opposite edge sits
