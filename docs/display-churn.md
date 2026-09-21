@@ -47,7 +47,20 @@ Checked after every attach and every detach:
 - after detaching, the display set is the baseline set again;
 - after detaching, every display that never went away is showing the same
   desktop it was showing before — the regression that keeps coming back;
-- no window has been lost.
+- no window has been lost — checked per desktop, not just the active one;
+- **windows that shared a desktop before the cycle still share one after it.**
+
+That last one is the only invariant that catches a whole class of failure the
+others are blind to. On 2026-09-20 an external display came back on a freshly
+minted desktop, its workspace was never carried across, and windows that had
+shared a desktop for hours were re-adopted one at a time onto whichever desktop
+macOS dropped them on. Every display-level check above passed — the displays
+really were all correct. What was wrong was where the windows ended up.
+
+It compares groupings rather than desktop ids, because ids renumber across a
+hotplug as a matter of course; that renumbering is the thing under test, not a
+failure. And it compares only the windows present both before and after, so an
+app opened or closed mid-run is not mistaken for the manager scattering things.
 
 On a violation the offending snapshot is printed and the flight recorder is
 dumped to `/tmp/rift-churn-<cycle>-<timestamp>.trace`, which replays offline.

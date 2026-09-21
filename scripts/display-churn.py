@@ -61,8 +61,51 @@ def displays() -> list[dict]:
     return json.loads(run(["rift", "query", "displays"]))
 
 
-def window_count() -> int:
-    return len(json.loads(run(["rift", "query", "windows"])))
+def all_space_ids(snapshot: list[dict]) -> list[int]:
+    """Every desktop rift knows about, not just the ones being shown."""
+    spaces: list[int] = []
+    for display in snapshot:
+        for space_id in (display.get("active_space_ids") or []):
+            if space_id not in spaces:
+                spaces.append(space_id)
+        for space_id in (display.get("inactive_space_ids") or []):
+            if space_id not in spaces:
+                spaces.append(space_id)
+    return spaces
+
+
+def window_map(snapshot: list[dict]) -> dict[int, tuple]:
+    """Where every window is: {window -> desktop}, across all desktops.
+
+    `rift query windows` with no filter answers for the *active* desktop only,
+    so counting it across a cycle both misses windows lost on other desktops
+    and reports a loss whenever churn changes which desktop is active. Ask per
+    desktop instead.
+    """
+    located: dict[int, tuple] = {}
+    for space_id in all_space_ids(snapshot):
+        for window in json.loads(run(["rift", "query", "windows", "--space-id", str(space_id)])):
+            ident = window.get("window_server_id")
+            if ident is None:
+                wid = window.get("id") or {}
+                ident = (wid.get("pid"), wid.get("idx"))
+            located[ident] = (space_id, window.get("app_name") or "?")
+    return located
+
+
+def grouping(located: dict[int, tuple], keep: set | None = None) -> set[frozenset]:
+    """Which windows share a desktop, as a partition.
+
+    Compared as a set of groups rather than by desktop id, because ids
+    legitimately renumber across a hotplug -- that renumbering is the thing
+    under test, not a failure.
+    """
+    by_space: dict[int, set] = {}
+    for ident, (space_id, _) in located.items():
+        if keep is not None and ident not in keep:
+            continue
+        by_space.setdefault(space_id, set()).add(ident)
+    return {frozenset(group) for group in by_space.values() if group}
 
 
 def probe_exists() -> bool:
@@ -144,6 +187,37 @@ def check(snapshot: list[dict], baseline: list[dict] | None, phase: str) -> None
             )
 
 
+def check_windows(before: dict[int, tuple], after: dict[int, tuple], phase: str) -> None:
+    """The invariants about windows, which the display-level checks miss.
+
+    A hotplug that leaves every display correct can still scatter the windows:
+    on 2026-09-20 an external display came back on a freshly minted desktop,
+    its workspace was never carried across, and windows that had shared a
+    desktop for hours were re-adopted one at a time onto whichever desktop
+    macOS happened to drop them on. Every check above passed. These two are
+    what notice it.
+    """
+    lost = set(before) - set(after)
+    if lost:
+        names = ", ".join(sorted(before[ident][1] for ident in lost))
+        raise Violation(f"{phase}: {len(lost)} window(s) no longer on any desktop ({names})")
+
+    # Restricted to the windows present both times, so an app opened or closed
+    # mid-run is not mistaken for the manager scattering things.
+    survivors = set(before) & set(after)
+    was, now = grouping(before, survivors), grouping(after, survivors)
+    if was != now:
+        def render(partition: set[frozenset], located: dict[int, tuple]) -> str:
+            return " | ".join(
+                sorted("+".join(sorted(located[i][1] for i in group)) for group in partition)
+            )
+        raise Violation(
+            f"{phase}: windows that shared a desktop no longer do\n"
+            f"      before: {render(was, before)}\n"
+            f"      after:  {render(now, after)}"
+        )
+
+
 def settle(want_probe: bool, timeout: float) -> tuple[list[dict], float]:
     """Wait for rift's display set to match what we just asked for.
 
@@ -198,14 +272,17 @@ def main() -> int:
         return 2
 
     say(f"baseline: {len(baseline)} display(s) — {', '.join(d['name'] for d in baseline)}")
-    baseline_windows = window_count()
+    baseline_windows = window_map(baseline)
 
     try:
         check(baseline, None, "baseline")
     except Violation as exc:
         say(f"FAIL {exc}")
         return 1
-    say(f"baseline invariants hold — {baseline_windows} window(s) tracked")
+    say(
+        f"baseline invariants hold — {len(baseline_windows)} window(s) across "
+        f"{len(grouping(baseline_windows))} desktop(s)"
+    )
 
     if args.dry_run:
         say("dry run — nothing changed")
@@ -246,12 +323,7 @@ def main() -> int:
                 )
             check(detached, baseline, f"cycle {cycle} detached")
 
-            now = window_count()
-            if now < baseline_windows:
-                raise Violation(
-                    f"cycle {cycle}: {baseline_windows - now} window(s) lost "
-                    f"({baseline_windows} -> {now})"
-                )
+            check_windows(baseline_windows, window_map(detached), f"cycle {cycle} detached")
         except Violation as exc:
             failures += 1
             say(f"  FAIL {exc}")
