@@ -17,8 +17,12 @@ tiling window manager for macOS. Rust; one binary (`rift`) plus a CLI
 
 ```bash
 git fetch upstream --tags
-git rebase upstream/main
 ```
+
+Taking upstream's work in is a **merge**, not a rebase — this fork is a hundred
+and sixty commits ahead, and rebasing would replay every one of them onto a
+tree that has moved underneath. **[docs/upstream-sync.md](docs/upstream-sync.md)**
+is the playbook: what it costs, what is worth taking, and what to decline.
 
 ## Conventions
 
