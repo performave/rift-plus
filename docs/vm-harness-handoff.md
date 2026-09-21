@@ -25,6 +25,20 @@ most time are worth repeating:
   and leaves every `toggle-float` landing on whatever was already focused.
 - `rift-cli query` needs the literal `query` subcommand; `rift-cli displays`
   returns empty rather than erroring visibly.
+- **Deploy `rift` and `rift-cli` together, never one alone.** rift-plus answers
+  to `com.performave.rift-plus` as of the identifier rename; a client from
+  before it looks up `git.acsandmann.rift` and finds nothing. The fallback runs
+  the other way only — a *new* client still reaches an *old* rift — so
+  upgrading the daemon on its own is the combination that breaks, and it breaks
+  looking exactly like the wedge below: every query empty, no error.
+
+  What that rename does *not* cost, here: Accessibility. macOS keys the grant
+  on the signing identifier, so a real install has to be re-approved, but this
+  guest's rows were inserted by hand with `client_type = 1` — keyed on the
+  absolute path — and a binary replaced at the same path keeps the grant
+  whatever its identity. `sudo sqlite3 '/Library/Application Support/com.apple.TCC/TCC.db'
+  "select service, client, client_type, auth_value from access where client like '%rift%';"`
+  is how to check before assuming it is gone.
 
 ## `space: null` is almost never the wedge — check for fullscreen first
 
@@ -281,6 +295,7 @@ Three things it had to learn, each of which had it silently testing nothing:
   scenario would be measuring the previous run's leftovers.
 
 **The result: native fullscreen round-trips correctly across a display churn.**
+Two consecutive clean runs once the harness stopped racing itself (below).
 The trace reads `recorded → ordered in; restoring → restored` for the window,
 repeatedly, with none of the three failure outcomes, and the tree at rest is
 the same leaves in the same order with the window back in its slot — checked
