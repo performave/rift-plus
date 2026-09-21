@@ -69,6 +69,65 @@ def rift_exec(*args: str) -> None:
     sh(f"{CLI} execute " + " ".join(args))
 
 
+def trace_acts(kinds, path: str = "/tmp/chaos-trace.json") -> list:
+    """Every flight-recorder entry of the given kinds, oldest first.
+
+    The recorder is always on and rings; `execute trace dump` writes it out
+    retroactively. It is the only way to assert on what rift *decided* rather
+    than on the state the queries can still see afterwards -- a decision that
+    was right and a decision that was wrong can leave the same snapshot when
+    macOS happens to clean up after the wrong one.
+    """
+    sh(f"{CLI} execute trace dump {path}", timeout=60)
+    out = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if not line.startswith("Act "):
+                    continue
+                try:
+                    entry = json.loads(line[4:])
+                except ValueError:
+                    continue
+                if entry.get("kind") in kinds:
+                    out.append((entry.get("ms"), entry.get("kind"), entry.get("detail")))
+    except OSError:
+        return []
+    return out
+
+
+def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) -> bool:
+    """Put `app`'s front window into macOS's own fullscreen, or take it out.
+
+    Not rift's `window toggle-fullscreen`: that keeps the window in the tree,
+    while this is the green button, which moves the window to a space of its
+    own and takes it out -- the path `fullscreen_slots.rs` exists to undo.
+
+    `osascript` hangs indefinitely inside a LaunchAgent in the guest, for both
+    `activate` and System Events keystrokes, and goes on hanging with every
+    relevant TCC grant in place. `dtool fullscreen` posts Ctrl-Cmd-F with
+    CGEventPost instead, underneath Apple Events. A posted key goes to whatever
+    is frontmost and a LaunchAgent is not an app, so the app has to be brought
+    up first -- and `open -a` does not reliably win that race, so this checks
+    for what it asked for and asks again. Returns whether it got there.
+    """
+    for _ in range(tries):
+        if bool(displays_showing_fullscreen()) == want:
+            return True
+        sh(f'open -a "{app}"')
+        time.sleep(2.5)
+        # `open -a` picks the app, not the window, and three TextEdit documents
+        # make "the front window" a coin toss. rift's own focus names the one
+        # meant, and has to be redone on every attempt because `open -a` moves
+        # the front window back.
+        if window is not None:
+            focus(window)
+            time.sleep(1.0)
+        sh(f"{DTOOL} fullscreen")
+        time.sleep(2.5)
+    return bool(displays_showing_fullscreen()) == want
+
+
 def display_count() -> int:
     try:
         return int(sh(f"{DTOOL} count"))
@@ -181,6 +240,33 @@ def spawn_windows() -> None:
     for app in TEST_APPS[1:]:
         sh(f'open -a "{app}"')
     time.sleep(10)
+
+
+def displays_showing_fullscreen() -> list:
+    """Displays whose shown desktop is a native-fullscreen space.
+
+    rift reports such a display as `space: null` with no active desktops, which
+    is correct -- a fullscreen space is not a desktop it manages -- and reads
+    exactly like the wedge where rift has lost track of the display set. The
+    difference matters: one is cleared by taking the window out of fullscreen,
+    the other only by rebooting the guest, and a whole afternoon can go into
+    the wrong one.
+    """
+    return [d.get("name") for d in (rift("displays") or []) if d.get("space") is None]
+
+
+def clear_native_fullscreen(tries: int = 4) -> bool:
+    """Take every test app out of native fullscreen.
+
+    Apps restore their saved window state, so a scenario that leaves Safari
+    fullscreen leaves it fullscreen across relaunches and reboots too -- every
+    later run then starts on a display with no desktop, tiles nothing, and
+    reports an empty layout everywhere. Any baseline has to clear this first.
+    """
+    for app in TEST_APPS:
+        if fullscreen_key(app, want=False, tries=tries):
+            return True
+    return not displays_showing_fullscreen()
 
 
 def focus(w: dict) -> bool:
@@ -364,10 +450,16 @@ def workspace_total(displays) -> int:
 
 def snapshot(label: str = "") -> dict:
     displays = rift("displays") or []
+    # A display showing a native-fullscreen space reports no desktop at all.
+    # Recorded rather than inferred: every structural check below sees that
+    # display's desktops as absent, and the label is the only thing that says
+    # why.
+    fullscreen = [d.get("name") for d in displays if d.get("space") is None]
     spaces = all_space_ids(displays)
     return {
         "label": label,
         "displays": displays,
+        "showing_fullscreen": fullscreen,
         "cg_count": display_count(),
         "spaces": spaces,
         "windows": window_map(displays),
@@ -379,9 +471,12 @@ def snapshot(label: str = "") -> dict:
 
 
 def render_displays(snap) -> str:
-    return " | ".join(
-        f"{d.get('name','?')}(id={d.get('screen_id')} space={d.get('space')})"
-        for d in snap["displays"]) or "(none)"
+    def one(d):
+        space = d.get("space")
+        shown = "FULLSCREEN" if space is None else space
+        return f"{d.get('name','?')}(id={d.get('screen_id')} space={shown})"
+
+    return " | ".join(one(d) for d in snap["displays"]) or "(none)"
 
 
 # ---------------------------------------------------------------- invariants
@@ -832,6 +927,150 @@ def s_transient(base):
                         + "\n      ".join(sampler.worst[:3]))
 
 
+@scenario("native-fullscreen-across-churn",
+          doc="macOS fullscreen held across a display churn; the slot must survive")
+def s_native_fullscreen_churn(base):
+    """The window is in macOS's own fullscreen when a display comes and goes.
+
+    `fullscreen_slots.rs` records where a window sat before native fullscreen
+    took it out of the tree, and puts it back there on the way out. A churn in
+    between is the hard case: the recorded desktop can be destroyed and
+    replaced underneath the slot, and the window server moves windows around
+    while the tree is following it, so the slot can be re-read from a moment
+    when the window is somewhere it does not belong.
+
+    The assertions are on the trace as well as the end state. Three of the nine
+    `fullscreen_slot` outcomes are failures -- "landed elsewhere; dropped",
+    "nothing matched", and a "stale slot replaced" during a churn, which is
+    exactly what "churn settling; slot kept" exists to prevent -- and each of
+    them leaves a window the queries can still show as tiled somewhere
+    plausible.
+
+    Entering fullscreen is checked against the tree rather than against the
+    trace: `record_fullscreen_slot` says nothing at all when the window already
+    has a slot for the same desktop, so a silent trace does not mean the key
+    missed. The window leaving its desktop's leaves does.
+    """
+    plug()
+    # Longer than the usual settle on purpose: a slot taken while rift still
+    # considers the churn to be settling is kept rather than recorded, and the
+    # scenario would then be testing the previous run's leftovers.
+    settle(8)
+
+    # Safari for preference: it has one window, and a posted key goes to
+    # whichever window of the app is frontmost, so an app with three of them
+    # (TextEdit here) makes the target a guess.
+    a = snapshot("attached, tiled")
+    # The target has to sit on a desktop whose tree can be read, and rift only
+    # answers `query layout` for a desktop some display is showing right now --
+    # every other one comes back with no container_tree, which `tree_shape`
+    # marks `absent`. Picking blind lands on one of those about as often as
+    # not, and the scenario then fails on its own precondition. Safari for
+    # preference among the candidates: it has one window, and a posted key goes
+    # to whichever window of the app is frontmost, so an app with three of them
+    # (TextEdit here) makes the target a guess.
+    #
+    # The two identifier namespaces have to be kept apart here: `window_map`
+    # keys on the window server id, and a tree's leaves are rift's own
+    # `pid:idx`. Comparing one against the other silently finds nothing.
+    shown = [d.get("space") for d in a["displays"] if d.get("space") is not None]
+    candidates = []
+    for space in shown:
+        shape = tree_shape(space)
+        leaves = leaf_order(shape)
+        for w in (rift("windows", "--space-id", str(space)) or []):
+            wid = w.get("id") or {}
+            if w.get("is_floating") or f"{wid.get('pid')}:{wid.get('idx')}" not in leaves:
+                continue
+            candidates.append((w.get("app_name"), str(w.get("window_server_id")),
+                               wid.get("idx"), space, shape, w))
+    target = (next((c for c in candidates if c[0] == "Safari"), None)
+              or next(iter(candidates), None))
+    if target is None:
+        raise Violation("native-fullscreen-across-churn: no tiled window on any "
+                        f"shown desktop ({shown}) to fullscreen")
+    app, ident, idx, home, before_shape, window = target
+
+    # By timestamp, not by index: the flight recorder is a ring, and a churn
+    # writes enough to wrap it. Slicing `[mark:]` off a list that has lost its
+    # head silently drops exactly the entries the scenario is here to read --
+    # it reported "no slot outcomes at all" for a window whose slot was
+    # recorded and restored perfectly.
+    seen = trace_acts({"fullscreen_slot"})
+    mark_ms = max((ms for ms, _, _ in seen), default=-1)
+    if not fullscreen_key(app, want=True, window=window):
+        raise Violation(f"native-fullscreen-across-churn: {app} would not go "
+                        "fullscreen (dtool posts Ctrl-Cmd-F to whatever is "
+                        "frontmost -- check the app came up)")
+    settle(5)
+    # The trace, not the tree: while the window is fullscreen its display shows
+    # the fullscreen space, so the home desktop is not shown and has no
+    # readable tree at all -- which made "the window is no longer a leaf" true
+    # of every window, including the ones that never moved.
+    recorded = [d for _, _, d in trace_acts({"fullscreen_slot"})
+                if isinstance(d, list) and len(d) > 1 and d[0] == idx
+                and d[1] == "recorded"]
+    if not recorded:
+        others = [d for _, _, d in trace_acts({"fullscreen_slot"})
+                  if isinstance(d, list) and len(d) > 1]
+        raise Violation(
+            f"native-fullscreen-across-churn: no slot was recorded for {app} "
+            f"({idx}); some other window went fullscreen instead: {others[-4:]}")
+
+    # The churn, with the window still away in its own space.
+    unplug(); settle(3)
+    plug(); settle(5)
+
+    left = fullscreen_key(app, want=False, window=window)
+    settle(8)
+    if not left or displays_showing_fullscreen():
+        # The second key did not land. Leaving it would poison every later run,
+        # so clear it here and say so rather than in an unrelated failure.
+        cleared = clear_native_fullscreen()
+        raise Violation(
+            "native-fullscreen-across-churn: the window did not leave "
+            f"fullscreen (cleared afterwards: {cleared})")
+
+    slots = [(ms, d) for ms, _, d in trace_acts({"fullscreen_slot"})
+             if ms > mark_ms and isinstance(d, list) and len(d) > 1]
+    mine = [d[1] for _, d in slots if d[0] == idx]
+    bad = [o for o in mine
+           if o in ("landed elsewhere; dropped", "nothing matched", "stale slot replaced")]
+    if bad:
+        raise Violation("native-fullscreen-across-churn: the slot did not survive "
+                        f"the churn: {bad}\n      this window: {mine}"
+                        f"\n      every window: {[d for _, d in slots]}")
+
+    after = snapshot("after native fullscreen + churn")
+    back = after["windows"].get(ident)
+    if back is None:
+        raise Violation(f"native-fullscreen-across-churn: {app} is on no desktop at all")
+    if not back[2]:
+        raise Violation(f"native-fullscreen-across-churn: {app} came back floating "
+                        f"(slot outcomes: {mine})")
+    # The desktop is a new id if the churn replaced it; the tree's shape is
+    # what has to match, and check_full covers the rest. A desktop no display
+    # is showing has no readable tree, so there is nothing to compare -- the
+    # grouping and frame checks in check_full still apply to it.
+    now_shape = tree_shape(back[0])
+    if now_shape.get("absent"):
+        print(f"      (desktop {back[0]} is not shown; tree order not compared)",
+              flush=True)
+    elif leaf_order(before_shape) != leaf_order(now_shape):
+        raise Violation(
+            "native-fullscreen-across-churn: the tree came back in a different "
+            f"order\n      this window: {mine}"
+            f"\n      every window: {[d for _, d in slots]}"
+            f"\n      before: {leaf_order(before_shape)}"
+            f"\n      after:  {leaf_order(now_shape)}")
+    check_full(a, after, "native-fullscreen-across-churn")
+    # Whatever happened above, the app must not be left in fullscreen: it
+    # restores that state on its next launch, and the next run would start on a
+    # display with no desktop at all.
+    clear_native_fullscreen()
+    unplug(); settle()
+
+
 @scenario("straggler-after-return",
           doc="a window on the external's NON-shown desktop is left behind by the return")
 def s_straggler(base):
@@ -896,16 +1135,30 @@ def s_straggler(base):
 
     try:
         after = snapshot("returned")
-        # The tell: a window that was on the external is now on the survivor.
-        moved = []
-        for ident, rec in after["windows"].items():
-            if ident in a["windows"] and rec[0] != a["windows"][ident][0]:
-                moved.append((rec[1], a["windows"][ident][0], rec[0]))
-        if moved:
-            raise Violation("straggler-after-return: window(s) left behind by "
-                            "the return and never brought home: "
-                            + ", ".join(f"{app} desktop {was} -> {now}"
-                                        for app, was, now in moved))
+        # The tell is a desktop's windows SPLITTING UP, not their desktop id
+        # changing. macOS destroys desktops across a churn and rift's record
+        # substitutes a replacement for each one, so every window of a desktop
+        # legitimately comes back on a new id -- together, with its tree. An
+        # earlier version of this check compared raw ids and called that a
+        # straggler, which made a working substitution read as the bug.
+        # `grouping` is id-free: it asks only who still shares a desktop with
+        # whom, which is exactly what a window left behind breaks.
+        survivors = set(a["windows"]) & set(after["windows"])
+        was, now = grouping(a["windows"], survivors), grouping(after["windows"], survivors)
+        if was != now:
+            def render(part, loc):
+                return " | ".join(sorted("+".join(sorted(loc[i][1] for i in g))
+                                         for g in part))
+            strays = [f"{after['windows'][i][1]} desktop "
+                      f"{a['windows'][i][0]} -> {after['windows'][i][0]}"
+                      for i in sorted(survivors)
+                      if a["windows"][i][0] != after["windows"][i][0]]
+            raise Violation(
+                "straggler-after-return: the return left a desktop's windows "
+                "split across two\n"
+                f"      before: {render(was, a['windows'])}\n"
+                f"      after:  {render(now, after['windows'])}\n"
+                f"      moved:  {', '.join(strays)}")
         check_full(a, after, "straggler-after-return")
     finally:
         # setmain is permanent, so this has to run even when the assertion
@@ -943,6 +1196,13 @@ def main() -> int:
 
     if cmd == "setup":
         spawn_windows()
+        # Before anything is measured. An app restores its own saved window
+        # state, so a fullscreen left behind by an earlier run comes back with
+        # the app -- and a display showing a fullscreen space has no desktop to
+        # tile into, which makes every later result vacuous.
+        if not clear_native_fullscreen():
+            print("  WARNING: still showing a fullscreen space on "
+                  f"{displays_showing_fullscreen()}; nothing below means much")
         n = tile_all()
         print(f"spawned apps, tiled {n} window(s)")
         snap = snapshot("after setup")
@@ -1005,6 +1265,12 @@ def main() -> int:
         core = ["plain-replug", "short-unplug", "fast-churn", "fullscreen-across-churn"]
         wanted = argv[1:] or core
         grid = {}
+        # Whatever mode the config arrived in is the one to leave it in. A
+        # matrix run used to stop on "tile", and every later single-scenario
+        # run then silently exercised a mode nobody chose -- `spaces` is the
+        # only one with a display record at all, so the record's own scenarios
+        # tested nothing and said PASS.
+        was_mode = current_displaced_mode().split()[0]
         for mode in ("spaces", "float", "tile"):
             set_displaced_windows(mode)
             print(f"\n########## displaced_windows = {mode} ##########", flush=True)
@@ -1032,6 +1298,8 @@ def main() -> int:
                 grid[(mode, name)] = (verdict, detail)
                 print(f"  {verdict:6} {name:28} {time.time()-started:.0f}s"
                       + (f"\n         {detail}" if detail else ""), flush=True)
+        set_displaced_windows(was_mode)
+        print(f"\n(displaced_windows put back to {was_mode})")
         print("\n=== matrix ===")
         print(f"{'scenario':30}" + "".join(f"{m:10}" for m in ("spaces", "float", "tile")))
         for name in wanted:
