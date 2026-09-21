@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::actor::{self, reactor};
 use crate::common::config::{Config, ConfigCommand, MAX_WORKSPACES};
@@ -67,9 +67,7 @@ impl ConfigActor {
         }
     }
 
-    fn handle_config_query(&self) -> Config {
-        self.config.clone()
-    }
+    fn handle_config_query(&self) -> Config { self.config.clone() }
 
     fn handle_config_command(&mut self, cmd: ConfigCommand) -> Result<(), String> {
         debug!("Applying config command: {:?}", cmd);
@@ -77,6 +75,8 @@ impl ConfigActor {
         let mut new_config = self.config.clone();
         let mut config_changed = false;
         let mut errors: Vec<String> = Vec::new();
+        // What to report once the change has actually been accepted.
+        let mut applied: Option<String> = None;
 
         macro_rules! set_flag {
             ($path:expr, $value:expr, $name:literal) => {{
@@ -216,7 +216,11 @@ impl ConfigActor {
                                 Ok(cfg2) => {
                                     new_config = cfg2;
                                     config_changed = true;
-                                    info!("Updated {} to {}", key, value);
+                                    // Logged once it survives validation below,
+                                    // not here: an update the gate rejects is
+                                    // not an update, and saying so sent anyone
+                                    // reading the log past the real failure.
+                                    applied = Some(format!("Updated {} to {}", key, value));
                                 }
                                 Err(e) => {
                                     errors.push(format!(
@@ -248,9 +252,9 @@ impl ConfigActor {
             },
             ConfigCommand::ReloadConfig => match self.load_config_from_file() {
                 Ok(cfg) => {
-                    info!("Config reloaded successfully");
                     config_changed = true;
                     new_config = cfg;
+                    applied = Some("Config reloaded successfully".to_string());
                 }
                 Err(e) => return Err(format!("Failed to reload config: {}", e)),
             },
@@ -262,18 +266,22 @@ impl ConfigActor {
 
         let validation_issues = new_config.validate();
         if !validation_issues.is_empty() {
-            return Err(validation_issues.join("; "));
+            // Loud, because this rejects the whole update: nothing the caller
+            // asked for takes effect, and the config on disk keeps winning
+            // until the issue is fixed.
+            let reason = validation_issues.join("; ");
+            warn!("Config change rejected, nothing applied: {}", reason);
+            return Err(reason);
         }
 
         if config_changed {
-            let validation_issues = new_config.validate();
-            if !validation_issues.is_empty() {
-                return Err(validation_issues.join("; "));
-            }
-
             self.config = new_config;
 
             self.reactor_tx.send(reactor::Event::ConfigUpdated(self.config.clone()));
+
+            if let Some(message) = applied {
+                info!("{}", message);
+            }
         }
 
         Ok(())

@@ -190,13 +190,16 @@ impl VirtualWorkspaceSettings {
             ));
         }
 
-        // Validate rules and check duplicates in a single pass
-        let mut seen_app_ids = crate::common::collections::HashSet::default();
-        let mut seen_app_names = crate::common::collections::HashSet::default();
-        let mut seen_title_regexes = crate::common::collections::HashSet::default();
-        let mut seen_title_substrings = crate::common::collections::HashSet::default();
-        let mut seen_ax_roles = crate::common::collections::HashSet::default();
-        let mut seen_ax_subroles = crate::common::collections::HashSet::default();
+        // Validate rules and check duplicates in a single pass.
+        //
+        // A rule duplicates an earlier one only when its whole matcher
+        // repeats, because only then do the two select the same windows.
+        // Sharing a single field is ordinary: an app-specific rule and a
+        // catch-all both naming AXWindow is the documented way to write
+        // them. Flagging that rejected the config outright, and since
+        // `validate` gates every reload, it left the running rift unable to
+        // take any config change at all.
+        let mut seen_matchers = crate::common::collections::HashMap::default();
 
         for (index, rule) in self.app_rules.iter().enumerate() {
             let app_id_empty = rule.app_id.as_ref().map_or(true, |id| id.is_empty());
@@ -267,21 +270,6 @@ impl VirtualWorkspaceSettings {
                         index, app_id
                     ));
                 }
-
-                let has_specific_match = rule.app_name.is_some()
-                    || rule.title_regex.is_some()
-                    || rule.title_substring.is_some()
-                    || rule.ax_role.is_some()
-                    || rule.ax_subrole.is_some();
-                if !app_id.is_empty() && !has_specific_match && !seen_app_ids.insert(app_id) {
-                    issues.push(format!("Duplicate app_id '{}' in rule {}", app_id, index));
-                }
-            }
-
-            if let Some(ref app_name) = rule.app_name {
-                if !seen_app_names.insert(app_name) {
-                    issues.push(format!("Duplicate app_name '{}' in rule {}", app_name, index));
-                }
             }
 
             if let Some(ref title_re) = rule.title_regex {
@@ -294,8 +282,6 @@ impl VirtualWorkspaceSettings {
                         "App rule {} has invalid title_regex '{}': {}",
                         index, title_re, error
                     ));
-                } else if !seen_title_regexes.insert(title_re) {
-                    issues.push(format!("Duplicate title_regex '{}' in rule {}", title_re, index));
                 }
             }
 
@@ -315,28 +301,34 @@ impl VirtualWorkspaceSettings {
             if let Some(ref title_sub) = rule.title_substring {
                 if title_sub.is_empty() {
                     issues.push(format!("App rule {} has empty title_substring", index));
-                } else if !seen_title_substrings.insert(title_sub) {
-                    issues.push(format!(
-                        "Duplicate title_substring '{}' in rule {}",
-                        title_sub, index
-                    ));
                 }
             }
 
             if let Some(ref ax_role) = rule.ax_role {
                 if ax_role.is_empty() {
                     issues.push(format!("App rule {} has empty ax_role", index));
-                } else if !seen_ax_roles.insert(ax_role) {
-                    issues.push(format!("Duplicate ax_role '{}' in rule {}", ax_role, index));
                 }
             }
 
             if let Some(ref ax_sub) = rule.ax_subrole {
                 if ax_sub.is_empty() {
                     issues.push(format!("App rule {} has empty ax_subrole", index));
-                } else if !seen_ax_subroles.insert(ax_sub) {
-                    issues.push(format!("Duplicate ax_subrole '{}' in rule {}", ax_sub, index));
                 }
+            }
+
+            let matcher = (
+                rule.app_id.as_deref(),
+                rule.app_name.as_deref(),
+                rule.title_regex.as_deref(),
+                rule.title_substring.as_deref(),
+                rule.ax_role.as_deref(),
+                rule.ax_subrole.as_deref(),
+            );
+            if let Some(first) = seen_matchers.insert(matcher, index) {
+                issues.push(format!(
+                    "App rule {} matches the same windows as rule {}; the later one never applies",
+                    index, first
+                ));
             }
         }
 
@@ -2243,6 +2235,44 @@ mod tests {
         let issues = settings.validate();
         assert!(issues.iter().any(|issue| issue.contains("invalid title_regex")));
         assert!(issues.iter().any(|issue| issue.contains("effects are ignored")));
+    }
+
+    #[test]
+    fn rules_may_share_a_matcher_field_and_only_a_repeated_whole_matcher_is_flagged() {
+        // The shape that used to fail: an app-specific rule and the catch-all
+        // beneath it both name AXWindow, which is how the documented config
+        // writes them. `validate` gates every reload, so calling this a
+        // duplicate left the running rift unable to take any config change --
+        // including the one that puts the space switch animation back.
+        let mut settings = VirtualWorkspaceSettings::default();
+        settings.app_rules.push(AppWorkspaceRule {
+            app_id: Some("com.adobe.LightroomClassicCC7".into()),
+            ax_role: Some("AXWindow".into()),
+            ax_subrole: Some("AXDialog".into()),
+            manage: Some(true),
+            floating: true,
+            ..Default::default()
+        });
+        settings.app_rules.push(AppWorkspaceRule {
+            ax_role: Some("AXWindow".into()),
+            floating: true,
+            ..Default::default()
+        });
+
+        assert_eq!(settings.validate(), Vec::<String>::new());
+
+        // Repeating the whole matcher is still a mistake: the second one can
+        // never match anything the first did not.
+        settings.app_rules.push(AppWorkspaceRule {
+            ax_role: Some("AXWindow".into()),
+            floating: false,
+            ..Default::default()
+        });
+        let issues = settings.validate();
+        assert!(
+            issues.iter().any(|issue| issue.contains("matches the same windows as rule 1")),
+            "expected the repeated matcher to be reported, got {issues:?}"
+        );
     }
 
     #[test]

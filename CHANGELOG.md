@@ -22,6 +22,21 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Two app rules may share an `ax_role` again.** Validation treated a repeated
+  `ax_role`, `ax_subrole`, `app_name`, `title_regex` or `title_substring` as a
+  duplicate rule wherever it appeared, so the documented shape — an
+  app-specific rule above a catch-all, both naming `AXWindow` — made the config
+  invalid. Validation gates every reload, so the effect went well past a
+  warning: `rift execute config set`, edits to `config.toml` and the reload
+  `sudo rift sa load` asks for were all rejected, silently, leaving rift
+  running on whatever it started with. A rule is now a duplicate only when its
+  whole matcher repeats, which is the only case where the later rule can never
+  match. A rejected config change also says so in the log, and the two lines
+  that announced success before validation had run — `Updated <key> to <value>`
+  and `Config reloaded successfully` — now wait until there is something to
+  announce. `sudo rift sa load` likewise no longer reports that rift re-applied
+  its settings when rift refused the reload.
+
 - **The drop overlay no longer stops showing for the rest of the session.**
   The overlay's panel is built once and kept, and it was ordered on screen only
   on the edge of a `visible` flag kept beside it — correct exactly as long as
