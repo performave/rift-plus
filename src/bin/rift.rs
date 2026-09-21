@@ -208,9 +208,15 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
 
     rift_wm::sys::osax::warn_if_sudoers_rule_is_stale(&config.settings.run_on_start);
     execute_startup_commands(&config.settings.run_on_start);
-    // After run_on_start, since that is where `sudo rift sa load` usually is.
-    rift_wm::sys::scripting_addition::apply_space_switch_animation(
+    // Not applied inline here. `run_on_start` is where `sudo rift sa load`
+    // usually is, and those commands run on their own threads, so at this
+    // point the addition is typically seconds away from existing -- a send now
+    // reaches nothing, which is exactly what a cold boot used to do. The
+    // supervisor applies the settings when the payload appears, and again
+    // every time Dock takes one down with it.
+    rift_wm::sys::osax_supervisor::spawn(
         &config.settings.space_switch_animation,
+        &config.settings.run_on_start,
     );
 
     let (broadcast_tx, broadcast_rx) = rift_wm::actor::channel();

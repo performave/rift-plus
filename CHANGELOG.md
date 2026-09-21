@@ -22,6 +22,22 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **The space switch animation survives a Dock restart.** The animation lives
+  inside Dock, because that is where the addition's payload lives, so anything
+  that restarts Dock takes the setting with it — and a Dock *crash* is silent:
+  Dock is back in a blink and the only sign is that the swipe has gone back to
+  its own timing. The same gap swallowed the setting at every boot, where rift
+  sent it immediately after kicking off `run_on_start` and so, since those
+  commands run on their own threads, usually before `sudo rift sa load` had put
+  a payload in Dock to receive it. rift now supervises the addition: a
+  handshake every couple of seconds, and when the payload it knew is gone it
+  asks for the addition back — running the user's own `run_on_start` line, with
+  `sudo -n` so it can never wait at a prompt — and replays the settings the old
+  payload was holding. Startup is the same path, which is why nothing has to
+  assume `run_on_start` finished first. rift will not load an addition that
+  `sa uninstall` removed, and with no `sa load` line to run it says so once
+  rather than each time it looks.
+
 - **Two app rules may share an `ax_role` again.** Validation treated a repeated
   `ax_role`, `ax_subrole`, `app_name`, `title_regex` or `title_substring` as a
   duplicate rule wherever it appeared, so the documented shape — an

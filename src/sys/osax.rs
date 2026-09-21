@@ -643,7 +643,15 @@ fn reapply_to_running_rift() -> &'static str {
     let request = rift_protocol::RiftRequest::ExecuteCommand {
         command: rift_protocol::RiftCommand::Config(rift_protocol::ConfigCommand::ReloadConfig),
     };
+    // The response matters, not just the delivery: a config rift refuses to
+    // reload -- one failing validation, say -- comes back as an error here,
+    // and reporting that as success sent people looking anywhere but at their
+    // config.
     match crate::ipc::RiftMachClient::connect().and_then(|client| client.send_request(&request)) {
+        Ok(rift_protocol::RiftResponse::Error { .. }) => {
+            "; rift is running but refused to reload its config, so it is still using the \
+             settings it started with -- 'rift execute config get' and the log say why"
+        }
         Ok(_) => "; rift re-applied its settings to it",
         Err(_) => {
             "; rift is not running or could not be reached, so restart it to apply the \
@@ -820,6 +828,23 @@ impl SudoersRule {
     }
 }
 
+/// The `sudo ... sa load` line from `run_on_start`, tokenised, if there is one.
+///
+/// Its presence is the user saying rift may load the addition itself, which is
+/// what lets [`crate::sys::osax_supervisor`] put it back after a Dock restart.
+/// Without it rift only reports what it finds and leaves loading to the user.
+pub fn sa_load_command(run_on_start: &[String]) -> Option<Vec<String>> {
+    run_on_start.iter().find_map(|command| {
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        (tokens.first() == Some(&"sudo") && tokens.ends_with(&["sa", "load"]))
+            .then(|| tokens.into_iter().map(str::to_string).collect())
+    })
+}
+
+/// Whether the addition's bundle is on disk. A missing bundle is `sa uninstall`
+/// and is respected: nothing puts it back behind the user's back.
+pub fn is_bundle_installed() -> bool { is_installed() }
+
 /// The rule file is root-only, so this asks `sudo -l` instead, which lists the
 /// user's rules digest and all. That listing is itself passwordless exactly
 /// when the user has *some* NOPASSWD rule (sudoers' `listpw=any` default) --
@@ -890,11 +915,7 @@ fn pinned_load_rules(listing: &str) -> Vec<(String, String)> {
 /// this binary. Said up front, naming the fix, rather than left to the
 /// command's own "a password is required" in the log.
 pub fn warn_if_sudoers_rule_is_stale(run_on_start: &[String]) {
-    let loads_via_sudo = run_on_start.iter().any(|command| {
-        let tokens: Vec<&str> = command.split_whitespace().collect();
-        tokens.first() == Some(&"sudo") && tokens.ends_with(&["sa", "load"])
-    });
-    if !loads_via_sudo {
+    if sa_load_command(run_on_start).is_none() {
         return;
     }
     match sudoers_rule_state() {

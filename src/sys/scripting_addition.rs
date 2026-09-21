@@ -38,6 +38,8 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use tracing::{debug, warn};
 
 /// The payload's opcodes. Only the ones rift has no other way to perform are
@@ -168,6 +170,12 @@ pub fn handshake(path: &str) -> Option<Handshake> {
         attributes: u32::from_ne_bytes(attributes),
     })
 }
+
+/// The payload answering right now, if there is one.
+///
+/// The honest liveness test, and the one the supervisor runs on: it reaches
+/// the payload inside the Dock that is running, not the bundle on disk.
+pub fn live_payload() -> Option<Handshake> { socket_path().and_then(|path| handshake(&path)) }
 
 /// Whether the scripting addition is loaded and accepting connections.
 pub fn is_available() -> bool {
@@ -466,17 +474,50 @@ pub fn set_space_switch_animation(animation: Option<(Duration, [f64; 4])>) -> bo
 pub fn apply_space_switch_animation(
     settings: &crate::common::config::SpaceSwitchAnimationSettings,
 ) {
+    let animation = desire_space_switch_animation(settings);
+    if !set_space_switch_animation(animation) && settings.enabled {
+        warn!(
+            "space_switch_animation is enabled but the scripting addition did not take it; \
+             it needs the addition loaded in a Dock it recognises (see 'rift sa status')"
+        );
+    }
+}
+
+/// What the payload is meant to be holding, so that a payload appearing later
+/// can be given it.
+///
+/// The setting lives inside Dock, so every Dock restart — a crash included —
+/// silently drops it, and the only signal is that the swipe goes back to
+/// Dock's own timing. [`crate::sys::osax_supervisor`] watches for that and
+/// replays this.
+static DESIRED_ANIMATION: Lazy<Mutex<Option<Option<(Duration, [f64; 4])>>>> =
+    Lazy::new(|| Mutex::new(None));
+
+/// Records the setting without sending it, and returns it in wire form.
+pub fn desire_space_switch_animation(
+    settings: &crate::common::config::SpaceSwitchAnimationSettings,
+) -> Option<(Duration, [f64; 4])> {
     let animation = settings.enabled.then(|| {
         (
             Duration::from_millis(settings.duration_ms),
             settings.easing.bezier(),
         )
     });
-    if !set_space_switch_animation(animation) && settings.enabled {
-        warn!(
-            "space_switch_animation is enabled but the scripting addition did not take it; \
-             it needs the addition loaded in a Dock it recognises (see 'rift sa status')"
-        );
+    *DESIRED_ANIMATION.lock() = Some(animation);
+    animation
+}
+
+/// Sends the recorded setting to a payload that has just appeared.
+///
+/// `Ok(false)` means nothing has been asked for yet, which is not a failure.
+pub fn reassert_space_switch_animation() -> Result<bool, ()> {
+    let Some(animation) = *DESIRED_ANIMATION.lock() else {
+        return Ok(false);
+    };
+    if set_space_switch_animation(animation) {
+        Ok(true)
+    } else {
+        Err(())
     }
 }
 

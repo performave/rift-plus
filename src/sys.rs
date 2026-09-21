@@ -23,6 +23,7 @@ pub mod lifecycle;
 pub mod mach;
 pub mod observer;
 pub mod osax;
+pub mod osax_supervisor;
 pub mod power;
 pub mod process;
 pub mod run_loop;
