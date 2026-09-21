@@ -1632,7 +1632,17 @@ impl LayoutEngine {
             return None;
         };
         let should_float = effects.should_float(was_floating);
-        if should_float {
+        // In a floating layout the tree *is* the layout: every window in the
+        // workspace is floating already, and its frame is held by that tree.
+        // Taking one out to "make it float" drops the frame and dissolves any
+        // stack it was joined into, all to grant a rule what it already has.
+        let layout_is_floating = matches!(
+            self.workspace_tree(effects.workspace_id),
+            LayoutSystemKind::Floating(_)
+        );
+        if layout_is_floating {
+            // Nothing to move it into or out of.
+        } else if should_float {
             self.floating.add_floating(window);
             self.floating.add_active(space, window.pid, window);
             // A window the rules float must leave the tiling tree, the same way
@@ -5865,14 +5875,9 @@ mod tests {
     }
 
     #[test]
-    /// Retargeted on import. Upstream asserts that a floating rule reapplied to
-    /// a joined window keeps its stacked parent *and* its remembered frame.
-    /// This fork keeps the membership but not the other two: re-admitting the
-    /// window rebuilds the split rather than rejoining the stack, and the
-    /// frame the floating layout system was holding does not survive. Both are
-    /// real gaps against upstream's floating layout, recorded in CHANGELOG.md
-    /// under the sync rather than papered over here -- asserting the current
-    /// behaviour in full would pin it in place.
+    /// A floating rule reapplied to a joined window keeps its membership, its
+    /// stacked parent and its remembered frame. In a floating layout there is
+    /// nothing for "make it float" to move: the tree is the layout.
     fn floating_rule_reapplication_preserves_joined_membership_and_frames() {
         let (mut engine, mut store, space, workspace, layout, windows) = floating_stack_fixture(2);
         let (a, b) = (windows[0], windows[1]);
@@ -5894,6 +5899,11 @@ mod tests {
             );
             assert!(!engine.floating.is_floating(wid));
             assert!(engine.workspace_tree(workspace).contains_window(layout, wid));
+            assert!(engine.workspace_tree(workspace).parent_of_selection_is_stacked(layout));
+            assert_eq!(
+                engine.get_floating_position(space, workspace, wid),
+                Some(focused)
+            );
         }
     }
 
