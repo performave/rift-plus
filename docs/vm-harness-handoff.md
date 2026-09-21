@@ -254,6 +254,49 @@ desktop rift could not name, with every desktop inactive and nothing
 manageable. That state survived a rift restart and needed a guest reboot. The
 leak is noise; this cure is worse.
 
+## What only a hand on the mouse found
+
+The upstream sync (`docs/upstream-sync.md`) compiled clean, passed all 790
+tests, and gave **identical** results to the pre-merge build across the whole
+churn battery — and had killed every mouse gesture rift owns.
+
+Upstream's event tap subscribes to mouse *down* and *up* and not *dragged*,
+because it acquires drags through AX. This fork drives modifier drags, the
+tile-edge grab and the float-strip takeover from the tap itself, so it needs
+the whole sequence. Taking upstream's mask captured every press and left
+nothing to continue it. Nothing failed to compile; no test noticed; the churn
+scenarios do not touch the pointer, so they did not notice either.
+
+`scripts/handson.py` with `scripts/mtool` is what noticed: it posts real
+pointer input as CGEvents and then reads the frames back. Anything that changes
+`src/actor/input.rs` — a merge above all — has to be run through it.
+
+Its own failures were all aim, and each is a trap in its own right:
+
+- **The two left-most windows are not side by side.** In a bsp spiral they are
+  usually stacked one above the other, so the "boundary" between them is a
+  point in empty space. Require a pair that is horizontally adjacent *and*
+  overlaps vertically.
+- **Drag the boundary in the direction that grows.** An app at its minimum
+  width refuses to shrink and the boundary does not move — Safari's floor is
+  574px, which is exactly what a balanced five-window spiral hands it on this
+  display. Growing always works; shrinking is the app's decision.
+- **The modifier's two buttons do different jobs.** `action1` is on the left
+  and `action2` on the right, and this config maps move and resize
+  respectively — so a resize test that sends the left button is testing move.
+- **Modifier gestures are for floating windows.** On a tiled one they correctly
+  do nothing. Float the window first, and grab three-quarters across rather
+  than dead centre: the resize takes an edge, and the middle has no nearer one.
+
+With those right, the merge passes: the boundary moves by exactly what it was
+dragged and both neighbours follow with the gutter unchanged, a floated window
+resizes by exactly the drag, stacking round-trips, native fullscreen returns
+every window to its desktop, and a plug/unplug survives.
+
+Worth knowing: modifier-drag **resize** works on the merged build and did
+nothing on the pre-merge one. Restoring the dragged-event subscription fixed
+more than it put back.
+
 ## Open work
 
 **Native fullscreen is drivable now, and round-trips correctly in the simple
