@@ -259,6 +259,43 @@ def spawn_windows() -> None:
     time.sleep(10)
 
 
+def reset_between_scenarios() -> str:
+    """Put the guest back to the state the baseline was taken in.
+
+    Without this a run's later scenarios inherit whatever the earlier ones left
+    -- a skewed split ratio, a display arrangement `setmain` wrote permanently,
+    windows parked on desktops nothing is showing, an app still fullscreen --
+    and the results stop being about the build and start being about the order.
+    Two passes of the same fifteen scenarios, same build, disagreed on six of
+    them; that was this.
+
+    A full guest reboot is the only thing that also clears the leaked desktops,
+    but it costs three minutes a scenario. This is the cheap part: everything
+    that can be undone without one.
+    """
+    notes = []
+    unplug(quiet=True)
+    settle(2)
+    if displays_showing_fullscreen():
+        notes.append("cleared fullscreen" if clear_native_fullscreen() else "STILL FULLSCREEN")
+    for name, was, now in show_the_desktop_holding_the_windows():
+        notes.append(f"{name}: showed empty {was}, switched to {now}")
+    # `setmain` is permanent, so an earlier scenario's arrangement outlives it.
+    for line in sh(f"{DTOOL} list").splitlines():
+        parts = line.split()
+        if len(parts) > 3 and "main=1" in line and parts[0] != "1":
+            make_main(1)
+            notes.append(f"main display was {parts[0]}, put back to 1")
+            settle(2)
+            break
+    rift_exec("layout balance")
+    settle(1.5)
+    retiled = tile_all()
+    if retiled:
+        notes.append(f"re-tiled {retiled}")
+    return "; ".join(notes)
+
+
 def show_the_desktop_holding_the_windows() -> list:
     """Switch each display to a desktop that has tiled windows on it.
 
@@ -1493,6 +1530,9 @@ def main() -> int:
     results = []
     for name in names:
         print(f"--- {name} ---", flush=True)
+        reset = reset_between_scenarios()
+        if reset:
+            print(f"    (reset: {reset})", flush=True)
         started = time.time()
         try:
             SCENARIOS[name](base)
