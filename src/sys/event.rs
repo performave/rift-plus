@@ -23,10 +23,6 @@ pub enum MouseState {
     Down = 2,
 }
 
-const MOUSE_STATE_UNKNOWN: u8 = 0;
-
-static MOUSE_STATE: AtomicU8 = AtomicU8::new(MOUSE_STATE_UNKNOWN);
-
 const RIFT_SYNTHETIC_EVENT_MARKER: i64 = 0x5249_4654;
 const KEYCODE_W: u16 = 0x0d;
 
@@ -45,6 +41,8 @@ impl TryFrom<u8> for MouseState {
         }
     }
 }
+
+static MOUSE_STATE: AtomicU8 = AtomicU8::new(MouseState::Up as u8);
 
 pub fn set_mouse_state(state: MouseState) { MOUSE_STATE.store(state.into(), Ordering::Relaxed); }
 

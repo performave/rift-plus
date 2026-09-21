@@ -1980,7 +1980,7 @@ fn reused_direct_window_identity_cannot_cross_known_application_identity() {
 }
 
 #[test]
-fn fuzzy_match_requires_window_specific_evidence() {
+fn fuzzy_match_requires_known_app_and_title_but_not_size() {
     use super::matcher::{RestoreCandidate, choose_match};
 
     let saved = WindowId::new(42, 7);
@@ -2012,7 +2012,11 @@ fn fuzzy_match_requires_window_specific_evidence() {
         title: Some("Music".into()),
         ..unrelated_live
     };
-    assert!(choose_match(live, space, &title_only_match, None, &candidate).is_none());
+    assert_eq!(
+        choose_match(live, space, &title_only_match, None, &candidate)
+            .map(|decision| decision.selected),
+        Some(saved)
+    );
 
     let title_and_size_match = WindowFingerprint {
         width: 500.0,
@@ -2051,6 +2055,84 @@ fn fuzzy_match_requires_window_specific_evidence() {
         )
         .is_none()
     );
+}
+
+#[test]
+fn fuzzy_match_uses_size_to_disambiguate_duplicate_app_titles() {
+    use super::matcher::{RestoreCandidate, choose_match};
+
+    let near = WindowId::new(42, 7);
+    let far = WindowId::new(42, 8);
+    let live = WindowId::new(99, 1);
+    let space = SpaceId::new(503);
+    let near_fingerprint = WindowFingerprint {
+        window_server_id: None,
+        title: Some("Project".into()),
+        width: 800.0,
+        height: 600.0,
+        app_id: Some("com.example.editor".into()),
+    };
+    let far_fingerprint = WindowFingerprint {
+        width: 1200.0,
+        height: 900.0,
+        ..near_fingerprint.clone()
+    };
+    let live_fingerprint = WindowFingerprint {
+        width: 850.0,
+        height: 650.0,
+        ..near_fingerprint.clone()
+    };
+    let workspace = crate::model::VirtualWorkspaceId::default();
+    let candidates = [
+        RestoreCandidate {
+            window: far,
+            fingerprint: &far_fingerprint,
+            location: Some((space, workspace)),
+        },
+        RestoreCandidate {
+            window: near,
+            fingerprint: &near_fingerprint,
+            location: Some((space, workspace)),
+        },
+    ];
+
+    assert_eq!(
+        choose_match(live, space, &live_fingerprint, None, &candidates)
+            .map(|decision| decision.selected),
+        Some(near)
+    );
+}
+
+#[test]
+fn fuzzy_match_rejects_equal_size_ambiguity_for_duplicate_app_titles() {
+    use super::matcher::{RestoreCandidate, choose_match};
+
+    let first = WindowId::new(42, 7);
+    let second = WindowId::new(42, 8);
+    let live = WindowId::new(99, 1);
+    let space = SpaceId::new(504);
+    let fingerprint = WindowFingerprint {
+        window_server_id: None,
+        title: Some("Project".into()),
+        width: 800.0,
+        height: 600.0,
+        app_id: Some("com.example.editor".into()),
+    };
+    let workspace = crate::model::VirtualWorkspaceId::default();
+    let candidates = [
+        RestoreCandidate {
+            window: first,
+            fingerprint: &fingerprint,
+            location: Some((space, workspace)),
+        },
+        RestoreCandidate {
+            window: second,
+            fingerprint: &fingerprint,
+            location: Some((space, workspace)),
+        },
+    ];
+
+    assert!(choose_match(live, space, &fingerprint, None, &candidates).is_none());
 }
 
 #[test]
@@ -2128,10 +2210,9 @@ fn space_restore_rejects_workspace_count_mismatch_before_mutating_layouts() {
         .add_window_after_selection(target_layout, sentinel);
 
     let error = engine
-        .restore_saved_layout(
+        .restore_layout(
             path.clone(),
-            RestoreScope::Space,
-            space,
+            RestoreRequest::new(RestoreScope::Space, space),
             &mut window_store,
             &VirtualWorkspaceSettings::default(),
             &LayoutSettings::default(),
@@ -2214,6 +2295,7 @@ fn every_layout_system_round_trips_through_ron() {
         LayoutMode::Stack,
         LayoutMode::MasterStack,
         LayoutMode::Scrolling,
+        LayoutMode::Floating,
     ] {
         let system = VirtualWorkspace::create_layout_system(mode, &settings);
         let serialized = ron::ser::to_string(&system).unwrap();

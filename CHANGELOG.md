@@ -11,6 +11,57 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Changed
+
+- **Merged upstream through v0.5.10** (`c345d6a7`), the first sync since the
+  fork diverged. Sixty-one commits, twenty-five files with conflicts, and one
+  file that was not a conflict at all: upstream folds `actor/event_tap.rs` and
+  `actor/gesture_tap.rs` into `actor/input.rs`, so this fork's edge-drag resize
+  and drag coalescing had to come across with them. Notable upstream work now
+  in: the display-churn gate released on an edge rather than a level (a
+  screenshot overlay was costing 320 inventory refreshes and 241 raises), bulk
+  window attributes, the combined input tap, `move-workspace-to-display`, the
+  floating layout system, and an IPC memory-leak fix.
+
+### Fixed
+
+- **The mouse gestures survive the sync.** Upstream's event tap subscribes to
+  mouse down and up but not *dragged*, because it acquires drags through AX.
+  This fork drives modifier drags, the tile-edge grab and the float-strip
+  takeover from the tap itself, so taking upstream's mask captured every press
+  and left nothing to continue it — Cmd-drag did nothing at all. Nothing failed
+  to compile, every test passed, and the whole display-churn battery was
+  identical, because none of it touches the pointer. Found by driving the mouse
+  (`scripts/handson.py`). Restoring the subscription also made modifier-drag
+  *resize* work, which it had not before.
+
+### Declined from upstream
+
+- `bff0dfdf` (allow duplicate `app_name` when a rule has another matcher).
+  This fork's own `2f78a132` keys the duplicate check on the whole matcher,
+  which subsumes upstream's field-by-field version.
+- `83f3b666` (experimentally ignore `AXUIElementDestroyed`). It puts the whole
+  handler behind a feature flag that returns early; this fork has a more
+  careful fix in the same place -- `remove_stale_windows` for apps that never
+  fire window-closed, and `is_current_window_element` so a late destroy for a
+  superseded element cannot tear down its replacement.
+- `072411b4` (release workflow). It targets upstream's tap on macos-14 and
+  undoes this fork's pinned runner, hardened-runtime signing and notarization.
+- The direct `CGEventSource::button_state` read in `sys/event.rs`. This fork's
+  `get_mouse_state` goes through `trace::observe`, and the recorded traces in
+  `tests/` depend on being able to answer it offline.
+- Upstream's duplicated `rift-cli` command tree, which this fork replaced with
+  a thin shim over `rift_wm::cli`.
+
+### Known gaps against upstream
+
+- A floating rule reapplied to a joined window keeps its membership but not its
+  stacked parent, and the frame upstream's floating layout system was holding
+  does not survive. `floating_rule_reapplication_preserves_joined_membership_and_frames`
+  is retargeted to what this fork does, with the difference written down rather
+  than asserted into place.
+
+
 ## [0.5.5-plus.5] - 2026-09-21
 
 ### Changed

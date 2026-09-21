@@ -28,6 +28,10 @@ permissions:
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
+concurrency:
+  group: rift-release-publish
+  cancel-in-progress: false
+
 jobs:
   release:
     # macos-14 is deprecated: brownouts through October 2026, unsupported from
@@ -88,6 +92,18 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Verify tag matches root package version
+        run: |
+          set -euo pipefail
+          version=$(awk '/^\[package\]/{package=1; next} /^\[/{package=0}
+            package && /^version[[:space:]]*=/{split($0, value, "\""); print value[2]; exit}' Cargo.toml)
+          test -n "$version"
+          if [[ "${RELEASE_TAG#v}" != "$version" ]]; then
+            echo "Release tag does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
 
       # A tag that disagrees with the metadata would ship a binary whose
       # --version contradicts the formula that installed it. Check the lockfile

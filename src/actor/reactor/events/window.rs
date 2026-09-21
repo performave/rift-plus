@@ -342,6 +342,20 @@ pub fn handle_window_frame_changed(
     }
     outcome = EventOutcome::layout_changed(false);
 
+    // External moves as well as resizes are authoritative for floating layouts.
+    // Requested frame acknowledgements have already been filtered by the classifier.
+    if let Some(space) = assigned_space.or(old_space)
+        && Some(space) == new_space
+        && let Some(workspace) = layout
+            .layout_engine
+            .virtual_workspace_manager()
+            .workspace_for_window(&state.windows, space, wid)
+        && layout.layout_engine.virtual_workspace_manager().workspaces[workspace].layout_mode()
+            == crate::common::config::LayoutMode::Floating
+    {
+        layout.layout_engine.store_floating_position(space, workspace, wid, new_frame);
+    }
+
     let dragging = mouse_state == Some(MouseState::Down)
         || matches!(
             drag.drag_state,
@@ -364,7 +378,13 @@ pub fn handle_window_frame_changed(
                 },
             };
         }
-        if let DragState::Active { session } = &mut drag.drag_state {
+        // A pending swap is still a live drag: `last_frame` and `settled_space` are
+        // what mouse-up uses to place the window and choose its final space, so
+        // freezing them here strands the window at the position where the swap
+        // candidate was first scored instead of where the user released it.
+        if let DragState::Active { session } | DragState::PendingSwap { session, .. } =
+            &mut drag.drag_state
+        {
             session.last_frame = new_frame;
             session.layout_dirty = true;
             if session.settled_space != new_space {
@@ -382,7 +402,7 @@ pub fn handle_window_frame_changed(
                 });
             }
         } else {
-            outcome = outcome.with_drag_swap_evaluation(wid, new_frame);
+            outcome.drag_swap_evaluations.push((wid, new_frame));
         }
     } else {
         drag.skip_layout_for_window = Some(wid);
@@ -481,7 +501,7 @@ pub fn handle_window_frame_changed(
     }
 
     if handle_mouse_up_if_needed(drag, false, mouse_state) {
-        outcome = outcome.with_mouse_up_dispatch();
+        outcome.dispatch_mouse_up = true;
     }
     Ok(outcome)
 }
@@ -503,9 +523,10 @@ pub fn handle_window_title_changed(
             return Ok(crate::actor::reactor::events::EventOutcome::no_change());
         }
         window.info.title = new_title.clone();
-        return Ok(crate::actor::reactor::events::EventOutcome::no_change()
-            .with_app_rule_reapply(wid)
-            .with_window_title_broadcast(wid, previous_title, new_title));
+        let mut outcome = crate::actor::reactor::events::EventOutcome::no_change()
+            .with_window_title_broadcast(wid, previous_title, new_title);
+        outcome.reapply_app_rules.push(wid);
+        return Ok(outcome);
     }
     Ok(crate::actor::reactor::events::EventOutcome::no_change())
 }
@@ -541,7 +562,7 @@ pub fn handle_mouse_moved_over_window(
                 raise_windows: vec![vec![window]],
                 focus_window: Some((window, None)),
                 app_handles,
-                focus_quiet: Quiet::No,
+                focus_quiet: Quiet::Yes,
             },
         ));
     }

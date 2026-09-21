@@ -5,14 +5,12 @@ use tracing::trace;
 use super::replay::Record;
 use super::{AppState, Event, WorkspaceSwitchOrigin, WorkspaceSwitchState};
 use crate::actor;
-use crate::actor::app::{WindowId, WindowInventoryToken, pid_t};
+use crate::actor::app::{AppThreadHandle, WindowId, WindowInventoryToken, pid_t};
 use crate::actor::drag_swap::DragManager as DragSwapManager;
 use crate::actor::reactor::Reactor;
 use crate::actor::reactor::animation::AnimationManager;
 use crate::actor::spaces::ForwardedSpaceState;
-use crate::actor::{
-    event_tap, gesture_tap, menu_bar, raise_manager, stack_line, window_notify, wm_controller,
-};
+use crate::actor::{input, menu_bar, raise_manager, stack_line, window_notify, wm_controller};
 use crate::common::collections::{HashMap, HashSet};
 use crate::common::config::{LayoutMode, WindowSnappingSettings};
 use crate::layout_engine::LayoutEngine;
@@ -26,6 +24,17 @@ pub struct AppManager {
 
 impl AppManager {
     pub fn new() -> Self { AppManager { apps: HashMap::default() } }
+
+    pub fn reject_duplicate(&self, pid: pid_t, handle: &AppThreadHandle) -> bool {
+        let Some(existing) = self.apps.get(&pid) else {
+            return false;
+        };
+        tracing::error!(pid, "Duplicate app actor registration; retaining original actor");
+        if !existing.handle.same_actor(handle) {
+            _ = handle.send(crate::actor::app::Request::Terminate);
+        }
+        true
+    }
 }
 
 /// Manages drag operations and window swapping
@@ -265,8 +274,7 @@ impl RefreshQuarantineManager {
 
 /// Manages communication channels to other actors
 pub struct CommunicationManager {
-    pub event_tap_tx: Option<event_tap::Sender>,
-    pub gesture_tap_tx: Option<gesture_tap::Sender>,
+    pub input_tx: Option<input::Sender>,
     pub stack_line_tx: Option<stack_line::Sender>,
     pub drop_overlay_tx: Option<crate::actor::drop_overlay::Sender>,
     pub tile_halo_tx: Option<crate::actor::tile_halo::Sender>,

@@ -11,6 +11,7 @@ use core::mem::{MaybeUninit, size_of, zeroed};
 use core::ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::vec::Vec;
 
 use tracing::{debug, error, info};
@@ -88,6 +89,7 @@ const MACH_MSG_TYPE_MOVE_SEND_ONCE: u32 = 18;
 const MACH_MSG_TYPE_MAKE_SEND_ONCE: u32 = 21;
 const MACH_MSGH_BITS_COMPLEX: u32 = 0x8000_0000;
 const MACH_MSG_TYPE_MAKE_SEND: u32 = 20;
+const MACH_NOTIFY_DEAD_NAME: mach_msg_id_t = 72;
 
 const MACH_PORT_RIGHT_RECEIVE: c_int = 1;
 const MACH_PORT_RIGHT_SEND: c_int = 0;
@@ -304,6 +306,16 @@ unsafe extern "C" {
     ) -> kern_return_t;
 
     fn mach_port_deallocate(task: mach_port_name_t, name: mach_port_name_t) -> kern_return_t;
+
+    fn mach_port_request_notification(
+        task: mach_port_name_t,
+        name: mach_port_name_t,
+        id: mach_msg_id_t,
+        sync: u32,
+        notify: mach_port_t,
+        notify_type: c_int,
+        previous: *mut mach_port_t,
+    ) -> kern_return_t;
 
     fn mach_port_set_attributes(
         task: mach_port_name_t,
@@ -600,14 +612,7 @@ unsafe fn create_connection_server_port() -> mach_port_t {
     let bundle = b"com.performave.rift-plus";
     let copy_len = bundle.len().min(msg.0.bundle_name.len());
     msg.0.bundle_name[..copy_len].copy_from_slice(&bundle[..copy_len]);
-    if bundle.len() > copy_len {
-        debug!(
-            bundle_len = bundle.len(),
-            max_len = msg.0.bundle_name.len(),
-            "Truncating connection server bundle name"
-        );
-    }
-    msg.0.bundle_size = msg.0.bundle_name.len() as i32;
+    msg.0.bundle_size = copy_len as i32;
 
     let header_ptr = core::ptr::addr_of_mut!(msg.0.header);
     let local_port = core::ptr::read_unaligned(core::ptr::addr_of!(msg.0.header.msgh_local_port));
@@ -792,7 +797,54 @@ pub unsafe fn mach_release_send_right(port: mach_port_t) -> bool {
     if port == 0 {
         return false;
     }
-    mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_SEND, -1) == KERN_SUCCESS
+    // Unlike `mach_port_mod_refs(..., MACH_PORT_RIGHT_SEND, -1)`, deallocate
+    // also releases the reference after a dead-name notification has changed
+    // the send right into a dead-name right.
+    mach_port_deallocate(mach_task_self(), port) == KERN_SUCCESS
+}
+
+/// Requests a single dead-name notification for a send right owned by this task.
+pub unsafe fn mach_watch_send_right(port: mach_port_t) -> bool {
+    let notify_port = IPC_SERVER_PORT.load(Ordering::Acquire);
+    if port == MACH_PORT_NULL || notify_port == MACH_PORT_NULL {
+        return false;
+    }
+
+    let mut previous = MACH_PORT_NULL;
+    let result = mach_port_request_notification(
+        mach_task_self(),
+        port,
+        MACH_NOTIFY_DEAD_NAME,
+        1,
+        notify_port,
+        MACH_MSG_TYPE_MAKE_SEND_ONCE as c_int,
+        &mut previous,
+    );
+    if previous != MACH_PORT_NULL {
+        let _ = mach_port_deallocate(mach_task_self(), previous);
+    }
+    result == KERN_SUCCESS
+}
+
+/// Cancels a pending dead-name notification, releasing its returned send-once right.
+pub unsafe fn mach_unwatch_send_right(port: mach_port_t) {
+    if port == MACH_PORT_NULL {
+        return;
+    }
+
+    let mut previous = MACH_PORT_NULL;
+    let _ = mach_port_request_notification(
+        mach_task_self(),
+        port,
+        MACH_NOTIFY_DEAD_NAME,
+        0,
+        MACH_PORT_NULL,
+        0,
+        &mut previous,
+    );
+    if previous != MACH_PORT_NULL {
+        let _ = mach_port_deallocate(mach_task_self(), previous);
+    }
 }
 
 /// A reply destination whose send right remains valid after a received Mach
@@ -1180,6 +1232,12 @@ pub type mach_handler = unsafe extern "C" fn(
     original_msg: *mut mach_msg_header_t,
 );
 
+pub type mach_dead_name_handler = unsafe extern "C" fn(context: *mut c_void, port: mach_port_t);
+
+unsafe extern "C" fn ignore_dead_name(_context: *mut c_void, _port: mach_port_t) {}
+
+static IPC_SERVER_PORT: AtomicU32 = AtomicU32::new(MACH_PORT_NULL);
+
 #[repr(C)]
 pub struct mach_server {
     is_running: bool,
@@ -1187,6 +1245,7 @@ pub struct mach_server {
     port: mach_port_t,
     bs_port: mach_port_t,
     handler: Option<mach_handler>,
+    dead_name_handler: Option<mach_dead_name_handler>,
     context: *mut c_void,
 }
 
@@ -1198,6 +1257,7 @@ impl Default for mach_server {
             port: 0,
             bs_port: 0,
             handler: None,
+            dead_name_handler: None,
             context: null_mut(),
         }
     }
@@ -1215,6 +1275,25 @@ extern "C" fn mach_message_callback(
         }
         let mach_server = &mut *(context as *mut mach_server);
         let header_val = core::ptr::read_unaligned(message as *const mach_msg_header_t);
+
+        if header_val.msgh_id == MACH_NOTIFY_DEAD_NAME {
+            #[repr(C)]
+            struct DeadNameNotification {
+                header: mach_msg_header_t,
+                ndr: ndr_record_t,
+                port: mach_port_name_t,
+            }
+
+            if header_val.msgh_size as usize >= size_of::<DeadNameNotification>() {
+                let notification =
+                    core::ptr::read_unaligned(message as *const DeadNameNotification);
+                if let Some(handler) = mach_server.dead_name_handler {
+                    handler(mach_server.context, notification.port);
+                }
+            }
+            let _ = mach_msg_destroy(message as *mut mach_msg_header_t);
+            return;
+        }
         let header_ptr = &header_val as *const mach_msg_header_t as *mut mach_msg_header_t;
         if header_val.msgh_remote_port == 0 {
             return;
@@ -1258,6 +1337,7 @@ pub unsafe fn mach_server_begin(
     mach_server: &mut mach_server,
     context: *mut c_void,
     handler: mach_handler,
+    dead_name_handler: mach_dead_name_handler,
 ) -> bool {
     mach_server.task = mach_task_self();
 
@@ -1322,8 +1402,10 @@ pub unsafe fn mach_server_begin(
     );
 
     mach_server.handler = Some(handler);
+    mach_server.dead_name_handler = Some(dead_name_handler);
     mach_server.context = context;
     mach_server.is_running = true;
+    IPC_SERVER_PORT.store(mach_server.port, Ordering::Release);
 
     let cf_context = CFMachPortContext {
         version: 0,
@@ -1444,13 +1526,18 @@ pub unsafe fn send_mach_reply(
 /// Installs the Mach receive source on the current thread's CFRunLoop without
 /// starting or blocking that run loop. The caller must keep `context` valid for
 /// as long as the server can receive messages.
-pub unsafe fn mach_server_install(context: *mut c_void, handler: mach_handler) -> bool {
+pub unsafe fn mach_server_install(
+    context: *mut c_void,
+    handler: mach_handler,
+    dead_name_handler: mach_dead_name_handler,
+) -> bool {
     static mut SERVER: mach_server = mach_server {
         is_running: false,
         task: 0,
         port: 0,
         bs_port: 0,
         handler: None,
+        dead_name_handler: None,
         context: null_mut(),
     };
 
@@ -1458,7 +1545,7 @@ pub unsafe fn mach_server_install(context: *mut c_void, handler: mach_handler) -
         error!("mach_server_install: server is already running");
         return false;
     }
-    mach_server_begin(&mut SERVER, context, handler)
+    mach_server_begin(&mut SERVER, context, handler, dead_name_handler)
 }
 
 #[allow(static_mut_refs)]
@@ -1469,6 +1556,7 @@ pub unsafe fn mach_server_run(context: *mut c_void, handler: mach_handler) -> bo
         port: 0,
         bs_port: 0,
         handler: None,
+        dead_name_handler: None,
         context: null_mut(),
     };
 
@@ -1481,7 +1569,7 @@ pub unsafe fn mach_server_run(context: *mut c_void, handler: mach_handler) -> bo
         SERVER.context
     );
 
-    if !mach_server_begin(&mut SERVER, context, handler) {
+    if !mach_server_begin(&mut SERVER, context, handler, ignore_dead_name) {
         error!("mach_server_run: mach_server_begin failed, aborting run loop");
         return false;
     }

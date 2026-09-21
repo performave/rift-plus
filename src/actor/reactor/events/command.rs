@@ -78,6 +78,17 @@ pub fn handle_command_layout(
             | LayoutCommand::DestroyWorkspace
             | LayoutCommand::SwitchToLastWorkspace
     );
+    if matches!(
+        cmd,
+        LayoutCommand::JoinWindow(_)
+            | LayoutCommand::ToggleStack
+            | LayoutCommand::ConsumeOrExpelWindow(_)
+    ) && let Some(space) = command_space
+        && layout.layout_engine.active_layout_mode_at(space)
+            == crate::common::config::LayoutMode::Floating
+    {
+        store_current_floating_positions(state, layout, space);
+    }
     let workspace_space = if requires_workspace_space {
         if let Some(space) = command_space {
             store_current_floating_positions(state, layout, space);
@@ -167,7 +178,7 @@ pub fn handle_command_layout(
         .with_arrange_space_scope(arrange_space_scope);
     outcome.broadcast_selection_changed = selection_changed;
     if is_move_node && let Some(window) = post_arrange_mouse_warp {
-        outcome = outcome.with_post_arrange_mouse_warp(window);
+        outcome.post_arrange_mouse_warp = Some(window);
     }
     // A toggle that found nothing to do leaves the answer unchanged, and earns
     // no halo.
@@ -184,23 +195,22 @@ fn current_floating_positions(
     state: &RiftState,
     layout: &LayoutManager,
     space: SpaceId,
-) -> Vec<(SpaceId, WindowId, objc2_core_foundation::CGRect)> {
+) -> Vec<(WindowId, objc2_core_foundation::CGRect)> {
+    let floats_by_layout = layout.layout_engine.active_layout_mode_at(space)
+        == crate::common::config::LayoutMode::Floating;
     layout
         .layout_engine
         .windows_in_active_workspace(&state.windows, space)
         .into_iter()
-        .filter(|window| layout.layout_engine.is_window_floating(*window))
+        .filter(|window| floats_by_layout || layout.layout_engine.is_window_floating(*window))
         .filter_map(|window| {
-            state.windows.window(window).map(|state| (space, window, state.frame_monotonic))
+            state.windows.window(window).map(|state| (window, state.frame_monotonic))
         })
         .collect()
 }
 
 fn store_current_floating_positions(state: &RiftState, layout: &mut LayoutManager, space: SpaceId) {
-    let positions = current_floating_positions(state, layout, space)
-        .into_iter()
-        .map(|(_, window, frame)| (window, frame))
-        .collect::<Vec<_>>();
+    let positions = current_floating_positions(state, layout, space);
     if !positions.is_empty() {
         layout.layout_engine.store_floating_window_positions(space, &positions);
     }
@@ -214,13 +224,19 @@ pub fn handle_command_metrics(cmd: MetricsCommand) -> anyhow::Result<EventOutcom
 pub fn handle_switch_native_space(
     direction: crate::layout_engine::Direction,
 ) -> anyhow::Result<EventOutcome> {
-    Ok(EventOutcome::no_change().with_native_space_switch(direction))
+    Ok(EventOutcome {
+        switch_native_space: Some(direction),
+        ..EventOutcome::default()
+    })
 }
 
 pub fn handle_mission_control_command(
     command: crate::actor::wm_controller::WmCmd,
 ) -> anyhow::Result<EventOutcome> {
-    Ok(EventOutcome::no_change().with_wm_command(command))
+    Ok(EventOutcome {
+        wm_commands: vec![command],
+        ..EventOutcome::default()
+    })
 }
 
 pub fn handle_close_window(
@@ -245,7 +261,10 @@ pub fn handle_config_updated(
 
     drag.update_config(config.settings.window_snapping);
 
-    Ok(EventOutcome::layout_changed(false).with_service_config_update(config.clone()))
+    Ok(EventOutcome {
+        service_config_update: Some(config.clone()),
+        ..EventOutcome::layout_changed(false)
+    })
 }
 
 pub fn handle_command_reactor_debug(
@@ -365,7 +384,7 @@ fn focus_window_raise_request(apps: &AppManager, window: WindowId) -> raise_mana
         raise_windows: Vec::new(),
         focus_window: Some((window, None)),
         app_handles,
-        focus_quiet: Quiet::No,
+        focus_quiet: Quiet::Yes,
     })
 }
 
@@ -437,7 +456,7 @@ pub fn handle_command_reactor_focus_window(
 
         outcome = outcome.with_raise_request(focus_window_raise_request(apps, window_id));
     } else if let Some(wsid) = window_server_id {
-        outcome = outcome.with_make_key_window(window_id.pid, wsid);
+        outcome.make_key_windows.push((window_id.pid, wsid));
     }
     Ok(outcome)
 }
@@ -487,4 +506,86 @@ pub fn handle_command_reactor_move_window_to_display(
     Ok(EventOutcome::layout_changed(false)
         .with_layout_response(response, None)
         .with_pre_layout_window_frame_write(payload.window, payload.target_frame, true))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceWindowMove {
+    pub window: WindowId,
+    pub window_server_id: Option<WindowServerId>,
+    pub target_frame: objc2_core_foundation::CGRect,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveWorkspaceToDisplayPayload {
+    pub windows: Vec<WorkspaceWindowMove>,
+    pub source_space: SpaceId,
+    pub target_space: SpaceId,
+    pub target_screen: objc2_core_foundation::CGRect,
+}
+
+pub fn handle_command_reactor_move_workspace_to_display(
+    state: &mut RiftState,
+    layout: &mut LayoutManager,
+    workspace_switch: &mut WorkspaceSwitchManager,
+    payload: MoveWorkspaceToDisplayPayload,
+) -> anyhow::Result<EventOutcome> {
+    let MoveWorkspaceToDisplayPayload {
+        windows,
+        source_space,
+        target_space,
+        target_screen,
+    } = payload;
+
+    let moves = windows
+        .into_iter()
+        .filter(|window_move| {
+            if state.windows.window(window_move.window).is_some() {
+                true
+            } else {
+                warn!(
+                    window = ?window_move.window,
+                    "Skipping unknown window in workspace display move"
+                );
+                false
+            }
+        })
+        .collect::<Vec<_>>();
+    let window_ids = moves.iter().map(|window_move| window_move.window).collect::<Vec<_>>();
+    let response = layout.layout_engine.move_active_workspace_to_space(
+        &mut state.windows,
+        source_space,
+        target_space,
+        target_screen.size,
+        &window_ids,
+    );
+    if !response.changed {
+        return Ok(EventOutcome::no_change());
+    }
+
+    let mut applied_moves = Vec::with_capacity(moves.len());
+    for window_move in moves {
+        if state.windows.workspace_for_window(target_space, window_move.window).is_none() {
+            continue;
+        }
+        if let Some(window) = state.windows.window_mut(window_move.window) {
+            window.frame_monotonic = window_move.target_frame;
+        }
+        if let Some(window_server_id) = window_move.window_server_id {
+            state.windows.set_window_server_space(window_server_id, Some(target_space));
+            state.windows.mark_window_visible(window_server_id);
+        }
+        applied_moves.push(window_move);
+    }
+
+    workspace_switch.start_workspace_switch(WorkspaceSwitchOrigin::Manual);
+    let mut outcome =
+        EventOutcome::layout_changed(false).with_layout_response(response, Some(target_space));
+    for window_move in applied_moves {
+        outcome = outcome.with_pre_layout_window_frame_write(
+            window_move.window,
+            window_move.target_frame,
+            true,
+        );
+    }
+    Ok(outcome)
 }

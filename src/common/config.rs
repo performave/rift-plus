@@ -1286,7 +1286,7 @@ pub struct LayoutSettings {
     /// Settings inherited by every layout type unless overridden by its table.
     #[serde(flatten)]
     pub base: BaseLayoutSettings,
-    /// Layout mode: "traditional", "bsp", "stack", "master_stack", or "scrolling"
+    /// Layout mode: "traditional", "bsp", "stack", "master_stack", "scrolling", or "floating"
     #[serde(default)]
     pub mode: LayoutMode,
     /// Whether directional focus may land on a floating window.
@@ -1636,6 +1636,7 @@ impl LayoutSettings {
             LayoutMode::Stack => &self.stack.base,
             LayoutMode::MasterStack => &self.master_stack.base,
             LayoutMode::Scrolling => &self.scrolling.base,
+            LayoutMode::Floating => &self.base,
         }
     }
 
@@ -2126,7 +2127,7 @@ impl Config {
             }
         } else {
             // Use dynamically generated builtin candidates.
-            let builtin_candidates = crate::actor::wm_controller::WmCommand::builtin_candidates();
+            let builtin_candidates = crate::actor::wm_controller::WmCmd::snake_case_variants();
             for cand in builtin_candidates.iter() {
                 let dist = Self::levenshtein(&unknown_token, &cand.to_lowercase());
                 if best.is_none() || dist < best.as_ref().unwrap().1 {
