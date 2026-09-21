@@ -1441,9 +1441,17 @@ def main() -> int:
             base = snapshot(f"baseline {mode}")
             if retiled:
                 print(f"  (re-tiled {retiled} window(s) first)", flush=True)
+            tiled_now = sum(1 for r in base["windows"].values() if r[2])
             print(f"  baseline: {len(base['windows'])} window(s), "
-                  f"{sum(1 for r in base['windows'].values() if r[2])} tiled", flush=True)
+                  f"{tiled_now} tiled", flush=True)
+            if tiled_now == 0:
+                print(f"  SKIPPING {mode}: nothing is tiled, every result "
+                      "below would be vacuous", flush=True)
+                continue
             for name in wanted:
+                reset = reset_between_scenarios()
+                if reset:
+                    print(f"    (reset: {reset})", flush=True)
                 started = time.time()
                 try:
                     SCENARIOS[name](base)
