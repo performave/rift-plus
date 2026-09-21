@@ -158,7 +158,44 @@ test:
 churn *ARGS:
     ./scripts/display-churn.py {{ARGS}}
 
-# Format only the files you changed (never --all; see AGENTS.md).
+# The files the format gates judge: everything in commits you have not pushed
+# yet, plus whatever is still in the working tree.
+#
+# The commit half is the part that matters. CI checks the files a *push*
+# touched, so a file stopped being examined here the moment it was committed:
+# the working-tree question `git diff HEAD` asks goes empty, and a gate with
+# nothing to check exited 0 and read as a pass. `just check` on a clean tree
+# was therefore green without having run rustfmt over anything -- which is the
+# state every release is cut in, since `just tag` refuses a dirty tree.
+# Asking origin/main..HEAD instead puts exactly what the next push will be
+# judged on back in view.
+#
+# Deliberately not the fork's whole diff from upstream. That is 118 files, and
+# the unformatted lines in most of them are upstream's own; rewriting those is
+# the wholesale reformat AGENTS.md forbids, and it would wreck rebasing.
+_fmt-files:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {
+        # `--not --remotes=upstream` matches nothing when upstream has never
+        # been fetched, and an empty --not silently widens the range to the
+        # whole history -- every file in the repo, the one outcome this must
+        # never produce. So both refs have to exist before the range is asked.
+        if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null &&
+           [ -n "$(git for-each-ref --count=1 refs/remotes/upstream/)" ]; then
+            git log origin/main..HEAD --no-merges --not --remotes=upstream \
+                --name-only --pretty=format: -- '*.rs' | sed '/^$/d'
+        else
+            echo "just: no origin/main or upstream/* locally -- checking the working tree only" >&2
+        fi
+        git diff --name-only --diff-filter=d HEAD -- '*.rs'
+        git ls-files -o --exclude-standard -- '*.rs'
+    } | sort -u | while IFS= read -r f; do
+        # `git log` still names a file a later commit deleted or renamed away.
+        [ -f "$f" ] && printf '%s\n' "$f"
+    done
+
+# Format the files you changed and have not pushed (never --all; see AGENTS.md).
 #
 # --skip-children is what keeps that promise. rustfmt follows `mod`
 # declarations, so formatting a module root reformats everything below it:
@@ -167,16 +204,20 @@ churn *ARGS:
 fmt:
     #!/usr/bin/env bash
     set -euo pipefail
-    files=$(git diff --name-only --diff-filter=d HEAD -- '*.rs'; git ls-files -o --exclude-standard -- '*.rs')
+    files="$(just _fmt-files)"
     [ -z "$files" ] && { echo "nothing to format"; exit 0; }
-    echo "$files" | sort -u | xargs rustfmt +nightly --edition 2024 --unstable-features --skip-children
+    echo "$files" | xargs rustfmt +nightly --edition 2024 --unstable-features --skip-children
+    echo "rustfmt: formatted $(printf '%s\n' "$files" | wc -l | tr -d ' ') file(s)"
 
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    files=$(git diff --name-only --diff-filter=d HEAD -- '*.rs'; git ls-files -o --exclude-standard -- '*.rs')
-    [ -z "$files" ] && exit 0
-    echo "$files" | sort -u | xargs rustfmt +nightly --edition 2024 --unstable-features --skip-children --check
+    files="$(just _fmt-files)"
+    # Said out loud on purpose. An empty set exiting 0 in silence is what let a
+    # vacuous run pass for a real one.
+    [ -z "$files" ] && { echo "rustfmt: nothing to check"; exit 0; }
+    echo "rustfmt: checking $(printf '%s\n' "$files" | wc -l | tr -d ' ') file(s)"
+    echo "$files" | xargs rustfmt +nightly --edition 2024 --unstable-features --skip-children --check
 
 # --------------------------------------------------------------------------
 # Releasing. See docs/releasing.md; the workflow does the building.

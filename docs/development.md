@@ -48,7 +48,7 @@ you swap in locally.
 | `just logs` | tail both service logs |
 | `just sa` | re-inject the scripting addition (after a Dock restart or reboot) |
 | `just check` | what CI runs: fmt, `cargo check --locked`, `cargo test` |
-| `just fmt` | format **only** changed files |
+| `just fmt` | format **only** the files you changed and have not pushed |
 | `just release <version>` | see [releasing.md](releasing.md) |
 
 ## Display churn
@@ -62,6 +62,18 @@ the machine. See [display-churn.md](display-churn.md).
 The committed tree predates the current nightly rustfmt: `cargo +nightly fmt
 --all` rewrites roughly a hundred files nobody touched. `just fmt` formats only
 files you have actually changed, which is what you want in every case.
+
+"Changed" means the files in commits you have not pushed yet, plus whatever is
+still in the working tree — the same set the next push's CI run will judge.
+Both halves matter. A file you have committed is no longer a working-tree
+change, so a gate that asks only `git diff HEAD` stops seeing it: the drift
+becomes invisible locally and surfaces on the push instead. That is worth
+knowing because `just tag` refuses a dirty tree, so the tree is *always* clean
+when you cut a release, which used to make the format half of `just check` a
+no-op at exactly the moment you were trusting it.
+
+`just fmt-check` now says how many files it looked at, and says so when the
+answer is none — an empty run and a real one should never look alike.
 
 ## Gotchas
 
