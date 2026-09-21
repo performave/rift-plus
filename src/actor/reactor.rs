@@ -4690,9 +4690,7 @@ impl Reactor {
             return;
         }
         if let Some(input_tx) = &self.communication_manager.input_tx {
-            _ = input_tx.send(crate::actor::input::Request::SetFloatDragStrips(
-                strips.clone(),
-            ));
+            _ = input_tx.send(crate::actor::input::Request::SetFloatDragStrips(strips.clone()));
         }
         self.last_float_strips = strips;
     }

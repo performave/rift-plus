@@ -3677,7 +3677,8 @@ impl LayoutEngine {
     fn ensure_workspace_layouts(&mut self, space: SpaceId, screen_size: CGSize) {
         for (workspace_id, _) in self.virtual_workspace_manager.list_workspaces(space) {
             let tree = &mut self.virtual_workspace_manager.workspaces[workspace_id].layout_system;
-            self.workspace_layouts.ensure_active_for_workspace(screen_size, workspace_id, tree);
+            self.workspace_layouts
+                .ensure_active_for_workspace(screen_size, workspace_id, tree);
         }
     }
 
@@ -3713,9 +3714,7 @@ impl LayoutEngine {
         ) {
             if was_floating {
                 self.floating.add_active(source_space, window_id.pid, window_id);
-            } else if let Some(source_layout) =
-                self.workspace_layouts.active(source_workspace_id)
-            {
+            } else if let Some(source_layout) = self.workspace_layouts.active(source_workspace_id) {
                 self.workspace_tree_mut(source_workspace_id)
                     .add_window_after_selection(source_layout, window_id);
             }
@@ -3725,9 +3724,7 @@ impl LayoutEngine {
             self.floating_positions.remove_window(window_id);
             self.floating.add_active(target_space, window_id.pid, window_id);
             self.floating.set_last_focus(Some(window_id));
-        } else if let Some(target_layout) =
-            self.workspace_layouts.active(target_workspace_id)
-        {
+        } else if let Some(target_layout) = self.workspace_layouts.active(target_workspace_id) {
             self.workspace_tree_mut(target_workspace_id)
                 .add_window_after_selection(target_layout, window_id);
         }
