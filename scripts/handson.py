@@ -254,10 +254,13 @@ def main():
     note(f"displays now: {[(d.get('name'), d.get('space')) for d in (q('displays') or [])]}")
     sh("launchctl bootout gui/$(id -u)/vdisp"); settle(6)
     shot("unplugged")
-    back = tiled_frames(space)
-    note(f"{len(back)} tiled window(s) on desktop {space} after the round trip")
-    if not back:
-        fail("the desktop came back empty after a plug/unplug")
+    back = {}
+    for s in shown_spaces() + [space]:
+        back.update(tiled_frames(s))
+    note(f"{len(back)} tiled window(s) across every desktop after the round trip")
+    if len(back) < len(frames):
+        fail(f"{len(frames)} tiled before the churn, {len(back)} after: "
+             f"{sorted(set(frames) - set(back))}")
 
     print(f"\nscreenshots in {SHOTS}")
     if FAILURES:

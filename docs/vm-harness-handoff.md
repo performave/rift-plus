@@ -284,6 +284,13 @@ Its own failures were all aim, and each is a trap in its own right:
 - **The modifier's two buttons do different jobs.** `action1` is on the left
   and `action2` on the right, and this config maps move and resize
   respectively — so a resize test that sends the left button is testing move.
+- **Count windows across every desktop, not the one you started on.** In
+  `spaces` mode a departing display hands its desktops back and windows
+  legitimately end up on a different one. Counting a single desktop reported
+  five tiled windows becoming three after a plug/unplug and read as a loss;
+  counting all of them gives five, and a separate census plus the trace
+  (`reconcile [0,0,0,16]`, `pass_done ["Back",16]`) confirms nothing was
+  stranded — the frames had only re-flowed for the remaining display.
 - **Modifier gestures are for floating windows.** On a tiled one they correctly
   do nothing. Float the window first, and grab three-quarters across rather
   than dead centre: the resize takes an edge, and the middle has no nearer one.
