@@ -109,13 +109,20 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
     CGEventPost instead, underneath Apple Events. A posted key goes to whatever
     is frontmost and a LaunchAgent is not an app, so the app has to be brought
     up first -- and `open -a` does not reliably win that race, so this checks
-    for what it asked for and asks again. Returns whether it got there.
+    for what it asked for and asks again.
+
+    The check is only made *after* the app has been brought up, because what
+    can be observed is whether a display is showing a fullscreen space, not
+    whether a given window is fullscreen. Fronting a different app switches
+    away from the fullscreen space and makes the state look cleared while
+    nothing has changed -- which is how a stuck Safari survived every attempt
+    to clear it and poisoned the runs that followed.
     """
     for _ in range(tries):
-        if bool(displays_showing_fullscreen()) == want:
-            return True
         sh(f'open -a "{app}"')
         time.sleep(2.5)
+        if bool(displays_showing_fullscreen()) == want:
+            return True
         # `open -a` picks the app, not the window, and three TextEdit documents
         # make "the front window" a coin toss. rift's own focus names the one
         # meant, and has to be redone on every attempt because `open -a` moves
@@ -125,6 +132,8 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
             time.sleep(1.0)
         sh(f"{DTOOL} fullscreen")
         time.sleep(2.5)
+    sh(f'open -a "{app}"')
+    time.sleep(2.0)
     return bool(displays_showing_fullscreen()) == want
 
 
@@ -242,6 +251,42 @@ def spawn_windows() -> None:
     time.sleep(10)
 
 
+def show_the_desktop_holding_the_windows() -> list:
+    """Switch each display to a desktop that has tiled windows on it.
+
+    Churn leaves windows on desktops nothing is showing -- which is a finding
+    in its own right, and also the thing that makes the *next* scenario start
+    with an empty tree and fail on its own precondition. A scenario cannot ask
+    about restoration if there is nothing tiled in front of it, so the baseline
+    goes and finds the windows. Returns what it had to switch, so a run says so
+    rather than quietly papering over it.
+    """
+    switched = []
+    for d in (rift("displays") or []):
+        shown = d.get("space")
+        listed = (d.get("active_space_ids") or []) + (d.get("inactive_space_ids") or [])
+        if shown is not None and any(
+            not w.get("is_floating")
+            for w in (rift("windows", "--space-id", str(shown)) or [])
+        ):
+            continue
+        for space in listed:
+            if space == shown:
+                continue
+            if not any(not w.get("is_floating")
+                       for w in (rift("windows", "--space-id", str(space)) or [])):
+                continue
+            order = all_space_ids(rift("displays") or [])
+            if space not in order:
+                continue
+            sh(f"{CLI} execute space switch-to {order.index(space) + 1}")
+            time.sleep(2)
+            if any(x.get("space") == space for x in (rift("displays") or [])):
+                switched.append((d.get("name"), shown, space))
+            break
+    return switched
+
+
 def displays_showing_fullscreen() -> list:
     """Displays whose shown desktop is a native-fullscreen space.
 
@@ -255,18 +300,26 @@ def displays_showing_fullscreen() -> list:
     return [d.get("name") for d in (rift("displays") or []) if d.get("space") is None]
 
 
-def clear_native_fullscreen(tries: int = 4) -> bool:
+def clear_native_fullscreen(tries: int = 3) -> bool:
     """Take every test app out of native fullscreen.
 
     Apps restore their saved window state, so a scenario that leaves Safari
     fullscreen leaves it fullscreen across relaunches and reboots too -- every
     later run then starts on a display with no desktop, tiles nothing, and
     reports an empty layout everywhere. Any baseline has to clear this first.
+
+    Each app is brought up and asked about in turn, because fronting an app is
+    what takes the display to that app's fullscreen space: an app nobody
+    fronted is indistinguishable from an app that is not fullscreen at all.
     """
-    for app in TEST_APPS:
-        if fullscreen_key(app, want=False, tries=tries):
+    for _ in range(tries):
+        still = []
+        for app in TEST_APPS:
+            if not fullscreen_key(app, want=False, tries=2):
+                still.append(app)
+        if not still:
             return True
-    return not displays_showing_fullscreen()
+    return not still
 
 
 def focus(w: dict) -> bool:
@@ -956,6 +1009,13 @@ def s_native_fullscreen_churn(base):
     # considers the churn to be settling is kept rather than recorded, and the
     # scenario would then be testing the previous run's leftovers.
     settle(8)
+    # The plug gives the external a fresh, empty desktop and shows it, so the
+    # windows are on a desktop nothing is showing -- and a fullscreen has to
+    # start from a window whose tree can be read.
+    for name, was, now in show_the_desktop_holding_the_windows():
+        print(f"      ({name} was showing empty desktop {was}; switched to {now})",
+              flush=True)
+    settle(3)
 
     # Safari for preference: it has one window, and a posted key goes to
     # whichever window of the app is frontmost, so an app with three of them
@@ -1351,6 +1411,17 @@ def main() -> int:
         return 2
 
     unplug(quiet=True); settle(2)
+    # Two things a previous run can leave behind that make every scenario after
+    # it vacuous: an app still in native fullscreen (its display then shows no
+    # desktop at all) and the windows sitting on a desktop nothing is showing.
+    # Neither is a failure of the scenario about to run, so both are put right
+    # here, out loud.
+    if not clear_native_fullscreen():
+        print(f"baseline: WARNING still fullscreen on {displays_showing_fullscreen()}")
+    found = show_the_desktop_holding_the_windows()
+    for name, was, now in found:
+        print(f"baseline: {name} was showing empty desktop {was}; "
+              f"switched to {now}, which holds the windows")
     base = snapshot("baseline")
     print(f"baseline: {render_displays(base)}")
     print(f"          {len(base['windows'])} window(s), "
