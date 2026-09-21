@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.5-plus.4] - 2026-09-21
+
 ### Added
 
 - **`mouse.edge_resize`.** Drag the boundary between two tiled windows to
@@ -1019,7 +1021,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.3...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.4...HEAD
+[0.5.5-plus.4]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.3...v0.5.5-plus.4
 [0.5.5-plus.3]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.2...v0.5.5-plus.3
 [0.5.5-plus.2]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.1...v0.5.5-plus.2
 [0.5.5-plus.1]: https://github.com/performave/rift-plus/compare/v0.5.3-plus.1...v0.5.5-plus.1
