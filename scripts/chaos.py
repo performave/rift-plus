@@ -263,6 +263,26 @@ def make_main(display_id: int) -> None:
     sh(f"{DTOOL} setmain {display_id}")
 
 
+def probe_display(displays, before=None):
+    """The probe display among `displays`: the one whose uuid is new.
+
+    Found by name it went missing. rift reports the name macOS gives the
+    screen, and in the guest both displays have come back as "Apple Virtual"
+    -- sometimes, not always, so `become-main` and `clamshell` failed with
+    "external display not visible to rift" in a run where `straggler-after-
+    return` found it by the same name a few minutes later. A display that was
+    not there before the plug is the probe whatever it is called. `before` is
+    the display list from before the plug; without one, fall back to the name.
+    """
+    displays = displays or []
+    if before is not None:
+        old = {d.get("uuid") for d in before}
+        new = [d for d in displays if d.get("uuid") not in old]
+        if new:
+            return new[0]
+    return next((d for d in displays if d.get("name") == "rift-vm-probe"), None)
+
+
 def settle(seconds: float = 4.0, converge: float = 10.0) -> None:
     """Wait out a display change: the fixed pause, then until rift agrees.
 
@@ -1135,7 +1155,7 @@ def s_different_monitor(base):
 def s_become_main(base):
     plug(); settle()
     a = snapshot("attached")
-    ext = next((d for d in a["displays"] if d.get("name") == "rift-vm-probe"), None)
+    ext = probe_display(a["displays"], base["displays"])
     if not ext:
         raise Violation("external display not visible to rift")
     make_main(int(ext["screen_id"])); settle()
@@ -1164,7 +1184,7 @@ def s_clamshell(base):
     """
     plug(); settle()
     a = snapshot("attached")
-    ext = next((d for d in a["displays"] if d.get("name") == "rift-vm-probe"), None)
+    ext = probe_display(a["displays"], base["displays"])
     if not ext:
         raise Violation("external display not visible to rift")
     make_main(int(ext["screen_id"])); settle()
@@ -1551,12 +1571,23 @@ def s_straggler(base):
         if len(parts) > 3 and "main=1" in line:
             before_main = parts[0]
             break
-    ext = next((d for d in (rift("displays") or [])
-                if d.get("name") == "rift-vm-probe"), None)
+    ext = probe_display(rift("displays"), base["displays"])
     if not ext:
         raise Violation("external display not visible to rift")
     make_main(int(ext["screen_id"]))
     settle(3)
+
+    # And the pointer on it. `space create` acts on the display under the
+    # pointer by default (`space_target = "pointer"`), not the menu bar's --
+    # the rule this scenario was written against -- so with the mouse left on
+    # the original display the desktop was created there, the external kept
+    # one desktop, and the precondition check below stopped the run.
+    fr = ext.get("frame") or {}
+    o, sz = fr.get("origin", {}), fr.get("size", {})
+    cx = o.get("x", 0) + sz.get("width", 0) / 2
+    cy = o.get("y", 0) + sz.get("height", 0) / 2
+    sh(f"{os.path.dirname(CLI)}/mtool move {cx:.0f} {cy:.0f}")
+    time.sleep(0.5)
 
     rift_exec("space create")
     settle(3)
@@ -1564,7 +1595,8 @@ def s_straggler(base):
     settle(3)
     a = snapshot("attached, external showing an empty desktop")
 
-    external = [d for d in a["displays"] if d.get("name") == "rift-vm-probe"]
+    found = probe_display(a["displays"], base["displays"])
+    external = [found] if found else []
     if not external:
         raise Violation("external display not visible to rift")
     desktops = len(external[0].get("active_space_ids") or []) \
