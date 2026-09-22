@@ -1031,8 +1031,22 @@ def s_clamshell(base):
     make_main(int(ext["screen_id"])); settle()
     main_held = snapshot("probe is main")
 
+    # Prove the scenario is doing what its name says before trusting a PASS.
+    # A `make_main` that silently did nothing leaves an ordinary unplug wearing
+    # a clamshell label, and an ordinary unplug is already covered five times
+    # over.
+    who = [ln.split()[0] for ln in sh(f"{DTOOL} list").splitlines()
+           if "main=1" in ln]
+    if who != [str(ext["screen_id"])]:
+        raise Violation(f"probe did not become main: dtool says main={who}, "
+                        f"probe is {ext['screen_id']} -- the scenario would be "
+                        "testing an ordinary unplug")
+    print(f"    (probe {ext['screen_id']} is main; removing it)", flush=True)
+
     # Lid shut: the display owning the menu bar disappears.
     unplug(); settle(8)
+    if display_count() != 1:
+        raise Violation("the main display did not actually leave")
     check_full(base, snapshot("main display gone"), "clamshell shut")
 
     # Lid open: it comes back, and should take its desktops with it.

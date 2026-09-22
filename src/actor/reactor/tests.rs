@@ -9468,6 +9468,42 @@ mod display_archive {
         moves
     }
 
+    /// The case the per-display pairing could not see. macOS does not
+    /// guarantee the desktop it mints for a return lands on the display that
+    /// lost one -- the recorded clamshell trace has a space change display
+    /// twenty times in one session -- and while the pairing looked only at the
+    /// returning display's own fresh desktops, a replacement minted anywhere
+    /// else was unfindable. The destroyed desktop then had nothing to stand in
+    /// for it and its windows had nowhere to go, which is what "windows on the
+    /// wrong desktop, and a desktop missing" looks like from the outside.
+    #[test]
+    fn a_replacement_minted_on_the_other_display_is_still_found() {
+        let mut f = spaces_fixture();
+        unplug(&mut f);
+        assert!(f.reactor.display_archive.record().is_some());
+
+        // The fresh desktop comes back under the *survivor*, not under the
+        // display that lost one.
+        managed(vec![
+            ("test-display-0", vec![space1(), space2_returned()]),
+            (DISPLAY2, vec![]),
+        ]);
+        replug(&mut f);
+
+        let expected: Vec<(u32, u64)> = f
+            .exiled_wsids
+            .iter()
+            .map(|wsid| (wsid.as_u32(), space2_returned().get()))
+            .collect();
+        assert_eq!(
+            sorted_moves(),
+            expected,
+            "the exiled windows follow their desktop to whichever display it \
+             was minted on"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     #[test]
     fn spaces_mode_puts_a_destroyed_departed_desktop_back_on_replug() {
         let mut f = spaces_fixture();
