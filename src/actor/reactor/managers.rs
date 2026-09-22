@@ -292,6 +292,10 @@ pub struct RecordingManager {
 /// Manages layout engine state
 pub struct LayoutManager {
     pub layout_engine: LayoutEngine,
+    /// Desktops nobody is showing that the next arrange pass must visit
+    /// anyway, because a window arrived on one of them. See
+    /// `spaces_to_arrange`.
+    pub arrange_pending: HashSet<SpaceId>,
 }
 
 pub type LayoutResult = Vec<(SpaceId, Vec<(WindowId, CGRect)>)>;
@@ -367,6 +371,14 @@ impl LayoutManager {
     /// the engine has no display for is exactly one that came across.
     /// Arranging it writes the record back, so each such desktop is caught up
     /// once and the pass narrows to the shown desktops again.
+    ///
+    /// The record only says the desktop was arranged *once*, though, and a
+    /// window can arrive on a desktop in the background — an app reopening
+    /// its saved window is the everyday way. rift admits it, files it in that
+    /// desktop's tree and counts it tiled, and with the desktop skipped here
+    /// it is never given a frame: it keeps whatever the app asked for, which
+    /// after a churn is wherever that app last sat. `arrange_pending` is how
+    /// those desktops ask to be visited once more.
     fn spaces_to_arrange(
         reactor: &Reactor,
         screens: &[ScreenInfo],
@@ -388,9 +400,11 @@ impl LayoutManager {
                 }
                 let engine = &reactor.layout_manager.layout_engine;
                 // A desktop the engine already places on a display was
-                // arranged for that display's screen and needs nothing; one
-                // it has never exposed has no tree to arrange.
-                if engine.display_uuid_for_space(space).is_some()
+                // arranged for that display's screen and needs nothing unless
+                // a window has landed on it since; one it has never exposed
+                // has no tree to arrange.
+                if (engine.display_uuid_for_space(space).is_some()
+                    && !reactor.layout_manager.arrange_pending.contains(&space))
                     || !engine.has_active_layout(space)
                 {
                     continue;
@@ -427,6 +441,8 @@ impl LayoutManager {
                 );
                 continue;
             }
+            // Caught up as of this pass; only a fresh arrival asks again.
+            reactor.layout_manager.arrange_pending.remove(&space);
             let display_uuid_opt = screen.display_uuid_owned();
             let gaps = reactor
                 .config

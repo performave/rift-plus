@@ -8942,6 +8942,76 @@ fn a_desktop_handed_over_by_a_departed_display_is_laid_out_for_its_new_screen() 
     }
 }
 
+/// An app puts a window back on a desktop its display is not showing — Safari
+/// restoring its saved window on relaunch is the everyday case. rift admits
+/// it, files it in that desktop's tree and counts it tiled, and then never
+/// lays it out, because the arrange pass skips any desktop the engine already
+/// places on a live display. The window keeps the frame the app chose, which
+/// after a churn is wherever that app last sat: in the VM guest, Safari's own
+/// `(2600,260,1324x856)` on a Mac whose one screen ends at x=2550, confirmed
+/// against the window server rather than only rift's record.
+#[test]
+fn a_window_that_arrives_on_a_desktop_nobody_is_showing_is_still_laid_out() {
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+    let (shown, other) = (SpaceId::new(1), SpaceId::new(2));
+    let owns_both = |state: &mut crate::actor::spaces::ForwardedSpaceState| {
+        state.has_seen_display_set = true;
+        state.display_space_ids.insert("test-display-0".to_string(), vec![shown, other]);
+    };
+
+    let mut reactor = test_reactor();
+    reactor.add_test_app(1);
+
+    // The display shows `other` first, so the engine records it there — which
+    // is what an ordinary desktop the user has visited looks like.
+    reactor.handle_event(space_state_event_with(
+        vec![screen],
+        vec![Some(other)],
+        owns_both,
+    ));
+    reactor.update_layout_or_warn(false, false, None);
+    assert_eq!(
+        reactor.layout_manager.layout_engine.display_uuid_for_space(other).as_deref(),
+        Some("test-display-0"),
+        "the fixture must leave the engine placing `other` on the live display"
+    );
+
+    // The user switches away. Nothing is showing `other` now.
+    reactor.handle_event(space_state_event_with(
+        vec![screen],
+        vec![Some(shown)],
+        owns_both,
+    ));
+
+    // The app opens its window there, at the frame it saved for itself.
+    let wid = WindowId::new(1, 1);
+    let wsid = WindowServerId::new(101);
+    let app_chosen = CGRect::new(CGPoint::new(2600., 260.), CGSize::new(1324., 856.));
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![other.get()]));
+    reactor.add_test_window(wid, wsid, Some(other), app_chosen);
+    let workspace = reactor.test_workspace(other, 0);
+    assert!(reactor.assign_test_window_to_workspace(other, wid, workspace));
+    reactor.send_layout_event(LayoutEvent::WindowAdded(other, wid));
+    reactor.update_layout_or_warn(false, false, None);
+
+    assert!(
+        reactor.layout_manager.layout_engine.is_window_tiled(other, wid),
+        "the fixture must leave the window in the tree; otherwise it is a float \
+         and keeping its own frame is correct"
+    );
+    let frame = reactor.state.windows.window(wid).unwrap().frame_monotonic;
+    assert!(
+        frame.origin.x >= screen.origin.x
+            && frame.origin.y >= screen.origin.y
+            && frame.max().x <= screen.max().x
+            && frame.max().y <= screen.max().y,
+        "a window rift counts as tiled is left at {frame:?}, the frame its app \
+         chose, off the edge of the only screen there is ({screen:?})"
+    );
+
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+}
+
 // ---------------------------------------------------------------------------
 // Display archive: a display's layout survives the display going away.
 // ---------------------------------------------------------------------------

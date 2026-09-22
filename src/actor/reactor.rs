@@ -708,7 +708,10 @@ impl Reactor {
             one_space,
             command_error: None,
             app_manager: managers::AppManager::new(),
-            layout_manager: managers::LayoutManager { layout_engine },
+            layout_manager: managers::LayoutManager {
+                layout_engine,
+                arrange_pending: HashSet::default(),
+            },
             state: RiftState::default(),
             space_state: ForwardedSpaceState::default(),
             space_activation_policy: SpaceActivationPolicy::new(),
@@ -6165,6 +6168,19 @@ impl Reactor {
         (visible_spaces, visible_space_centers)
     }
 
+    /// The desktops a layout event can put a window on. Only the events that
+    /// name one: a window whose desktop rift cannot name is not one this can
+    /// help, and it will be laid out when its desktop next comes forward.
+    fn spaces_a_window_may_have_arrived_on(event: &LayoutEvent) -> Vec<SpaceId> {
+        match event {
+            LayoutEvent::WindowObserved(space, _) | LayoutEvent::WindowAdded(space, _) => {
+                vec![*space]
+            }
+            LayoutEvent::WindowDiscoveryCompleted(_, _, spaces) => spaces.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     fn send_layout_event(&mut self, event: LayoutEvent) {
         // Nothing that is not admitted goes into a layout, whichever path asks.
         // Discovery checks this, but the drag-end and cross-space paths did
@@ -6207,6 +6223,17 @@ impl Reactor {
             LayoutEvent::WindowRemoved(wid)
                 if self.layout_manager.layout_engine.focused_window() == Some(wid)
         );
+        // A window arriving on a desktop no display is showing — an app
+        // reopening the window it saved, a discovery sweep finding one behind
+        // the desktop in front — goes into that desktop's tree and is counted
+        // tiled, but the arrange pass has no reason to visit a desktop nobody
+        // is looking at, so nothing ever gives it a frame. Ask for the visit
+        // here, while the event still says which desktop it landed on.
+        for space in Self::spaces_a_window_may_have_arrived_on(&event) {
+            if self.space_state.screens.iter().all(|screen| screen.space != Some(space)) {
+                self.layout_manager.arrange_pending.insert(space);
+            }
+        }
         let event_clone = event.clone();
         let layout_outcome =
             self.layout_manager.layout_engine.handle_event(&mut self.state.windows, event);

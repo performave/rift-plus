@@ -98,6 +98,17 @@ Entries describe this fork's changes relative to
   still counted them tiled. Each adopted desktop is now caught up once, when it
   arrives.
 
+- **A window that opens on a desktop nobody is showing is laid out anyway.**
+  The arrange pass visits the desktop each display shows, and — since the fix
+  above — an adopted one, once. A window arriving in the background on any
+  other desktop was admitted, filed in that desktop's tree and counted tiled,
+  and then never given a frame: it kept whatever the app asked for, which for
+  an app restoring its saved window is wherever it last sat. In the VM guest
+  that was Safari at `(2600,260,1324x856)` on a Mac whose one screen ends at
+  x=2550 -- off the edge of everything, in the window server and not only in
+  rift's record, and it stayed there until a display churn happened to force
+  the desktop to be arranged. Such a desktop now asks for one more visit.
+
 - **The mouse gestures survive the sync.** Upstream's event tap subscribes to
   mouse down and up but not *dragged*, because it acquires drags through AX.
   This fork drives modifier drags, the tile-edge grab and the float-strip
