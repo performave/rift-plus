@@ -705,6 +705,36 @@ their desktop lays them out at once, like any hidden desktop. And released
 mid-churn, TextEdit windows report their default 673x439 -- the size that kept
 turning up in overlap reports.
 
+## Aftercare, and a window that drifted a desktop per replug (2026-09-22)
+
+Over six plug/unplug cycles after a `straggler-after-return` run, aftercare
+sent one window to a new desktop at every return -- 310, 314, 318, 322, 325,
+329 -- and it ended in no tree on a stand-in desktop nobody was showing.
+
+**One cause found and fixed.** The return pass registers every window it sends
+(`homing_destination`), so the report of the window arriving wins over a frame
+write still pending for the tree it left. Aftercare runs after the pass has
+ended and did not register its sends, so the arrival was overruled and rift
+kept the window in the tree it had left. It now records its sends, and a unit
+test (`a_window_aftercare_sends_home_is_taken_to_have_arrived_there`, which
+fails without the change) pins it -- the first unit test aftercare has had.
+
+**Measured in the guest, the ending changed but the cycle did not.** With the
+fix, the same trigger ends with all five windows tiled on the desktop the
+display is showing, where before one ended hidden and untiled. Aftercare still
+sends one window to the replacement desktop each cycle, and macOS puts it back.
+That comes from the record taking a window's home from *tree membership*, which
+lags, rather than from where the window server had it -- at every departure
+the server had it on the shown desktop. The pre-churn snapshot's `homes`
+carries the server's answer; the record uses it only to fill gaps. Letting it
+override the tree where they disagree is the likely fix, but the snapshot is
+taken at the first sign of a churn, when other windows may already be moving,
+so it wants its own evidence before it is trusted over the tree.
+
+The control for this was inconclusive in one run: the trigger (aftercare firing
+at all) needs `straggler-after-return` to catch a straggler, which it does
+roughly half the time.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
