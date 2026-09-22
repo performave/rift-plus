@@ -86,6 +86,25 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **A window coming back from native fullscreen is put back where the layout
+  wants it.** It could be left covering the whole display, on top of a
+  perfectly good tiling, and stay there. rift skips writing a window's frame
+  when the frame it has recorded already matches what the layout wants -- but
+  macOS resizes a window for fullscreen itself, and the report of that is not
+  always one rift keeps, so the recorded frame could be the one rift last wrote
+  while the window was actually full-screen-sized. Every arrange after that
+  compared the right answer against the wrong record, concluded there was
+  nothing to do, and the window never moved again. Reproduced with a display
+  attached: the layout said 61x1239, the window was at 0x2550, and it stayed
+  there through twenty seconds and every arrange in them.
+
+- **`query windows` reports `is_tiled`.** `is_floating` only ever said whether
+  a window was in the *floating* set, and a window can be in neither: one away
+  in native fullscreen, or on a desktop rift has not laid out, is in no tree
+  and is not floating either. Anything reading `is_floating: false` as "tiled"
+  counted such a window into a tiling it has no part in. The two flags together
+  now name that third state rather than hiding it.
+
 - **A window on a desktop you have never visited comes back from a churn.**
   When a display leaves, rift records where everything was so it can put it
   back. That record was built from the layout trees, and the trees only cover
