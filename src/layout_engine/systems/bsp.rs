@@ -1424,6 +1424,68 @@ mod tests {
         );
     }
 
+    /// A drag is a run of resizes, not one. Each carries the *previous
+    /// target* as its old frame, and while the immovable edge is the one being
+    /// dragged none of those targets is ever realised -- so anchoring the
+    /// replacement boundary to the old frame walks the anchor along with the
+    /// drag, and the window resizes against the direction of the gesture.
+    #[test]
+    fn dragging_the_screen_side_edge_follows_the_gesture_over_a_whole_drag() {
+        let mut system = BspLayoutSystem::default();
+        let layout = system.create_layout();
+        let w1 = w(101);
+        let w2 = w(102);
+        system.add_window_after_selection(layout, w1);
+        system.add_window_after_selection(layout, w2);
+
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1600.0, 900.0));
+        let gaps = crate::common::config::GapSettings::default();
+        let widths = |system: &mut BspLayoutSystem| -> (f64, f64) {
+            let frames: HashMap<WindowId, CGRect> = system
+                .calculate_layout(
+                    layout,
+                    screen,
+                    0.0,
+                    &Default::default(),
+                    &Default::default(),
+                    0.0,
+                    Default::default(),
+                    Default::default(),
+                )
+                .into_iter()
+                .collect();
+            (
+                frames.get(&w1).expect("w1").size.width,
+                frames.get(&w2).expect("w2").size.width,
+            )
+        };
+
+        let start = widths(&mut system).1;
+        // The gesture: the pointer walks left, so the window it is pulling on
+        // gets narrower, step by step. `old_frame` is the previous target, as
+        // the reactor sends it.
+        let origin = CGPoint::new(screen.max().x - start, 0.0);
+        let mut previous = CGRect::new(origin, CGSize::new(start, 900.0));
+        let mut seen = vec![start];
+        for step in 1..=6 {
+            let want = start - (step as f64) * 60.0;
+            let asked = CGRect::new(previous.origin, CGSize::new(want, 900.0));
+            system.on_window_resized(layout, w2, previous, asked, screen, &gaps);
+            seen.push(widths(&mut system).1);
+            previous = asked;
+        }
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1] < pair[0] + 1.0,
+                "the window must not grow while the drag is shrinking it: {seen:?}"
+            );
+        }
+        assert!(
+            seen.last().unwrap() < &(start - 200.0),
+            "and must actually follow the gesture: {seen:?}"
+        );
+    }
+
     #[test]
     fn non_binding_window_minimum_keeps_half_split_centered() {
         let mut system = BspLayoutSystem::default();
@@ -2231,14 +2293,24 @@ impl LayoutSystem for BspLayoutSystem {
                         self.move_edge_to(&rects, node, true, false, new_frame.max().x, gap)
                     };
                     if !moved {
+                        // Anchored to where the layout actually has the window,
+                        // not to `old_frame`. During a drag `old_frame` is the
+                        // previous *target*, and while the immovable edge was
+                        // being dragged none of those targets were ever
+                        // realised -- so anchoring to it walked the anchor
+                        // along with the drag and moved the boundary the wrong
+                        // way. The edge that cannot move is where the tree says
+                        // it is, and that is the fixed point the new width has
+                        // to be measured from.
                         let width = new_frame.size.width;
+                        let here = rects.get(&node).copied().unwrap_or(old_frame);
                         if left && !right {
                             let _ = self.move_edge_to(
                                 &rects,
                                 node,
                                 true,
                                 false,
-                                old_frame.origin.x + width,
+                                here.origin.x + width,
                                 gap,
                             );
                         } else {
@@ -2247,7 +2319,7 @@ impl LayoutSystem for BspLayoutSystem {
                                 node,
                                 true,
                                 true,
-                                old_frame.max().x - width,
+                                here.max().x - width,
                                 gap,
                             );
                         }
@@ -2264,13 +2336,14 @@ impl LayoutSystem for BspLayoutSystem {
                     };
                     if !moved {
                         let height = new_frame.size.height;
+                        let here = rects.get(&node).copied().unwrap_or(old_frame);
                         if top && !bottom {
                             let _ = self.move_edge_to(
                                 &rects,
                                 node,
                                 false,
                                 false,
-                                old_frame.origin.y + height,
+                                here.origin.y + height,
                                 gap,
                             );
                         } else {
@@ -2279,7 +2352,7 @@ impl LayoutSystem for BspLayoutSystem {
                                 node,
                                 false,
                                 true,
-                                old_frame.max().y - height,
+                                here.max().y - height,
                                 gap,
                             );
                         }
