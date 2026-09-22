@@ -758,12 +758,36 @@ def check_mode(before: dict, after: dict, phase: str) -> None:
                             f"{shape['mode']} -> {after[sid].get('mode')}")
 
 
-def _rects(snap: dict):
-    """Tiled windows as (ident, app, x, y, w, h), grouped by desktop."""
+def shown_desktops(snap: dict) -> set:
+    """The desktops actually on a screen when the snapshot was taken."""
+    return {d.get("space") for d in snap["displays"] if d.get("space") is not None}
+
+
+def _rects(snap: dict, shown_only: bool = False):
+    """Tiled windows as (ident, app, x, y, w, h), grouped by desktop.
+
+    `shown_only` is what the geometry checks want, and getting this wrong is
+    the single largest source of false failures this harness has produced.
+    rift does not arrange a desktop no display is showing -- deliberately, and
+    the frames there are simply the last ones applied, which after a churn are
+    the ones from the display that has gone. Judged as geometry they read as
+    windows stranded off the edge of the world and windows piled on top of each
+    other, and they were reported as both for a long time.
+
+    Measured: across six plug/unplug transitions, offences on *shown* desktops
+    numbered zero, while a hidden desktop kept a window at x=2600 on a 56..2550
+    display -- and switching to that desktop laid it out at x=61 within seconds,
+    every time. The layout was never wrong; it had not been applied yet, which
+    is not the same thing and is not a fault.
+    """
     by_space = {}
+    allowed = shown_desktops(snap) if shown_only else None
     for ident, (sid, app, tiled, fr) in snap["windows"].items():
-        if tiled:
-            by_space.setdefault(sid, []).append((ident, app, *fr))
+        if not tiled:
+            continue
+        if allowed is not None and sid not in allowed:
+            continue
+        by_space.setdefault(sid, []).append((ident, app, *fr))
     return by_space
 
 
@@ -774,8 +798,10 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
     on top of each other -- a valid `mode=bsp` with 8 leaves and alternating
     splits told us nothing about whether the pixels were right. This is the
     check that looks at the geometry rift actually produced.
+
+    Only on the desktops being shown: see `_rects`.
     """
-    for sid, rects in _rects(snap).items():
+    for sid, rects in _rects(snap, shown_only=True).items():
         for ident, app, x, y, w, h in rects:
             if w <= 1 or h <= 1:
                 raise Violation(f"{phase}: desktop {sid}: {app} has a degenerate frame {w}x{h}")
@@ -793,7 +819,12 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
 
 
 def check_frames_within_display(snap: dict, phase: str, slack: int = 40) -> None:
-    """A tiled window must sit on a display, not off the edge of the world."""
+    """A tiled window must sit on a display, not off the edge of the world.
+
+    Only on the desktops being shown: see `_rects`. A window on a hidden
+    desktop wearing the frame the departed display gave it is the commonest
+    thing in a churn snapshot and says nothing about rift.
+    """
     bounds = []
     for d in snap["displays"]:
         fr = d.get("frame") or {}
@@ -801,7 +832,7 @@ def check_frames_within_display(snap: dict, phase: str, slack: int = 40) -> None
         bounds.append((o.get("x", 0), o.get("y", 0), sz.get("width", 0), sz.get("height", 0)))
     if not bounds:
         return
-    for sid, rects in _rects(snap).items():
+    for sid, rects in _rects(snap, shown_only=True).items():
         for ident, app, x, y, w, h in rects:
             if not any(x >= bx - slack and y >= by - slack
                        and x + w <= bx + bw + slack and y + h <= by + bh + slack
@@ -1555,8 +1586,14 @@ def main() -> int:
     if cmd == "frames":
         snap = snapshot("frames")
         print(f"displays: {render_displays(snap)}")
+        on_screen = shown_desktops(snap)
         for sid, rects in sorted(_rects(snap).items()):
-            print(f"  desktop {sid}: {len(rects)} tiled")
+            # Say which are shown. The frames on a hidden desktop are whatever
+            # was last applied to it, not what rift would lay out now, and
+            # reading them as geometry is how "windows stranded off-screen"
+            # got reported for weeks.
+            print(f"  desktop {sid}: {len(rects)} tiled"
+                  f"{'' if sid in on_screen else '  (hidden -- frames are stale, not wrong)'}")
             for ident, app, x, y, w, h in sorted(rects, key=lambda r: (r[3], r[2])):
                 print(f"    {app:14} ({x:5},{y:5}) {w:5}x{h:<5}")
         for fn, label in ((check_frames, "overlap/degenerate"),
