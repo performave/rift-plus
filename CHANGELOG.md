@@ -11,6 +11,15 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Added
+
+- **`query displays` reports each display's desktops in Mission Control
+  order**, as `space_ids`, beside the `active_space_ids` / `inactive_space_ids`
+  split it already had. The split cannot be zipped back together -- it throws
+  away where the shown desktop sat -- and that position is exactly the index
+  `space move-window` and `space switch` take. Anything scripting those
+  commands had to guess at the numbering the user sees; now it can read it.
+
 ### Changed
 
 - **Merged upstream through v0.5.10** (`c345d6a7`), the first sync since the
