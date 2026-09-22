@@ -98,6 +98,14 @@ Entries describe this fork's changes relative to
   attached: the layout said 61x1239, the window was at 0x2550, and it stayed
   there through twenty seconds and every arrange in them.
 
+- **`query windows` reports `min_size`** — the smallest size rift will grant a
+  window: the app's own declared minimum where it gives one, and otherwise the
+  figure rift has inferred from watching the app refuse. It is what a resize is
+  clamped against, and nothing could read it before, so an overlap between two
+  tiled windows gave no way to tell rift's arithmetic from an app rendering
+  larger than the slot it was handed. Omitted rather than reported as zero when
+  rift knows neither.
+
 - **`query windows` reports `is_tiled`.** `is_floating` only ever said whether
   a window was in the *floating* set, and a window can be in neither: one away
   in native fullscreen, or on a desktop rift has not laid out, is in no tree
