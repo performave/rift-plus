@@ -412,14 +412,29 @@ What the defects were, in the order they had to be found:
   keeps the peak. Both faults are a one-sample error differing only in sign,
   which is why fixing either alone moved the mean and left the symptom.
 
-**Not fixed: the dead zone at a window's size limits.** Past a floor or a
-ceiling the drag goes on accumulating movement the layout cannot deliver, so
-coming back does nothing until that slack is retraced. Measured on the host:
-gestures aiming at 100, 250 and 355 all ended at 480. Two attempts at
-re-anchoring were reverted -- adding the shortfall each update compounds it and
-collapsed a window to zero width; re-deriving the base inverted two of the six
-directional cases and blew another to full screen. It wants a considered fix,
-not a third patch.
+**The dead zone at a window's size limits: not demonstrated.** It was recorded
+here as an unfixed fault on the strength of three host gestures that aimed at
+100, 250 and 355 and all ended at 480. That measurement cannot tell a dead zone
+from a floor -- a window that will not go below 480 ends all three gestures at
+480 too -- so the two reverted attempts at re-anchoring (adding the shortfall
+each update compounded it and collapsed a window to zero width; re-deriving the
+base inverted two of six directional cases) were aimed at evidence that never
+established a fault.
+
+What separates them is a turn-around *inside* one gesture that comes back only
+part of the way: going all the way back lands on the origin whatever the
+implementation does. `scripts/resize-limit-test.py` does that, with
+`mtool path`, and measures the floor rather than assuming it. On this guest the
+floor is real -- 124px, a request for 40px refused -- and the returns are
+exact: zero slack on a single partial return, zero across four, and zero on a
+six-reversal spasm with four legs past the floor, over three runs.
+
+This does not clear the host. ChatGPT and Zen are Electron, their own minimums
+are far larger than TextEdit's, and a floor of ~480 is an entirely ordinary
+thing for them to have. What it does say is that the reported symptom is what
+an app floor looks like, and that nothing in rift's own accounting adds slack
+on top of it. Run the same test against those apps before calling it a fault
+again.
 
 ## What this guest cannot test at all
 
