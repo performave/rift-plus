@@ -220,10 +220,37 @@ believed:
 - **`vm-ab` piped the summary through `head -30`.** Fifteen scenarios' reasons
   do not fit, so the last few came back blank — which reads exactly like
   scenarios that failed without saying why.
+- **The guest re-ran old harness jobs at every login, and this is the one that
+  explains the other four.** Every one-shot the harness bootstraps is written
+  to `~/Library/LaunchAgents` with `RunAtLoad` and left there; `vm-ab` reboots
+  the guest as its first act, so each fires at the login that follows. A guest
+  was caught running five at once behind a battery — `chaos` re-running
+  whatever scenario list it last held, and `handson.py` **dragging with
+  synthetic mouse events the same windows the scenarios were measuring**.
+  Nothing about it is visible in a result: the battery does not crash or say
+  anything unusual, its numbers simply stop repeating. `vm-run` now deletes
+  each plist as soon as it is loaded (the job is registered by then, so it
+  still completes) and `vm-ab` refuses to start when anything other than
+  `rift-harness` and `vdisp` is in that directory.
+- **Two `vm-ab` runs can race the single guest.** Killing a wrapper loop let it
+  advance to its next iteration and start a second, which rebooted the guest,
+  wiped `layout.ron` and copied its own binary over the first one's. Neither
+  output mentions the other. There is a lock now — and `vm-ab` *compares* the
+  running version against the build that was asked for, rather than printing it
+  and moving on. Twice in one day a guardrail turned out to be a line of output
+  nobody checked against anything; if a script prints a value it is supposed to
+  be guarding, make it fail on the value instead.
 
 Until a battery repeats itself twice in a row, treat its count as a symptom of
-the harness, not a verdict on the build. Two runs of the same build on the same
-binary disagreed on six of fifteen before these four were fixed.
+the harness, not a verdict on the build. Before these were fixed, the same
+binary read 5, 10 and 13 failures in one afternoon.
+
+The general lesson, since this cost most of a day: **when a suite stops
+repeating, suspect the environment before the code, and look for something
+running that nobody started.** Four of the six causes were plausible
+test-design mistakes and each was worth fixing, but none of them explained the
+variance. The one that did was invisible from inside the harness and was found
+only by reading the guest's process and LaunchAgent list directly.
 
 ## Traps inside the harness itself
 
@@ -369,28 +396,29 @@ the first time. `just check` is green, and the hands-on pass is clean.
 
 ### The sync, measured
 
-Fifteen scenarios, run on the merged build and on the fork's `main` at the
-merge base, back to back on one guest with the same harness and the same
-`vm-ab` preamble:
+Fifteen scenarios on the merged build and on the fork's `main` at the merge
+base, run back to back on one guest, each side rebooted, given a fresh
+`layout.ron` and a baseline of five tiled windows, with the running binary's
+version checked against the build that was asked for:
 
 | | pre-merge `0.5.5-plus.5` | merged `0.5.10-plus.1` |
 | --- | --- | --- |
-| failed | 11 of 15 | 13 of 15 |
-| identical on both | 11 fail, 2 pass | — |
-| differed | `transient-glitch`, `straggler-after-return` — passed before, failed after |
+| failed | 12 of 15 | 12 of 15 |
+| agreed | 13 of 15 scenarios | |
+| differed | `fullscreen-across-churn` PASS → FAIL | `fullscreen-roundtrip` FAIL → PASS |
 
-**Eleven of the fifteen fail the same way on both builds**, and
-`Safari at (2600,260,1324,856)` — the same stranded frame, to the pixel —
-appears in both columns. That family is rift's pre-existing behaviour under
-churn; the sync did not introduce it and is not what to look at for it.
+**The sync does not change behaviour under churn.** The two scenarios that
+disagree swap directions between two fullscreen tests, which is a coin flip
+rather than a regression, and `resolution-churn` produced the byte-identical
+frame `TextEdit at (-1171,66,673,439)` on both builds.
 
-The two that differ are not yet regressions. `straggler-after-return` failed on
-the merged side while building its *own preconditions* — "external needs two
-desktops and has 1", which is `space create` acting on whichever display owns
-the menu bar, not a churn result. `transient-glitch` saw overlap in 33 mid-churn
-samples on merged and none on pre-merge, from a sampler that runs *during* the
-churn, where timing decides what it catches. A difference that does not repeat
-is timing; re-run both on both builds before believing either.
+The eleven shared failures are the findings already catalogued above — slot
+reordering, stranded frames, workspace leaks, stack destruction. The merge
+neither introduced nor fixed any of them.
+
+Treat the *column comparison* as the result and a single scenario's verdict as
+noisy: these same fifteen have swapped individual scenarios between runs of the
+same binary, while the totals stayed put.
 
 ### What a number from this battery is worth
 
