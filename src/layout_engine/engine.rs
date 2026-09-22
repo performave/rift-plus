@@ -3935,6 +3935,22 @@ impl LayoutEngine {
     /// the layout stops asking for less. Returns whether anything was learnt,
     /// which is the cue to lay out again so the neighbour gives up the space
     /// the window was never going to.
+    /// The smallest size rift has actually seen this window accept, when it
+    /// has seen one.
+    ///
+    /// The app's declared minimum (`WindowInfo::min_size`) is empty for most
+    /// windows -- TextEdit and Safari both report none -- so this inferred
+    /// figure is what a resize is really clamped against, and it is the only
+    /// answer to "was that overlap the layout's arithmetic or the app refusing
+    /// its slot?". Reported so a client can tell the two apart instead of
+    /// guessing, which every geometry finding in the churn harness had to.
+    pub fn observed_min_size(&self, window: WindowId) -> Option<CGSize> {
+        self.observed_min_sizes
+            .get(&window)
+            .copied()
+            .filter(|s| s.width > 0.0 || s.height > 0.0)
+    }
+
     pub fn note_observed_min_size(
         &mut self,
         window: WindowId,

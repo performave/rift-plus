@@ -547,10 +547,12 @@ def window_map(displays) -> dict:
                 wid = w.get("id") or {}
                 ident = f"{wid.get('pid')}:{wid.get('idx')}"
             fr = w.get("frame") or {}
+            mn = w.get("min_size") or {}
             located[str(ident)] = (
                 sid, w.get("app_name") or "?", is_tiled(w),
                 (round(fr.get("origin", {}).get("x", 0)), round(fr.get("origin", {}).get("y", 0)),
                  round(fr.get("size", {}).get("width", 0)), round(fr.get("size", {}).get("height", 0))),
+                (round(mn.get("width", 0)), round(mn.get("height", 0))),
             )
     return located
 
@@ -801,12 +803,14 @@ def _rects(snap: dict, shown_only: bool = False):
     """
     by_space = {}
     allowed = shown_desktops(snap) if shown_only else None
-    for ident, (sid, app, tiled, fr) in snap["windows"].items():
+    for ident, rec in snap["windows"].items():
+        sid, app, tiled, fr = rec[0], rec[1], rec[2], rec[3]
         if not tiled:
             continue
         if allowed is not None and sid not in allowed:
             continue
-        by_space.setdefault(sid, []).append((ident, app, *fr))
+        mn = rec[4] if len(rec) > 4 else (0, 0)
+        by_space.setdefault(sid, []).append((ident, app, *fr, mn))
     return by_space
 
 
@@ -819,22 +823,41 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
     check that looks at the geometry rift actually produced.
 
     Only on the desktops being shown: see `_rects`.
+
+    An overlap is now *classified* rather than just reported. An app given a
+    slot smaller than the size it declares it will not go below renders at that
+    minimum and spills into its neighbour -- which is the app obeying itself and
+    rift obeying the tree, and it reads identically to a layout that overlaps
+    windows. Every geometry finding here was ambiguous between the two until
+    rift started reporting `min_size`. The violation now says which, so a run
+    that trips on the confound is not filed as a layout fault.
     """
     for sid, rects in _rects(snap, shown_only=True).items():
-        for ident, app, x, y, w, h in rects:
+        for ident, app, x, y, w, h, mn in rects:
             if w <= 1 or h <= 1:
                 raise Violation(f"{phase}: desktop {sid}: {app} has a degenerate frame {w}x{h}")
 
         for i in range(len(rects)):
-            ia, aa, ax, ay, aw, ah = rects[i]
+            ia, aa, ax, ay, aw, ah, amn = rects[i]
             for j in range(i + 1, len(rects)):
-                ib, ab, bx, by, bw, bh = rects[j]
+                ib, ab, bx, by, bw, bh, bmn = rects[j]
                 ox = min(ax + aw, bx + bw) - max(ax, bx)
                 oy = min(ay + ah, by + bh) - max(ay, by)
-                if ox > tolerance and oy > tolerance:
-                    raise Violation(
-                        f"{phase}: desktop {sid}: tiled windows overlap by {ox}x{oy}px -- "
-                        f"{aa} at ({ax},{ay},{aw},{ah}) vs {ab} at ({bx},{by},{bw},{bh})")
+                if ox <= tolerance or oy <= tolerance:
+                    continue
+                # Which of the two is bigger than it was asked to be, and by
+                # enough to account for the overlap?
+                squeezed = []
+                for name, (w_, h_), (mw, mh) in ((aa, (aw, ah), amn), (ab, (bw, bh), bmn)):
+                    if mw and w_ >= mw - 1 and mw > 0 and ox <= mw:
+                        squeezed.append(f"{name} declares a {mw}px minimum width")
+                    if mh and h_ >= mh - 1 and mh > 0 and oy <= mh:
+                        squeezed.append(f"{name} declares a {mh}px minimum height")
+                why = ("  -- likely the app's own floor, not the layout's doing: "
+                       + "; ".join(squeezed)) if squeezed else ""
+                raise Violation(
+                    f"{phase}: desktop {sid}: tiled windows overlap by {ox}x{oy}px -- "
+                    f"{aa} at ({ax},{ay},{aw},{ah}) vs {ab} at ({bx},{by},{bw},{bh}){why}")
 
 
 def check_frames_within_display(snap: dict, phase: str, slack: int = 40) -> None:
@@ -852,7 +875,7 @@ def check_frames_within_display(snap: dict, phase: str, slack: int = 40) -> None
     if not bounds:
         return
     for sid, rects in _rects(snap, shown_only=True).items():
-        for ident, app, x, y, w, h in rects:
+        for ident, app, x, y, w, h, _mn in rects:
             if not any(x >= bx - slack and y >= by - slack
                        and x + w <= bx + bw + slack and y + h <= by + bh + slack
                        for bx, by, bw, bh in bounds):
@@ -1593,7 +1616,7 @@ def main() -> int:
         snap = snapshot("thinned")
         print(f"now {len(snap['windows'])} window(s), re-tiled {n}")
         for sid, rects in sorted(_rects(snap).items()):
-            for ident, app, x, y, w, h in sorted(rects, key=lambda r: (r[3], r[2])):
+            for ident, app, x, y, w, h, _mn in sorted(rects, key=lambda r: (r[3], r[2])):
                 print(f"    {app:14} ({x:5},{y:5}) {w:5}x{h:<5}")
         try:
             check_frames(snap, "thinned")
@@ -1613,7 +1636,7 @@ def main() -> int:
             # got reported for weeks.
             print(f"  desktop {sid}: {len(rects)} tiled"
                   f"{'' if sid in on_screen else '  (hidden -- frames are stale, not wrong)'}")
-            for ident, app, x, y, w, h in sorted(rects, key=lambda r: (r[3], r[2])):
+            for ident, app, x, y, w, h, _mn in sorted(rects, key=lambda r: (r[3], r[2])):
                 print(f"    {app:14} ({x:5},{y:5}) {w:5}x{h:<5}")
         for fn, label in ((check_frames, "overlap/degenerate"),
                           (check_frames_within_display, "within display")):

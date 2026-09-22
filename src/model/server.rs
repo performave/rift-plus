@@ -31,6 +31,9 @@ pub struct RuntimeWindowData {
     /// Whether the window is a leaf in its desktop's layout tree. See the
     /// protocol type: a window can be neither floating nor tiled.
     pub is_tiled: bool,
+    /// The app's declared minimum where it gives one, else the smallest size
+    /// rift has seen the window accept. See the serializer.
+    pub min_size: Option<objc2_core_foundation::CGSize>,
     pub is_focused: bool,
     pub layout_position: Option<protocol::WindowLayoutPosition>,
     pub app_name: Option<String>,
@@ -141,6 +144,16 @@ impl Serialize for RuntimeWindowData {
             app_name: Option<&'a String>,
             window_server_id: Option<u32>,
             layout_position: Option<&'a protocol::WindowLayoutPosition>,
+            /// The size the app says it will not go below, when it says one.
+            ///
+            /// rift has always had this -- it is what a resize is clamped
+            /// against -- and never reported it, which left anything looking
+            /// at geometry unable to tell rift's arithmetic from an app
+            /// refusing a slot it was given. An app rendering at its minimum
+            /// inside a smaller slot overflows into its neighbour, and that
+            /// reads exactly like a layout that overlaps windows.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            min_size: Option<protocol::Size>,
         }
 
         let helper = WindowDataSer {
@@ -154,6 +167,10 @@ impl Serialize for RuntimeWindowData {
             app_name: self.app_name.as_ref(),
             window_server_id: self.info.sys_id.map(|id| id.as_u32()),
             layout_position: self.layout_position.as_ref(),
+            min_size: self.min_size.map(|size| protocol::Size {
+                width: size.width,
+                height: size.height,
+            }),
         };
 
         helper.serialize(serializer)
@@ -178,6 +195,8 @@ impl<'de> Deserialize<'de> for RuntimeWindowData {
             app_name: Option<String>,
             window_server_id: Option<u32>,
             layout_position: Option<protocol::WindowLayoutPosition>,
+            #[serde(default)]
+            min_size: Option<protocol::Size>,
         }
 
         let helper = WindowDataDe::deserialize(deserializer)?;
@@ -199,6 +218,9 @@ impl<'de> Deserialize<'de> for RuntimeWindowData {
 
         Ok(RuntimeWindowData {
             id: helper.id,
+            min_size: helper
+                .min_size
+                .map(|size| objc2_core_foundation::CGSize::new(size.width, size.height)),
             is_floating: helper.is_floating,
             is_tiled: helper.is_tiled,
             is_focused: helper.is_focused,
@@ -311,6 +333,7 @@ mod tests {
         };
         let data = RuntimeWindowData {
             id: WindowId::new(123, 7),
+            min_size: Some(CGSize::new(400.0, 300.0)),
             is_floating: true,
             is_tiled: false,
             is_focused: false,
@@ -331,6 +354,7 @@ mod tests {
             "app_name": "Test App",
             "window_server_id": 99,
             "layout_position": { "column": 2, "row": 1 },
+            "min_size": { "width": 400.0, "height": 300.0 },
         });
         assert_eq!(value, expected);
 
@@ -343,6 +367,12 @@ mod tests {
             serde_json::from_value(legacy).expect("decode a pre-is_tiled window");
         assert!(!back.is_tiled);
         assert!(back.is_floating);
+
+        // A window with no minimum omits the key rather than sending null, so
+        // a reader can say "rift does not know" apart from "zero".
+        let bare = RuntimeWindowData { min_size: None, ..data };
+        let value = serde_json::to_value(&bare).expect("serialize without a minimum");
+        assert!(!value.as_object().unwrap().contains_key("min_size"));
     }
 
     #[test]

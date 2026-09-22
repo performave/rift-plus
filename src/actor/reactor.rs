@@ -3721,8 +3721,18 @@ impl Reactor {
             && self.best_space_for_window_id(window_id).is_some_and(|space| {
                 self.layout_manager.layout_engine.is_window_tiled(space, window_id)
             });
+        // The app's own declared minimum where it gives one, and otherwise
+        // the smallest size rift has seen the window accept. Most apps
+        // declare nothing -- TextEdit and Safari both report none -- so
+        // without the inferred figure this field would be empty in practice
+        // and could settle no argument about an overlap.
+        let min_size = window_state
+            .info
+            .min_size
+            .or_else(|| self.layout_manager.layout_engine.observed_min_size(window_id));
         Some(RuntimeWindowData {
             id: window_id,
+            min_size,
             is_tiled,
             is_floating: self.layout_manager.layout_engine.is_window_floating(window_id),
             is_focused: self.main_window() == Some(window_id),
