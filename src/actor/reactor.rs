@@ -2407,8 +2407,29 @@ impl Reactor {
                 // reading the window's later reports as echoes and kept
                 // mouse-follows-focus off for good.
                 let ended_modifier_drag = self.modifier_drag.take();
-                if ended_modifier_drag.is_some() {
+                if let Some(drag) = ended_modifier_drag {
                     self.modifier_drag_ended = Some(crate::sys::trace::now());
+                    // What the gesture asked for against what the window is
+                    // actually left at. A drag that ends somewhere other than
+                    // where it was aimed is the complaint that is hardest to
+                    // catch in a trace full of hundreds of drags and animation
+                    // frames -- twice now I have paired the wrong events
+                    // reading it back. One line per release, carrying both
+                    // numbers and the direction the gesture travelled, makes
+                    // the question answerable from any dump instead of
+                    // needing the moment to be captured deliberately.
+                    let now = self.state.windows.window(drag.window).map(|w| w.frame_monotonic);
+                    crate::sys::trace::act(
+                        "modifier_drag_end",
+                        &serde_json::json!({
+                            "wid": drag.window.idx.get(),
+                            "action": format!("{:?}", drag.action),
+                            "edges": [drag.edges.horizontal, drag.edges.vertical],
+                            "from": [drag.origin_frame.origin.x, drag.origin_frame.size.width],
+                            "aimed": [drag.last_target.origin.x, drag.last_target.size.width],
+                            "left_at": now.map(|f| [f.origin.x, f.size.width]),
+                        }),
+                    );
                 }
                 // A rift-driven float move (a takeover, or an alt-drag) that
                 // ends straddling the display seam needs the same finish a
