@@ -94,6 +94,16 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **Plugging a display in no longer reshuffles the desktops of the one you
+  already had.** rift remembers a layout per screen size, and going back to a
+  size it had seen before brought back the layout it had there -- as it was
+  the last time, not as you had arranged it since. Plugging in a display that
+  becomes main takes the menu bar off the other one, which counts as a
+  different size, so a replug could reorder a desktop's windows or turn a split
+  round, and unplugging put it back, which made it look like the churn's fault.
+  A remembered layout is now kept only when it is still the same arrangement,
+  so a screen size keeps its own proportions without undoing what you did.
+
 - **A window coming back from native fullscreen is put back where the layout
   wants it.** It could be left covering the whole display, on top of a
   perfectly good tiling, and stay there. rift skips writing a window's frame
