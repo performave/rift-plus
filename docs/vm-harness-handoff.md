@@ -658,9 +658,26 @@ just said it could not answer. The next snapshot, coherent this time, saw
 nothing to remap and the replaced desktop's layout was gone for good. The
 history now waits for a snapshot that can be trusted
 (`an_untrusted_snapshot_does_not_cost_the_remap_that_follows_it`, which fails
-without the guard). The two content guards — `source_still_exists` and
-`source_is_now_owned_by_another_display` — are untouched and still want
-evidence of their own.
+without the guard).
+
+**The two content guards have been audited, and they are correct.**
+`source_still_exists` and `source_is_now_owned_by_another_display` both answer
+the same event -- a desktop macOS carried to the other display -- caught at two
+different moments, and there are now tests for each that fail when that guard
+alone is disabled and only then
+(`a_desktop_that_moved_to_the_other_display_is_not_a_replacement`,
+`a_desktop_the_other_display_is_now_showing_is_not_a_replacement`). The
+ownership guard had no test at all before, which is the dangerous shape: it
+fires *before* `source_still_exists` is consulted, so a fault in it would have
+been masked whenever the lists happened to be complete.
+
+One dead end, recorded because it convinced for a while: a snapshot where this
+display's list has caught up with a move and the other display's has not would
+remap a desktop that still exists and cost it its layout. It cannot happen.
+`CGSCopyManagedDisplaySpaces` answers for every display in one call, so the
+lists are always consistent with each other. A test that seeds them otherwise
+asserts against an input the window server cannot produce, and the remap it
+calls a bug is the right answer to the impossible snapshot it was handed.
 
 **rift dies on an unknown config key — fixed, and no longer open.** It used to:
 the entry point unwrapped the config parse and every settings struct is
