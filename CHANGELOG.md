@@ -86,6 +86,18 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **A window on a desktop you have never visited comes back from a churn.**
+  When a display leaves, rift records where everything was so it can put it
+  back. That record was built from the layout trees, and the trees only cover
+  desktops rift has laid out, which in practice means desktops that have been
+  shown. A window sitting on a desktop you have never switched to is in no
+  tree -- and `query windows` reported it as tiled, because it was not floating
+  either -- so it was absent from the record, and the desktop macOS merged it
+  onto is where it stayed. From the outside: one window does not come back with
+  the rest of its desktop. The record now fills that gap from the snapshot
+  taken before the churn, which knows where every window was whether or not it
+  had a tree.
+
 - **A spasmed resize no longer walks the window the wrong way.** Dragging a
   window's edge fast -- eight or nine presses a second, reversing direction --
   moved it steadily *against* the hand, and a burst of equal left and right
