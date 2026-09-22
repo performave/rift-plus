@@ -370,6 +370,57 @@ Worth knowing: modifier-drag **resize** works on the merged build and did
 nothing on the pre-merge one. Restoring the dragged-event subscription fixed
 more than it put back.
 
+## Resize, and the app that made it testable (2026-09-22)
+
+Five real defects in modifier-drag resize, none of which reproduced against
+TextEdit or Safari. Those apply a frame inside a millisecond; every bug here
+needs an app that cannot keep up, so a harness built on them measures itself
+and reports success. `scripts/laggyapp.m` is a window that blocks its main
+thread in bursts the way a heavy renderer does, and it is what made the rest of
+this possible.
+
+The gesture matters as much as the app. `mtool drag` pads 80ms either side of
+the button and tops out near 2.5 press-release cycles a second; the reports
+that mattered were at eight or nine, which is what keeps rift's writes and the
+app's notifications in flight *across the next press*. `mtool spam` sends whole
+cycles at a click rate, out and back so each nets to zero by construction, and
+`mtool thrash` releases mid-swing at irregular distances, which is what a hand
+actually does.
+
+What the defects were, in the order they had to be found:
+
+- **A drag ending where it began never reported its final position.** The flush
+  skipped any update whose total movement was zero -- true both before the
+  pointer has moved and after it has gone somewhere and come back, and the
+  second is the report that returns the window.
+- **`Event::MouseUp` was sent before the final position was flushed.** The
+  reactor takes the drag on MouseUp, so the last update arrived to find nothing
+  to apply it to. Only one of the two branches ran in the right order, so
+  whether a gesture landed where it was aimed depended on whether `drag_active`
+  happened to be set.
+- **A stale report as the drag's base.** Each press measured from the window's
+  last *reported* frame, which trails while a drag is in flight and is usually
+  smaller than the window really is -- so `target = base + dx` came out below
+  the current width even for a drag moving outward, and the window pulled in
+  against the hand for the whole gesture. For a tiled window the layout knows
+  the intended size; ask it.
+- **Writes piling up.** A drag writes every 8ms -- 125 a second at an app that
+  manages twenty. They queue and are applied late and out of turn. One write in
+  flight per window fixes it.
+- **...but never the last one.** Blanket coalescing drops the gesture's final
+  write because the peak of the swing is still outstanding, and the window
+  keeps the peak. Both faults are a one-sample error differing only in sign,
+  which is why fixing either alone moved the mean and left the symptom.
+
+**Not fixed: the dead zone at a window's size limits.** Past a floor or a
+ceiling the drag goes on accumulating movement the layout cannot deliver, so
+coming back does nothing until that slack is retraced. Measured on the host:
+gestures aiming at 100, 250 and 355 all ended at 480. Two attempts at
+re-anchoring were reverted -- adding the shortfall each update compounds it and
+collapsed a window to zero width; re-deriving the base inverted two of the six
+directional cases and blew another to full screen. It wants a considered fix,
+not a third patch.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
