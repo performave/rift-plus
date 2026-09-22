@@ -2052,6 +2052,54 @@ fn fullscreen_exit_restores_the_slot_when_the_departure_is_seen_first() {
     );
 }
 
+/// A window back from fullscreen is written, not assumed to be in place.
+///
+/// The arrange skips a window whose target matches its cached frame. That
+/// cache is rift's own bookkeeping, and a fullscreen exit is where it comes
+/// apart from reality: macOS resized the window itself, the report of that is
+/// not always one rift keeps, and the cache can hold the frame rift last wrote
+/// while the window covers the whole display. Every arrange after that
+/// compares the right target against the stale cache, decides the window is
+/// already there, and writes nothing.
+///
+/// Reproduced in the guest, and permanent: the tree said 61x1239, the window
+/// was at 0x2550, and it survived twenty seconds at rest and every arrange in
+/// them -- a window covering a perfectly good tiling, for good.
+///
+/// The cache and the target are deliberately made equal here, because that is
+/// the only state in which the skip fires. A test that lets them differ
+/// exercises the ordinary path and passes either way.
+#[test]
+fn a_window_back_from_fullscreen_is_written_even_if_the_cache_says_it_is_there() {
+    let (mut apps, mut reactor) = test_context();
+
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let user_space = SpaceId::new(1);
+    let fullscreen_space = SpaceId::new(0x400000000 + user_space.get());
+    let left = WindowId::new(1, 1);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(user_space)]));
+    make_active_app(&mut apps, &mut reactor, 1, make_windows(2), Some(left));
+    let wsid = reactor.state.windows.window(left).unwrap().info.sys_id.unwrap();
+
+    window_server_appeared(&mut reactor, wsid, fullscreen_space, SpaceEventKind::Fullscreen);
+    assert!(!has_window_in_layout(&mut reactor, user_space, frame, left));
+    let _ = apps.requests();
+
+    window_server_appeared(&mut reactor, wsid, user_space, SpaceEventKind::User);
+
+    let wrote_on_exit = apps
+        .requests()
+        .iter()
+        .any(|request| matches!(request, Request::SetWindowFrame(w, ..) if *w == left));
+
+    assert!(
+        wrote_on_exit || reactor.state.windows.frame_needs_reasserting(left),
+        "the exit neither wrote the window nor marked its frame for rewriting, \
+         so whatever size macOS left it at is final"
+    );
+}
+
 /// The live sequence, as recorded off a YouTube video going fullscreen in Zen
 /// with the browser tiled left of an editor: the window leaves its user space,
 /// arrives on a fullscreen space, the display's active space *becomes* that

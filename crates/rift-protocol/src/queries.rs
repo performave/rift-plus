@@ -119,6 +119,16 @@ pub struct WindowData {
     pub title: String,
     pub frame: Rect,
     pub is_floating: bool,
+    /// Whether the window is a leaf in its desktop's layout tree.
+    ///
+    /// Not the complement of `is_floating`, which only says whether the window
+    /// is in the *floating* set. A window can be in neither: one in native
+    /// fullscreen, or on a desktop rift has not laid out, is in no tree and is
+    /// not floating either, and reporting only `is_floating: false` for it
+    /// reads as "tiled" and is how such a window gets counted into a tiling it
+    /// has no part in.
+    #[serde(default)]
+    pub is_tiled: bool,
     pub is_focused: bool,
     pub bundle_id: Option<String>,
     pub app_name: Option<String>,

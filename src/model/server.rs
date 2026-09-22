@@ -28,6 +28,9 @@ pub struct RuntimeWorkspaceData {
 pub struct RuntimeWindowData {
     pub id: WindowId,
     pub is_floating: bool,
+    /// Whether the window is a leaf in its desktop's layout tree. See the
+    /// protocol type: a window can be neither floating nor tiled.
+    pub is_tiled: bool,
     pub is_focused: bool,
     pub layout_position: Option<protocol::WindowLayoutPosition>,
     pub app_name: Option<String>,
@@ -80,6 +83,7 @@ impl From<RuntimeWindowData> for protocol::WindowData {
             title: value.info.title,
             frame: protocol_rect(value.info.frame),
             is_floating: value.is_floating,
+            is_tiled: value.is_tiled,
             is_focused: value.is_focused,
             bundle_id: value.info.bundle_id,
             app_name: value.app_name,
@@ -131,6 +135,7 @@ impl Serialize for RuntimeWindowData {
             #[serde_as(as = "CGRectDef")]
             frame: &'a objc2_core_foundation::CGRect,
             is_floating: bool,
+            is_tiled: bool,
             is_focused: bool,
             bundle_id: Option<&'a String>,
             app_name: Option<&'a String>,
@@ -143,6 +148,7 @@ impl Serialize for RuntimeWindowData {
             title: &self.info.title,
             frame: &self.info.frame,
             is_floating: self.is_floating,
+            is_tiled: self.is_tiled,
             is_focused: self.is_focused,
             bundle_id: self.info.bundle_id.as_ref(),
             app_name: self.app_name.as_ref(),
@@ -165,6 +171,8 @@ impl<'de> Deserialize<'de> for RuntimeWindowData {
             #[serde_as(as = "CGRectDef")]
             frame: objc2_core_foundation::CGRect,
             is_floating: bool,
+            #[serde(default)]
+            is_tiled: bool,
             is_focused: bool,
             bundle_id: Option<String>,
             app_name: Option<String>,
@@ -192,6 +200,7 @@ impl<'de> Deserialize<'de> for RuntimeWindowData {
         Ok(RuntimeWindowData {
             id: helper.id,
             is_floating: helper.is_floating,
+            is_tiled: helper.is_tiled,
             is_focused: helper.is_focused,
             layout_position: helper.layout_position,
             app_name: helper.app_name,
@@ -303,6 +312,7 @@ mod tests {
         let data = RuntimeWindowData {
             id: WindowId::new(123, 7),
             is_floating: true,
+            is_tiled: false,
             is_focused: false,
             layout_position: Some(protocol::WindowLayoutPosition { column: 2, row: 1 }),
             app_name: Some("Test App".to_string()),
@@ -315,6 +325,7 @@ mod tests {
             "title": "Test",
             "frame": { "origin": { "x": 1.0, "y": 2.0 }, "size": { "width": 3.0, "height": 4.0 } },
             "is_floating": true,
+            "is_tiled": false,
             "is_focused": false,
             "bundle_id": "com.example.test",
             "app_name": "Test App",
@@ -322,6 +333,16 @@ mod tests {
             "layout_position": { "column": 2, "row": 1 },
         });
         assert_eq!(value, expected);
+
+        // Older clients sent the shape without it; they must still decode,
+        // and a window they describe reads as neither floating nor tiled
+        // rather than as tiled by omission.
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("is_tiled");
+        let back: RuntimeWindowData =
+            serde_json::from_value(legacy).expect("decode a pre-is_tiled window");
+        assert!(!back.is_tiled);
+        assert!(back.is_floating);
     }
 
     #[test]

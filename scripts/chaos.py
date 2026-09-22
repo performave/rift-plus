@@ -410,14 +410,14 @@ def show_the_desktop_holding_the_windows() -> list:
         shown = d.get("space")
         listed = (d.get("active_space_ids") or []) + (d.get("inactive_space_ids") or [])
         if shown is not None and any(
-            not w.get("is_floating")
+            is_tiled(w)
             for w in (rift("windows", "--space-id", str(shown)) or [])
         ):
             continue
         for space in listed:
             if space == shown:
                 continue
-            if not any(not w.get("is_floating")
+            if not any(is_tiled(w)
                        for w in (rift("windows", "--space-id", str(space)) or [])):
                 continue
             order = all_space_ids(rift("displays") or [])
@@ -516,6 +516,25 @@ def all_space_ids(displays) -> list:
     return out
 
 
+def is_tiled(w: dict) -> bool:
+    """Whether a window is actually a leaf in its desktop's tree.
+
+    Not `not is_floating`. `is_floating` says only whether the window is in the
+    *floating* set, and a window can be in neither: one in native fullscreen,
+    or on a desktop rift has not laid out, is in no tree and is not floating
+    either. Counted as tiled, a fullscreen window is judged as overlapping the
+    windows it left behind on its old desktop -- which it does, at the full
+    size of the display, and entirely correctly.
+
+    `is_tiled` is reported by rift itself as of the same change that added this.
+    An older rift does not send it, and the fallback is the old reading, so a
+    run against one degrades rather than crashing.
+    """
+    if "is_tiled" in w:
+        return bool(w["is_tiled"])
+    return not w.get("is_floating")
+
+
 def window_map(displays) -> dict:
     """ident -> (space, app, tiled, frame). Per-desktop, because an unfiltered
     `query windows` only reports the active desktop -- the blindness that let a
@@ -529,7 +548,7 @@ def window_map(displays) -> dict:
                 ident = f"{wid.get('pid')}:{wid.get('idx')}"
             fr = w.get("frame") or {}
             located[str(ident)] = (
-                sid, w.get("app_name") or "?", not w.get("is_floating"),
+                sid, w.get("app_name") or "?", is_tiled(w),
                 (round(fr.get("origin", {}).get("x", 0)), round(fr.get("origin", {}).get("y", 0)),
                  round(fr.get("size", {}).get("width", 0)), round(fr.get("size", {}).get("height", 0))),
             )
@@ -921,7 +940,7 @@ class Sampler:
                 self.samples += 1
                 rects = []
                 for w in ws:
-                    if w.get("is_floating"):
+                    if not is_tiled(w):
                         continue
                     fr = w.get("frame") or {}
                     o, sz = fr.get("origin", {}), fr.get("size", {})
@@ -1271,7 +1290,7 @@ def s_native_fullscreen_churn(base):
         leaves = leaf_order(shape)
         for w in (rift("windows", "--space-id", str(space)) or []):
             wid = w.get("id") or {}
-            if w.get("is_floating") or f"{wid.get('pid')}:{wid.get('idx')}" not in leaves:
+            if not is_tiled(w) or f"{wid.get('pid')}:{wid.get('idx')}" not in leaves:
                 continue
             candidates.append((w.get("app_name"), str(w.get("window_server_id")),
                                wid.get("idx"), space, shape, w))

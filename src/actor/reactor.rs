@@ -3705,8 +3705,25 @@ impl Reactor {
         let app_name = app.info.localized_name.clone();
         let bundle_id = app.info.bundle_id.clone();
 
+        // Asked of the desktop rift believes the window is on. A window in
+        // native fullscreen, or on a desktop rift has not laid out, is in no
+        // tree -- and is not floating either, so reporting only `is_floating`
+        // for it reads as "tiled" and counts it into a tiling it has no part
+        // in. That reading is what had a fullscreen window judged as
+        // overlapping the windows it had left behind.
+        // A window in native fullscreen keeps its leaf in the tree -- that is
+        // how it gets its slot back on the way out -- so the engine still
+        // calls it tiled while it covers a whole display of its own. To a
+        // client asking what is laid out on a desktop right now, it is not,
+        // and counting it in is what had a fullscreen window judged as
+        // overlapping every window it had left behind.
+        let is_tiled = !self.state.windows.is_window_native_fullscreen_suspended(window_id)
+            && self.best_space_for_window_id(window_id).is_some_and(|space| {
+                self.layout_manager.layout_engine.is_window_tiled(space, window_id)
+            });
         Some(RuntimeWindowData {
             id: window_id,
+            is_tiled,
             is_floating: self.layout_manager.layout_engine.is_window_floating(window_id),
             is_focused: self.main_window() == Some(window_id),
             layout_position: None,

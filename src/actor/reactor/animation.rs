@@ -170,17 +170,44 @@ impl AnimationManager {
             }
 
             let target_frame = target_frame.round();
+            // Asked before the mutable borrow below: the skip needs it, and
+            // the borrow checker will not have both at once.
+            let unverified = reactor.state.windows.frame_needs_reasserting(wid);
             let (current_frame, window_server_id, txid) = {
                 let window_store = &mut reactor.state.windows;
                 match window_store.window_mut(wid) {
                     Some(window) => {
                         let current_frame = window.frame_monotonic;
-                        if target_frame.same_as(current_frame) {
+                        // "Already there" is rift's own bookkeeping, not a
+                        // reading of the window, and a fullscreen exit is
+                        // where the two come apart: macOS resizes the window
+                        // itself, the app's report of it is not always one
+                        // rift keeps, and the cached frame stays at whatever
+                        // rift last wrote. Every arrange after that compares
+                        // the right target against that stale cache, decides
+                        // the window is already in place and writes nothing --
+                        // so a window sitting at the full width of the display
+                        // on top of a perfectly good tiling stays there. Seen
+                        // in the guest: the tree says 61x1239, the window is
+                        // at 0x2550, and it survives twenty seconds at rest
+                        // and every arrange in them.
+                        //
+                        // So for a window just back from fullscreen, write it
+                        // once regardless. A redundant write costs one
+                        // message and the app ignores it; a skipped one is
+                        // permanent.
+                        if target_frame.same_as(current_frame) && !unverified {
                             crate::sys::trace::act(
                                 "layout_skip",
                                 &(wid.idx.get(), "already there", current_frame.origin.x.round()),
                             );
                             continue;
+                        }
+                        if unverified {
+                            crate::sys::trace::act(
+                                "layout_reassert",
+                                &(wid.idx.get(), target_frame.origin.x.round()),
+                            );
                         }
                         let wsid = window.info.sys_id;
                         if let Some(wsid) = wsid
@@ -250,6 +277,10 @@ impl AnimationManager {
             if let Some(window) = reactor.state.windows.window_mut(wid) {
                 window.frame_monotonic = target_frame;
             }
+            // Written once is enough. Leaving it set would make every arrange
+            // for the rest of the session write this window unconditionally,
+            // which is the skip's whole purpose undone.
+            reactor.state.windows.frame_reasserted(wid);
         }
 
         if animated_count > 0 {

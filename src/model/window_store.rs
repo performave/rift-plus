@@ -166,9 +166,27 @@ pub struct WindowStore {
     native_fullscreen_original_window_by_current_window: HashMap<WindowId, WindowId>,
     #[serde_as(as = "Vec<(_, _)>")]
     native_fullscreen_original_window_by_window_server: HashMap<WindowServerId, WindowId>,
+    /// Windows whose cached frame is not to be trusted, so the next arrange
+    /// writes them rather than deciding they are already in place. Only a
+    /// native-fullscreen exit puts anything here.
+    #[serde(default, skip)]
+    frames_to_reassert: HashSet<WindowId>,
 }
 
 impl WindowStore {
+    /// Whether this window's cached frame is one to write past rather than
+    /// compare against. See `restore_window_from_native_fullscreen`.
+    pub fn frame_needs_reasserting(&self, window_id: WindowId) -> bool {
+        self.frames_to_reassert.contains(&window_id)
+    }
+
+    /// Called once the arrange has written the window. Left set, it would make
+    /// every arrange for the rest of the session write unconditionally, which
+    /// is the skip's whole purpose undone.
+    pub fn frame_reasserted(&mut self, window_id: WindowId) {
+        self.frames_to_reassert.remove(&window_id);
+    }
+
     fn native_fullscreen_original_window(&self, window_id: WindowId) -> Option<WindowId> {
         if self.native_fullscreen_records_by_original_window.contains_key(&window_id) {
             Some(window_id)
@@ -639,6 +657,14 @@ impl WindowStore {
                 WindowPlacement::Tiled
             };
         }
+        // macOS sized this window for the fullscreen itself, and the report of
+        // that is not always one rift keeps -- so the cached frame can hold
+        // whatever rift last wrote while the window covers the whole display.
+        // Noted here, where the record is actually consumed, because there are
+        // three routes out of fullscreen and marking them one at a time misses
+        // whichever one the next display change happens to take.
+        self.frames_to_reassert.insert(record.current_window_id);
+        self.frames_to_reassert.insert(original_window_id);
         Some(record)
     }
 
