@@ -474,6 +474,67 @@ an app floor looks like, and that nothing in rift's own accounting adds slack
 on top of it. Run the same test against those apps before calling it a fault
 again.
 
+## The record and the tree (2026-09-22)
+
+The first `matrix` run ever taken -- the one the section above says was still
+owed -- produced two findings, one in the harness and one in rift, and the
+first was hiding the second.
+
+**The harness one.** `check_frames` and `check_frames_within_display` judged
+windows on desktops nobody was showing. rift does not arrange a hidden desktop,
+so its frames are whatever was last applied, which after a churn are the ones
+the departed display gave them. That read as windows stranded off the edge of
+the world and windows piled on each other, and it failed `plain-replug` in all
+three restoration modes. Measured: across six plug/unplug transitions, twice
+over, offences on *shown* desktops numbered zero, while the one hidden-desktop
+offence appeared every time and resolved within seconds of switching to that
+desktop. Both checks now take shown desktops only. See the retraction list.
+
+**The rift one, which the first was masking.** With the geometry noise gone,
+the dominant failure was `windows that shared a desktop no longer do`, seven of
+twelve scenario-by-mode runs. The cause is not about desktops at all:
+
+- A departure record is built from the layout trees, and the trees speak only
+  for desktops the workspace manager has initialised -- in practice, desktops
+  that have been shown.
+- A window on a desktop that has never been shown is in no tree. `query
+  windows` calls it tiled anyway, because `is_floating` means "in the floating
+  set" and it is not in that either. So it looks accounted for and is not.
+- The settle that makes a stand-in desktop for the survivor's own windows fills
+  it from that record. A window the record never had is a window the settle
+  cannot move, and it stays where macOS merged it.
+
+Three things made this findable, and none of them were queries:
+
+- `record_members`, added for it: where the record's window list came from,
+  how many windows it listed, how many it kept, and **which tracked windows it
+  does not account for, by name**. `{"listed": 3, "recorded": 3, "missing":
+  [2608, 2611], "pre_churn": true}` where the display set held five ends the
+  guessing in one line.
+- `windows_moved=0` on a settle that had just made a desktop to move windows
+  to. A count of zero next to `made=Some(386)` is the whole bug in two fields.
+- `query layout --space-id <hidden desktop>` answering `Space or workspace not
+  found` while `query windows --space-id` on the same desktop listed four
+  windows as tiled. That pair is the limbo, stated plainly.
+
+The fix records where every tracked window was in the pre-churn snapshot, tree
+or no tree, and fills only the gaps the trees leave. Not from a live reading:
+from the moment that snapshot is taken the window server is moving windows
+between desktops, so anything read later describes the churn rather than what
+preceded it, and a record taught the wrong home sends the window to the wrong
+place on return.
+
+**Measured, matrix, same sitting:** 2 of 12 before, 5 of 12 after, with the
+grouping failure down from seven to four. Read the column, not the cell -- and
+note that the remaining grouping failures say the record is not the only path
+that loses a window.
+
+**Still open, on this evidence.** Four grouping failures, one workspace leak
+(`237 -> 238`, a missed remap orphaning the old one), and two genuine geometry
+faults on *shown* desktops -- an off-display tiled window and a 924x1039
+overlap. Those last two are the first geometry findings here that survive the
+shown-desktop filter, so they are worth more than any that preceded them.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
