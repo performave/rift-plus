@@ -11,6 +11,12 @@ set -uo pipefail
 SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$1"; shift
 
+# `matrix` runs its scenarios once per restoration mode, and deserves the same
+# controlled start as `run` -- float and tile have no display record at all, so
+# a matrix run off a dirty guest is the easiest way to get a vacuous PASS.
+CMD=run
+if [[ "${1:-}" == "matrix" ]]; then CMD=matrix; shift; fi
+
 # One at a time. There is a single guest, and a second run rebooting it, wiping
 # layout.ron and copying a different binary over the first one's is invisible in
 # both outputs: each prints its own version banner and neither says the other
@@ -97,4 +103,4 @@ fi
 # No `head` here. Fifteen scenarios' failure reasons do not fit in thirty
 # lines, and truncating them is how a run came back with its last five reasons
 # missing -- which reads exactly like five scenarios that failed silently.
-CHAOS_TIMEOUT=1800 "$SC/vm-run" run "$@" 2>&1 | sed -n '/=== summary ===/,$p'
+CHAOS_TIMEOUT=3600 "$SC/vm-run" "$CMD" "$@" 2>&1 | sed -n '/=== matrix ===/,$p;/=== summary ===/,$p'
