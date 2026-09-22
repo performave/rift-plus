@@ -11447,6 +11447,70 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// The return pass ends on its deadline whenever the window server has
+    /// not finished moving the windows home, and they are then still on the
+    /// desktop rift made for them at departure. Retirement used to be a
+    /// single attempt: finding windows on it, it dropped the desktop from
+    /// the list and never looked again. The windows arrived on the
+    /// replacement a moment later and rift's own desktop was left standing
+    /// empty for good -- the desktop a churn leaks, one per churn that ran
+    /// slower than the pass waits.
+    #[test]
+    fn a_made_desktop_the_windows_have_not_left_yet_is_retired_once_they_have() {
+        let mut f = spaces_fixture();
+        let made = SpaceId::new(41);
+        sa::set_next_created_space(Some(made.get()));
+        // The departing display's desktop is destroyed on the way out; its
+        // windows get one made for them, and land there.
+        managed(vec![("test-display-0", vec![space1()])]);
+        unplug(&mut f);
+        assert_eq!(
+            f.reactor.display_archive.record().expect("the record stands").made_desktops(),
+            vec![made],
+            "the destroyed desktop gets one made to stand in for it"
+        );
+        set_window_spaces(&f.exiled_wsids, made);
+
+        // The display is back with a desktop macOS minted for it, and the
+        // windows are still on the made one as the return pass runs.
+        let waiting = everyone(&f, space1(), made);
+        replug_after_takeover(
+            &mut f,
+            vec![space1(), made],
+            vec![space2_returned()],
+            (space1(), space2_returned()),
+            waiting,
+        );
+        assert!(
+            f.reactor.display_archive.record().is_some(),
+            "the pass is waiting for the windows to arrive"
+        );
+
+        // They have not arrived by the deadline, so the pass ends without
+        // them and the made desktop is not destroyed out from under them.
+        f.reactor.handle_record_deadline();
+        assert!(
+            sa::space_destroys().is_empty(),
+            "a desktop with windows still on it is not destroyed"
+        );
+
+        // They arrive on the replacement a moment later.
+        let landed = everyone(&f, space1(), space2_returned());
+        replug_after_takeover(
+            &mut f,
+            vec![space1(), made],
+            vec![space2_returned()],
+            (space1(), space2_returned()),
+            landed,
+        );
+        assert_eq!(
+            sa::space_destroys(),
+            vec![made.get()],
+            "the desktop rift made is destroyed once its windows have left"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     #[test]
     fn a_layout_mode_switched_while_the_display_was_away_is_kept() {
         let mut f = spaces_fixture();

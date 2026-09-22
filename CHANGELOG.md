@@ -25,6 +25,18 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A churn stops leaving one desktop behind.** When a display leaves, rift
+  makes a desktop to hold the windows of the one macOS destroyed, and destroys
+  it again when the display comes back and its windows have somewhere better to
+  be. That was a single attempt: finding windows still on it -- which is the
+  normal state the instant the return pass ends, and the certain one when the
+  pass ends on its three-second deadline rather than on their arrival -- rift
+  dropped the desktop from the list and never looked at it again. A moment
+  later the windows landed on the replacement and rift's own desktop was left
+  standing empty, on no record and owned by nobody, one more after every churn
+  that ran slow. It is now kept and looked at again on every space change,
+  exactly as a desktop a display is still showing already was.
+
 - **A modifier-drag resize survives an app that is slow to apply it.** The
   resize worked and then undid itself a few milliseconds after the button came
   up, on ChatGPT and Zen. An app's move notifications trail rift's writes, so

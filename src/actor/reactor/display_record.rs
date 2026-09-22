@@ -1120,13 +1120,6 @@ impl Reactor {
                 "Desktops no recorded desktop's windows speak for"
             );
         }
-        eprintln!(
-            "DBG cur={:?}",
-            current
-                .iter()
-                .map(|d| (d.space.get(), d.display.clone(), d.windows.len()))
-                .collect::<Vec<_>>()
-        );
 
         let mut subst: HashMap<SpaceId, SpaceId> = HashMap::default();
         let mut paired: HashSet<SpaceId> = HashSet::default();
@@ -1706,11 +1699,16 @@ impl Reactor {
     }
 
     /// Destroys the desktops made at departure that are done with — their
-    /// windows gone back — as soon as no display shows them. Destroying a
-    /// desktop a display is showing is not something Dock survives, and the
-    /// display that took one along comes back showing it, so the switch
-    /// away that the return ordered has usually not landed by the time the
-    /// return is over. Retried on every space change until it has.
+    /// windows gone back — as soon as no display shows them and nothing is
+    /// on them. Destroying a desktop a display is showing is not something
+    /// Dock survives, and the display that took one along comes back
+    /// showing it, so the switch away that the return ordered has usually
+    /// not landed by the time the return is over. The windows are the same
+    /// story: the return asks the window server to move them off, and when
+    /// the pass ends on its deadline rather than on their arrival they are
+    /// all still there. Neither is a reason to give the desktop up, only to
+    /// come back to it — retried on every space change until it can go, and
+    /// abandoned only after `RETIRE_GIVE_UP`.
     pub(super) fn retire_made_desktops(&mut self) {
         if self.display_archive.retiring.is_empty() {
             return;
@@ -1728,26 +1726,26 @@ impl Reactor {
             if !listed.contains(&made) {
                 continue;
             }
-            if self.shown_live(made) {
+            // Emptiness is decided when a desktop is put up for retirement,
+            // and the windows are still moving then. A window still on it is
+            // reason enough to leave it be for now: destroying it would hand
+            // that window to whatever desktop macOS picks.
+            let wait = if self.shown_live(made) {
+                Some("a display is still showing it")
+            } else if occupied.contains(&made) {
+                Some("it still has windows on it")
+            } else {
+                None
+            };
+            if let Some(why) = wait {
                 if since.elapsed() > RETIRE_GIVE_UP {
                     warn!(
                         desktop = made.get(),
-                        "The desktop made at departure is still being shown; leaving it"
+                        why, "Giving up on destroying the desktop made at departure"
                     );
                 } else {
                     self.display_archive.retiring.push((made, since));
                 }
-                continue;
-            }
-            // Emptiness is decided when a desktop is put up for retirement,
-            // and the windows are still moving then. A window that landed on
-            // it after all is reason enough to leave it alone: destroying it
-            // would hand the window to whatever desktop macOS picks.
-            if occupied.contains(&made) {
-                info!(
-                    desktop = made.get(),
-                    "The desktop up for retirement has windows on it after all; leaving it"
-                );
                 continue;
             }
             if scripting_addition::destroy_space(made.get()) {
