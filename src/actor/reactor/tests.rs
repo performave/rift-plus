@@ -7058,6 +7058,66 @@ fn drop_overlay_is_taken_down_when_the_drag_ends_without_a_drop() {
     assert!(!reactor.drag_manager.drop_overlay_shown);
 }
 
+/// Dragging a window's edge or corner resizes it, and leaves the pointer
+/// sitting over whichever neighbour the edge is being pushed into. To
+/// everything downstream that is indistinguishable from carrying the window
+/// there to split with it, so the overlay came up over the window being
+/// resized and promised a drop nobody asked for. A move keeps the window's
+/// size; a resize does not.
+#[test]
+fn a_resize_is_not_a_drop_and_raises_no_overlay() {
+    let (mut reactor, dragged, target, space, _frame) =
+        reactor_with_two_tiled_windows(LayoutMode::Bsp);
+    let frame = reactor.state.windows.window(dragged).unwrap().frame_monotonic;
+    reactor.config.settings.ui.drop_overlay.enabled = true;
+    reactor.drag_manager.drag_state = DragState::Active {
+        session: DragSession {
+            window: dragged,
+            last_frame: frame,
+            origin_space: Some(space),
+            settled_space: Some(space),
+            layout_dirty: true,
+        },
+    };
+    // The drag manager notes where the drag began, at the window's own size.
+    reactor.drag_manager.drag_swap_manager.set_target(dragged, frame, None);
+
+    let target_frame = reactor.state.windows.window(target).unwrap().frame_monotonic;
+    // Near the target's left edge: inside one tree the middle of a window is a
+    // swap, which previews nothing, so a control case aimed there would pass
+    // for a reactor that never draws an overlay at all.
+    let cursor = CGPoint::new(target_frame.origin.x + 12., target_frame.mid().y);
+
+    // First the control: carried to that pointer at its own size, this is an
+    // ordinary move and the overlay comes up. Without this the assertion below
+    // proves nothing.
+    let carried = CGRect::new(
+        CGPoint::new(target_frame.origin.x + 10., target_frame.origin.y + 10.),
+        frame.size,
+    );
+    reactor.evaluate_drop_target(dragged, carried, Some(cursor));
+    assert!(
+        reactor.drag_manager.drop_overlay_shown,
+        "a move onto a target's edge promises a drop"
+    );
+
+    // Now the same pointer, reached by widening rather than by moving.
+    let widened = CGRect::new(
+        frame.origin,
+        CGSize::new(frame.size.width + 220., frame.size.height),
+    );
+    reactor.evaluate_drop_target(dragged, widened, Some(cursor));
+    assert!(
+        !reactor.drag_manager.drop_overlay_shown,
+        "resizing into a neighbour must not promise a drop onto it"
+    );
+    assert_eq!(
+        reactor.get_pending_drag_swap(),
+        None,
+        "and must not leave a swap pending for MouseUp"
+    );
+}
+
 #[test]
 fn drop_overlay_stays_while_the_drop_is_still_pending() {
     let (mut reactor, dragged, target, space, _frame) =
@@ -12268,4 +12328,88 @@ fn display_churn_release_still_flushes_the_deferred_inventory_refresh() {
             .any(|request| matches!(request, Request::RefreshWindowInventory(_))),
         "the first snapshot after display churn must still flush the deferred refresh: {requests:?}"
     );
+}
+
+mod scratch_stack_attach {
+    use test_log::test;
+
+    use super::*;
+
+    fn stacks(node: &rift_protocol::ContainerTreeNode) -> Vec<(Vec<WindowId>, String)> {
+        let mut out = Vec::new();
+        fn walk(n: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<WindowId>, String)>) {
+            let kind = format!("{:?}", n.layout_kind);
+            if kind.to_lowercase().contains("stack") {
+                let members: Vec<WindowId> = n
+                    .children
+                    .iter()
+                    .filter_map(|c| c.window_id)
+                    .map(|w| WindowId::new(w.pid, w.idx))
+                    .collect();
+                if !members.is_empty() {
+                    out.push((members, kind));
+                }
+            }
+            for c in &n.children {
+                walk(c, out);
+            }
+        }
+        walk(node, &mut out);
+        out
+    }
+
+    #[test]
+    fn scratch_attach_keeps_stack() {
+        let (mut apps, mut reactor) = test_context();
+        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
+        let space1 = SpaceId::new(1);
+        let space2 = SpaceId::new(2);
+
+        apps.make_app_and_settle_on_screen(&mut reactor, screen1, space1, 1, make_windows(4));
+        reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
+            workspace: None,
+            mode: LayoutMode::Traditional,
+        });
+        apps.simulate_until_quiet(&mut reactor);
+        reactor.handle_test_layout_command(LayoutCommand::Ascend);
+        reactor.handle_test_layout_command(LayoutCommand::ToggleStack);
+        apps.simulate_until_quiet(&mut reactor);
+
+        let tree = reactor
+            .query_layout_state(Some(space1.get()), None)
+            .expect("layout state")
+            .container_tree;
+        let before = stacks(&tree);
+        println!("BEFORE {:?}", before);
+        assert!(!before.is_empty(), "test setup made no stack");
+
+        let wsids: Vec<_> = (1..=4)
+            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
+            .collect();
+        reactor.handle_event(Event::DisplayChurnBegin);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1, screen2],
+            vec![Some(space1), Some(space2)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.allow_space_remap = true;
+                state.should_force_refresh_layout = true;
+                for wsid in &wsids {
+                    state.active_window_spaces.insert(*wsid, space1);
+                }
+            },
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+
+        let tree = reactor
+            .query_layout_state(Some(space1.get()), None)
+            .expect("layout state")
+            .container_tree;
+        let after = stacks(&tree);
+        println!("AFTER  {:?}", after);
+        assert_eq!(before, after, "attach changed the survivor's stack");
+    }
 }

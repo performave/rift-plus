@@ -3963,6 +3963,31 @@ impl LayoutEngine {
         grew
     }
 
+    /// Discard what was learnt about `window`'s minimum size.
+    ///
+    /// A learnt minimum is self-reinforcing: the layout stops asking for less
+    /// than it, so the window is never seen smaller, so `relax_observed_min_size`
+    /// -- which only ever fires on seeing one smaller -- can never bring it
+    /// down again. One learnt from a report that was not really a refusal is
+    /// therefore permanent, and the window can never be made smaller than
+    /// whatever size it happened to be at the time.
+    ///
+    /// The user reaching for a window's edge is the moment to let that go.
+    /// They are asking for a size; if the app truly will not take it, it will
+    /// refuse again and the refusal will be learnt again once the drag is over.
+    /// `ax_min` is what the app itself reports through the accessibility API,
+    /// which is not in doubt and is kept; the constraint record holds the
+    /// larger of the two, so it has to be rebuilt from the half that stays.
+    pub fn forget_observed_min_size(&mut self, window: WindowId, ax_min: Option<CGSize>) {
+        if self.observed_min_sizes.remove(&window).is_none() {
+            return;
+        }
+        if let Some(constraints) = self.window_layout_constraints.get_mut(&window) {
+            constraints.min_width = ax_min.map_or(0.0, |size| size.width);
+            constraints.min_height = ax_min.map_or(0.0, |size| size.height);
+        }
+    }
+
     /// A window seen at `size` can evidently be that size, so a recorded
     /// minimum above it was wrong — an app's minimum can change with its
     /// content — and comes down to match.
@@ -4218,6 +4243,57 @@ mod tests {
             &LayoutSettings::default(),
             None,
         )
+    }
+
+    /// A learnt minimum is self-reinforcing. The layout stops asking for less
+    /// than it, so the window is never seen smaller, so `relax_observed_min_size`
+    /// -- which only fires on seeing one smaller -- can never bring it down.
+    /// One learnt from a report that was not a refusal is therefore permanent,
+    /// and the window has a few pixels of travel in it for the rest of its
+    /// life. Reaching for its edge has to be able to clear it.
+    #[test]
+    fn a_learnt_minimum_can_be_let_go_of_but_the_apps_own_cannot() {
+        let mut engine = test_engine();
+        let wid = WindowId::new(1, 1);
+
+        // The app reports a real minimum of its own through AX.
+        let ax_min = CGSize::new(400.0, 300.0);
+        engine.window_layout_constraints.insert(wid, WindowLayoutConstraints {
+            is_resizable: true,
+            min_width: ax_min.width,
+            min_height: ax_min.height,
+            ..WindowLayoutConstraints::default()
+        });
+
+        // Then a report that looks like a refusal teaches it a much larger one.
+        assert!(
+            engine.note_observed_min_size(
+                wid,
+                CGSize::new(500.0, 400.0),
+                CGSize::new(1200.0, 900.0)
+            ),
+            "a window that came back bigger than it was asked for teaches a minimum"
+        );
+        let learnt = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!((learnt.min_width, learnt.min_height), (1200.0, 900.0));
+
+        // Nothing can relax it, because nothing will ever ask for less.
+        engine.relax_observed_min_size(wid, CGSize::new(1200.0, 900.0));
+        let stuck = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!(
+            (stuck.min_width, stuck.min_height),
+            (1200.0, 900.0),
+            "seeing the window at the size it is stuck at relaxes nothing"
+        );
+
+        // Reaching for the edge lets the learnt half go, and keeps the app's.
+        engine.forget_observed_min_size(wid, Some(ax_min));
+        let freed = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!(
+            (freed.min_width, freed.min_height),
+            (ax_min.width, ax_min.height),
+            "what rift inferred goes; what the app itself reported stays"
+        );
     }
 
     /// A desktop whose tree cannot be put back after a display returns is

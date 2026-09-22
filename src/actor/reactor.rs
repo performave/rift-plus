@@ -2163,6 +2163,20 @@ impl Reactor {
                         observed,
                     } = disposition
                         && fits_display(observed)
+                        // Not while the user is dragging an edge. rift writes
+                        // a new frame every few milliseconds during a resize
+                        // and an app that has not caught up reports the size
+                        // it still has -- which is larger than what was asked
+                        // for, and so indistinguishable from a refusal. Learnt
+                        // then, the minimum is whatever size the window
+                        // happened to be when the drag began, and because a
+                        // learnt minimum stops the layout ever asking for less,
+                        // nothing afterwards can bring it back down. That is
+                        // how a window ends up with a few pixels of travel in
+                        // it. An app's real minimum still arrives through AX,
+                        // and a real refusal is still learnt once the drag is
+                        // over.
+                        && self.modifier_drag.is_none()
                         && self
                             .layout_manager
                             .layout_engine
@@ -5680,6 +5694,12 @@ impl Reactor {
             return;
         };
         let frame = window.frame_monotonic;
+        let ax_min = window.info.min_size;
+        // Reaching for a window's edge is a request for a size, and a minimum
+        // rift merely inferred should not stand in the way of one. Anything
+        // the app genuinely will not do it will refuse again, and the refusal
+        // is learnt again once the drag is over.
+        self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
         self.modifier_drag = Some(ModifierDragState {
             window: wid,
             action,
@@ -5708,6 +5728,8 @@ impl Reactor {
             return;
         };
         let frame = window.frame_monotonic;
+        let ax_min = window.info.min_size;
+        self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
         self.modifier_drag = Some(ModifierDragState {
             window: wid,
             action: crate::common::config::MouseAction::Resize,
@@ -7094,6 +7116,34 @@ impl Reactor {
         if !self.is_in_drag() {
             trace!(?wid, "Skipping swap: not in drag (mouse up received)");
             return;
+        }
+
+        // A resize is not a drop. Dragging a window's edge or corner changes
+        // its size and leaves the pointer sitting over its neighbours, which
+        // is indistinguishable, to everything below, from carrying the window
+        // there to split with them -- so the overlay came up over the very
+        // window being resized and the drop it promised was one the user had
+        // not asked for. Moving a window keeps its size; resizing it does not,
+        // and that is the whole difference.
+        const RESIZE_SLOP: f64 = 2.0;
+        if let Some(origin) = self.drag_manager.origin_frame() {
+            let resizing = (new_frame.size.width - origin.size.width).abs() > RESIZE_SLOP
+                || (new_frame.size.height - origin.size.height).abs() > RESIZE_SLOP;
+            if resizing {
+                trace!(?wid, "Drag is a resize, not a move; no drop target");
+                self.hide_drop_region();
+                self.drag_manager.drag_swap_manager.set_target(wid, new_frame, None);
+                // And drop any swap already pending. Taking the overlay down
+                // is not enough on its own: a drop the earlier reports queued
+                // would still be performed at MouseUp, so a resize that
+                // wandered over a neighbour on its way ended by rearranging
+                // the tree.
+                if let DragState::PendingSwap { session, .. } = &self.drag_manager.drag_state {
+                    let session = session.clone();
+                    self.drag_manager.drag_state = DragState::Active { session };
+                }
+                return;
+            }
         }
 
         let server_id = {
