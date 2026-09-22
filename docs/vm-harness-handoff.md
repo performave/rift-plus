@@ -662,7 +662,17 @@ without the guard). The two content guards — `source_still_exists` and
 `source_is_now_owned_by_another_display` — are untouched and still want
 evidence of their own.
 
-**rift dies on an unknown config key.** `src/bin/rift.rs:190` unwraps the config
-parse, and `MouseSettings` is `deny_unknown_fields`, so running an older binary
-against a newer config panics at startup rather than warning and ignoring the
-key. This bit the A/B test here and would bite any downgrade.
+**rift dies on an unknown config key — fixed, and no longer open.** It used to:
+the entry point unwrapped the config parse and every settings struct is
+`deny_unknown_fields`, so an older binary against a newer config panicked at
+startup and launchd answered the panic by respawning. One stray key left the
+user with no window manager and a restart loop.
+
+Two changes, both in the tree now. `parse_config_file` drops the key the parse
+error names and tries again, up to `MAX_UNKNOWN_KEYS`, warning with the list --
+so a downgrade keeps the rest of its config instead of losing all of it. And
+`src/bin/rift.rs` no longer unwraps: a config it cannot parse at all prints
+what is wrong and carries on with the defaults, which is at least a rift the
+user can fix the file with. Covered by
+`an_unknown_key_is_dropped_rather_than_rejecting_the_config` and
+`an_unknown_key_with_a_multi_line_value_is_dropped_whole`.
