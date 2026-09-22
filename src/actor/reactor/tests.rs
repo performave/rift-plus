@@ -4370,7 +4370,11 @@ fn modifier_drag_echoes_do_not_hold_the_window() {
         ),
         action: crate::common::config::MouseAction::Resize,
     });
-    reactor.handle_event(Event::MouseModifierDrag { dx: -40.0, dy: 0.0 });
+    reactor.handle_event(Event::MouseModifierDrag {
+        dx: -40.0,
+        dy: 0.0,
+        last: false,
+    });
 
     let mut echoed = initial_frame;
     echoed.size.width -= 40.0;
@@ -12481,7 +12485,7 @@ fn a_modifier_resize_carries_the_neighbour_with_it() {
     // The tap reports movement measured from the press, not per step.
     for dx in [-1.3, 58.7, 153.0, 200.0] {
         let before = apps.windows[&right].frame;
-        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0. });
+        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0., last: false });
         apps.simulate_until_quiet(&mut reactor);
         let txid = reactor.transaction_manager.get_last_sent_txid(wsid);
         reactor.handle_event(Event::WindowFrameChanged(
@@ -12571,7 +12575,7 @@ fn a_slow_apps_report_delivered_after_the_release_is_not_a_refusal() {
     // dropping every request on the floor is what an app whose writes are
     // superseding each other looks like from here.
     for dx in [20., 120., 200.] {
-        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0. });
+        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0., last: false });
         let _ = apps.requests();
     }
     reactor.handle_event(Event::MouseUp);

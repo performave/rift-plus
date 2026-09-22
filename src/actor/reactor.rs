@@ -489,6 +489,11 @@ pub enum Event {
         /// holding one write in flight prevents that, and only letting this
         /// one through regardless prevents the cure from eating the position
         /// the gesture ended at.
+        ///
+        /// Defaulted, because the traces under `tests/` were recorded before
+        /// it existed and have to go on replaying: an old recording has no
+        /// final report to mark, and false is what it meant.
+        #[serde(default)]
         last: bool,
     },
     /// Sent by the event tap only when the cursor enters a different window.
@@ -5980,10 +5985,20 @@ impl Reactor {
         }
 
         let floating = self.layout_manager.layout_engine.is_window_floating(wid);
+        // The pointer, beside the size it produced. Everything else in this
+        // record is rift talking to itself -- what it decided, from what base,
+        // with which edge -- and all of it can be self-consistent while the
+        // window still moves against the hand. Only the cursor says which way
+        // the user actually went, and without it "it resizes the wrong way"
+        // cannot be confirmed or denied from a dump, which is why this has
+        // taken so many passes.
+        let cursor_x = window_server::current_cursor_location().ok().map(|p| p.x);
         crate::sys::trace::act(
             "modifier_drag",
             &serde_json::json!({
                 "wid": wid.idx.get(),
+                "cursor_x": cursor_x,
+                "dx": dx,
                 "action": format!("{:?}", drag.action),
                 "floating": floating,
                 "edges": [drag.edges.horizontal, drag.edges.vertical],
