@@ -1202,6 +1202,116 @@ fn matching_rift_frame_clears_pending_target() {
     assert_eq!(reactor.transaction_manager.get_target_frame(wsid), None);
 }
 
+/// Safari's reply to a write it will not honour, as the guest recorded it:
+/// rift asked for 486 wide, and the same transaction came back 574 wide twice,
+/// once flagged as the requested frame with no button state and once with the
+/// button up. The layout went on asking for 486 on every arrange after it, so
+/// Safari sat 88px wider than its slot, over the edge of the display.
+#[test]
+fn a_refusal_reported_twice_under_one_transaction_is_learnt() {
+    let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
+    let asked = CGRect::new(frame.origin, CGSize::new(486.0, 777.0));
+    let got = CGRect::new(frame.origin, CGSize::new(574.0, 777.0));
+    let txid = reactor.transaction_manager.generate_next_txid(wsid);
+    reactor.transaction_manager.store_txid(wsid, txid, asked);
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(true),
+        None,
+    ));
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(false),
+        Some(MouseState::Up),
+    ));
+
+    let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
+    assert!(
+        learnt.is_some_and(|size| size.width >= 574.0),
+        "a window that answered 574 to a request for 486 was not taken to need 574: {learnt:?}"
+    );
+}
+
+/// The same refusal through a real arrange: the frame and transaction are
+/// whatever rift actually sent, not ones stored by hand. Written while chasing
+/// a guest run where Safari sat 88px wider than its slot; this path turned out
+/// to be sound, and the overflow was a display too narrow for five windows'
+/// minimums, which rift converges on by moving the split toward what the app
+/// accepts. Kept because it is the path that matters and nothing else covers
+/// it end to end.
+///
+/// The neighbour is load-bearing. A lone window is asked for the whole screen,
+/// and a reply wider than the display is -- deliberately -- not taken for a
+/// minimum at all, which would make this pass or fail for the wrong reason.
+#[test]
+fn a_refusal_to_a_real_arrange_is_learnt() {
+    let (mut reactor, wid, wsid, space1, _space2, screen) = reactor_with_window_on_space1();
+    let (app_tx, mut app_rx) = crate::actor::channel();
+    reactor.app_manager.apps.get_mut(&wid.pid).unwrap().handle =
+        crate::actor::app::AppThreadHandle::new_for_test(app_tx);
+    reactor.send_layout_event(crate::actor::reactor::LayoutEvent::WindowAdded(space1, wid));
+    // A neighbour, so the slot is half the screen and a refusal can fit on
+    // the display. A lone window is asked for the whole screen, and a reply
+    // wider than that is -- correctly -- not taken for a minimum at all.
+    let neighbour = WindowId::new(wid.pid, 2);
+    reactor.add_test_window(neighbour, WindowServerId::new(102), Some(space1), screen);
+    let workspace = reactor.test_workspace(space1, 0);
+    assert!(reactor.assign_test_window_to_workspace(space1, neighbour, workspace));
+    reactor.send_layout_event(crate::actor::reactor::LayoutEvent::WindowAdded(
+        space1, neighbour,
+    ));
+    // Somewhere the layout will not already have it, so the arrange writes.
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic =
+        CGRect::new(CGPoint::new(300., 300.), CGSize::new(200., 200.));
+    let _ = LayoutManager::update_layout(&mut reactor, false, false, Some(space1));
+
+    let sent: Vec<(CGRect, TransactionId)> = std::iter::from_fn(|| app_rx.try_recv().ok())
+        .filter_map(|(_, request)| match request {
+            Request::SetWindowFrame(w, frame, txid, _) if w == wid => Some((frame, txid)),
+            Request::SetBatchWindowFrame(frames, txid, _) => {
+                frames.into_iter().find(|(w, _)| *w == wid).map(|(_, frame)| (frame, txid))
+            }
+            _ => None,
+        })
+        .collect();
+    let Some(&(asked, txid)) = sent.last() else {
+        panic!("the arrange must write the window, or there is nothing to refuse");
+    };
+    let _ = (screen, wsid);
+    let got = CGRect::new(
+        asked.origin,
+        CGSize::new(asked.size.width + 88.0, asked.size.height),
+    );
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(true),
+        None,
+    ));
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(false),
+        Some(MouseState::Up),
+    ));
+
+    let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
+    assert!(
+        learnt.is_some_and(|size| size.width >= got.size.width - 0.5),
+        "asked for {} and answered {}, but the minimum learnt is {learnt:?}",
+        asked.size.width,
+        got.size.width
+    );
+}
+
 #[test]
 fn frame_acknowledgements_and_unchanged_frames_do_not_invalidate_layout() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
