@@ -551,6 +551,51 @@ filter. Two have now been seen -- an off-display tiled window, and overlaps of
 it. Every geometry finding here before the filter went in is suspect; these are
 not.
 
+## The slot reorder: reproducible, explained, not fixed (2026-09-22)
+
+The most frequent remaining matrix failure, and now reproducible on demand:
+`scripts/slot-order-test.py`, run *after* a scenario has put the guest in the
+state that provokes it. On a clean restart it does not fire at all.
+
+**The cause, from the trace.** A churn rebuilds a desktop's tree from nothing,
+one window at a time. `arrange_calc` for that desktop reads `[1829]`,
+`[1829,1830]`, `[1829,1831,1830]`, `[1829,1831,1832,1830]`,
+`[1829,1831,1834,1832,1830]` -- five entries, five leaves, growing. Whatever
+order insertion gives is the order the desktop ends up with. The detach has
+never shown this because it has a departure record to restore from; only the
+attach reorders, which is why the fault looked like it came from nowhere.
+
+**An attempted fix, reverted.** It restored the order from the pre-churn
+snapshot when a `WindowAdded` completed a rebuild whose leaf *set* matched what
+the snapshot had. In four guest runs it never fired once. On an arrival nothing
+captures a pre-churn snapshot: `capture_pre_churn_layout` is reached from the
+layout-event sink when a window *leaves* a tree, and on an arrival none does.
+The `pre_churn` act visible at an attach was captured by the churn before it.
+So the fix was aimed at a hook that does not exist on that path, and shipping
+it would have put dead code in the churn path behind a confident comment.
+
+**What a real fix needs.** A snapshot captured on arrival as well as departure,
+and a deferred restore that runs once the inventory refresh has settled -- the
+shape `settle_after_departure` already has for the other direction. That is
+design work, not a patch, and it belongs with the `DesktopId` question rather
+than ahead of it.
+
+**Two traps this reproduction fell into first**, both of which made it report
+confidently and wrongly:
+
+- **Read the workspace id beside the order.** `query layout --space-id` answers
+  for that desktop's *active* workspace, and a churn can change which one that
+  is. Two readings from two workspaces read as one workspace reordered.
+- **Watch the desktop the windows are on, not the shown one.** An attach
+  switches the main display to a fresh, empty desktop, so a check pointed at
+  the shown one sees nothing and reports clean.
+
+**And one about validating a churn fix.** The first run after deploying the fix
+held four cycles, which read as a result until the *pre-fix* binary was run the
+same way and held four cycles too. The reproduction needs a scenario run first.
+That is the second time tonight a control has overturned a conclusion; run it
+before the conclusion, not after.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
