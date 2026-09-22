@@ -652,6 +652,59 @@ measuring the confound. Resize the VM window back, or set the guest's
 resolution, and check `rift query displays` reports ~2494 wide before trusting
 geometry results.
 
+## The full battery, and the gap it points at (2026-09-22)
+
+The matrix covers four scenarios. The full seventeen, baseline (`a47039ce`)
+against all fixes (`695b6512`), same sitting: **7 of 17 on both.** Read the
+cells, not the count:
+
+- **Fixed:** `orientation-portrait` ("split orientation changed" on the
+  baseline) -- a portrait display is literally a different size, so this is the
+  per-size tree fix.
+- **Not a regression:** `native-fullscreen-across-churn` failed once on the
+  fixed build. Three runs each: baseline 0 of 3, fixed build 2 of 3. The one
+  failure was Safari still on its way back from fullscreen when the scenario
+  looked; it was tiled a moment later.
+- **Unchanged on both:** `stack-across-churn`, a pair reordered in `clamshell`
+  and `resolution-churn`, the workspace leak in `plain-replug` and
+  `different-monitor`, and `transient-glitch` (mid-churn overlap, known).
+- **Setup failures, since repaired:** `become-main` and `clamshell` found the
+  probe by name, which the guest now reports inconsistently;
+  `straggler-after-return` created its second desktop under the pointer, which
+  was on the wrong display.
+
+**Most of what is left is one missing mechanism: rift has a record for a
+display leaving and nothing for one arriving.** Traced from a single attach
+with a stack on the desktop:
+
+1. ~400ms *before* the reconfiguration arrives, windows start leaving the
+   desktop (its arrange drops 5, 4, 3).
+2. After it, macOS has switched the original display to a fresh, empty desktop
+   and put three of the five windows on another new desktop. rift builds that
+   desktop a fresh tree -- no stack, arbitrary order. The other two are left on
+   the original desktop in no tree.
+3. On the next detach the departure record faithfully "restores" that state:
+   the survivor was showing an empty desktop, so it gets an empty stand-in, and
+   the two tree-less windows are missing from the record (`record_members`:
+   `pre_churn: false, missing: [1556, 1554]` -- the attach's snapshot had
+   expired). From the chair: unplug, and the windows are gone.
+
+The pieces for an arrival-side record exist -- the attach takes and pins a
+pre-churn snapshot, and the departure pass already restores a snapshot tree
+onto whichever desktop now holds its windows. **It was deliberately not built
+blind.** Everything that motivates it is how macOS behaves in this VM when a
+*virtual* display attaches and becomes main. Whether a real display attaching
+does the same -- switch the other display to a fresh desktop and move windows
+off it -- decides whether this is the next feature or a guest artifact. One
+check on real hardware settles it: `rift query displays` and
+`rift query windows --space-id <each>` before and after plugging the external
+in, looking for a desktop id that changed or windows that moved.
+
+Two related observations. The two tree-less windows are not stuck: showing
+their desktop lays them out at once, like any hidden desktop. And released
+mid-churn, TextEdit windows report their default 673x439 -- the size that kept
+turning up in overlap reports.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
