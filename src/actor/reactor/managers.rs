@@ -15,7 +15,7 @@ use crate::common::collections::{HashMap, HashSet};
 use crate::common::config::{LayoutMode, WindowSnappingSettings};
 use crate::layout_engine::LayoutEngine;
 use crate::model::broadcast::{BroadcastEvent, BroadcastSender, protocol_workspace_id};
-use crate::sys::screen::SpaceId;
+use crate::sys::screen::{ScreenInfo, SpaceId};
 
 /// Manages application state and rules
 pub struct AppManager {
@@ -345,6 +345,62 @@ impl LayoutManager {
         Self::apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
     }
 
+    /// Every desktop this pass arranges, each paired with the screen it is
+    /// arranged for and whether that screen is the one showing it.
+    ///
+    /// In ordinary running that is the desktop each live display shows, and
+    /// nothing else: a desktop nobody is looking at is left alone until the
+    /// user switches to it, which exposes it and arranges it then.
+    ///
+    /// A departing display breaks that. macOS hands its desktops to a
+    /// survivor with their trees intact — which is the whole of what
+    /// `displaced_windows = "spaces"` promises — but the survivor goes on
+    /// showing its own desktop, so the adopted ones are never arranged for
+    /// the screen they now live on. Their windows keep the frames the
+    /// geometry of a display that no longer exists gave them: side by side
+    /// off the edge of the world, or piled on top of each other at
+    /// byte-identical coordinates, and rift still counts them tiled.
+    ///
+    /// The engine's own display record is what tells an adopted desktop from
+    /// one the survivor always had. `prune_display_state` drops the record
+    /// for every display that left, so a desktop a live display owns now and
+    /// the engine has no display for is exactly one that came across.
+    /// Arranging it writes the record back, so each such desktop is caught up
+    /// once and the pass narrows to the shown desktops again.
+    fn spaces_to_arrange(
+        reactor: &Reactor,
+        screens: &[ScreenInfo],
+    ) -> Vec<(SpaceId, ScreenInfo, bool)> {
+        let mut arrange = Vec::new();
+        for screen in screens {
+            if let Some(space) = screen.space {
+                arrange.push((space, screen.clone(), true));
+            }
+            let Some(uuid) = screen.display_uuid_opt() else {
+                continue;
+            };
+            let Some(owned) = reactor.space_state.display_space_ids.get(uuid) else {
+                continue;
+            };
+            for space in owned.iter().copied() {
+                if screen.space == Some(space) {
+                    continue;
+                }
+                let engine = &reactor.layout_manager.layout_engine;
+                // A desktop the engine already places on a display was
+                // arranged for that display's screen and needs nothing; one
+                // it has never exposed has no tree to arrange.
+                if engine.display_uuid_for_space(space).is_some()
+                    || !engine.has_active_layout(space)
+                {
+                    continue;
+                }
+                arrange.push((space, screen.clone(), false));
+            }
+        }
+        arrange
+    }
+
     fn calculate_layout(reactor: &mut Reactor, space_scope: Option<SpaceId>) -> LayoutResult {
         if reactor.state.windows.tracked_window_count() == 0 {
             return LayoutResult::new();
@@ -358,14 +414,11 @@ impl LayoutManager {
             .count();
         let mut layout_result = LayoutResult::new();
 
-        for screen in screens {
-            let Some(space) = screen.space else {
-                continue;
-            };
+        for (space, screen, shown) in Self::spaces_to_arrange(reactor, &screens) {
             if space_scope.is_some_and(|scope| scope != space) {
                 continue;
             }
-            if !reactor.is_space_active(space) {
+            if shown && !reactor.is_space_active(space) {
                 crate::sys::trace::act(
                     "arrange_calc",
                     &serde_json::json!({
@@ -470,7 +523,15 @@ impl LayoutManager {
 
         let active_space = reactor.workspace_command_space();
         for (space, layout) in layout_result {
-            if reactor.space_state.screen_by_space(space).is_none() {
+            // A desktop a display owns but is not showing has no screen *by
+            // space*; the display it belongs to is what says where to put it.
+            // `calculate_layout` has already recorded that display, so asking
+            // the engine finds the screen the frames were computed for.
+            let screen = reactor.space_state.screen_by_space(space).or_else(|| {
+                let uuid = reactor.layout_manager.layout_engine.display_uuid_for_space(space)?;
+                reactor.space_state.screens.iter().find(|screen| screen.display_uuid == uuid)
+            });
+            if screen.is_none() {
                 crate::sys::trace::act(
                     "arrange_apply",
                     &serde_json::json!({
@@ -478,7 +539,7 @@ impl LayoutManager {
                     }),
                 );
             }
-            if let Some(screen) = reactor.space_state.screen_by_space(space) {
+            if let Some(screen) = screen {
                 let screen_frame = screen.frame;
                 let display_uuid = screen.display_uuid_owned();
                 let gaps = reactor

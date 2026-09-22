@@ -2124,6 +2124,16 @@ impl Reactor {
                 // Whatever else this report means, the window is this size
                 // now, so no recorded minimum may claim it cannot be.
                 self.layout_manager.layout_engine.relax_observed_min_size(wid, new_frame.size);
+                // And by the same token: a window that has changed size is not
+                // the fixed-size window it was observed to be, whatever the
+                // accessibility API said while it was still starting up.
+                if self.layout_manager.layout_engine.note_window_resized(wid, new_frame.size) {
+                    debug!(
+                        ?wid,
+                        size = ?new_frame.size,
+                        "Window observed as fixed-size has resized; it is not fixed"
+                    );
+                }
                 let disposition = window_workflow::classify_window_frame_change(
                     &mut self.state,
                     &self.transaction_manager,
@@ -5687,7 +5697,13 @@ impl Reactor {
         action: crate::common::config::MouseAction,
     ) {
         self.modifier_drag = None;
-        let Some(wid) = self.state.windows.tracked_window_id(window_server_id) else {
+        let Some(wid) = self.window_for_press(window_server_id, at) else {
+            debug!(
+                ?window_server_id,
+                ?at,
+                "Modifier drag pressed on a window rift does not track and could \
+                 not attribute to one; ignoring"
+            );
             return;
         };
         let Some(window) = self.state.windows.window(wid) else {
@@ -5707,6 +5723,48 @@ impl Reactor {
             last_target: frame,
             edges: ResizeEdges::from_press(frame, at),
         });
+    }
+
+    /// The window a press belongs to.
+    ///
+    /// Usually the window server id under the pointer is one rift tracks and
+    /// this is a lookup. It is not always: an app drawing with several
+    /// surfaces -- Electron ones routinely do, and ChatGPT and Zen are both
+    /// Electron -- can have a child surface under the pointer that rift never
+    /// tracked, because it is not a window in the sense the window manager
+    /// cares about. Failing there meant the press did nothing at all, with no
+    /// hint as to why, and only on some windows and not others: exactly the
+    /// "sometimes the modifier drag does not register" it looked like from
+    /// outside.
+    ///
+    /// So fall back to the tracked window the press actually landed in,
+    /// preferring the smallest such frame — windows overlap, and the smallest
+    /// one containing a point is the one in front of the others at that point
+    /// far more often than not.
+    fn window_for_press(&self, window_server_id: WindowServerId, at: CGPoint) -> Option<WindowId> {
+        if let Some(wid) = self.state.windows.tracked_window_id(window_server_id) {
+            return Some(wid);
+        }
+        let mut best: Option<(WindowId, f64)> = None;
+        for (wid, window) in self.state.windows.iter_windows() {
+            let frame = window.frame_monotonic;
+            if !frame.contains(at) {
+                continue;
+            }
+            let area = frame.size.width * frame.size.height;
+            if best.is_none_or(|(_, smallest)| area < smallest) {
+                best = Some((wid, area));
+            }
+        }
+        if let Some((wid, _)) = best {
+            debug!(
+                ?window_server_id,
+                ?wid,
+                "Press landed on an untracked surface; attributing it to the \
+                 tracked window it is inside"
+            );
+        }
+        best.map(|(wid, _)| wid)
     }
 
     /// Records what an edge drag started on.

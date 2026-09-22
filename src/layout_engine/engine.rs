@@ -1370,7 +1370,7 @@ impl LayoutEngine {
         self.display_last_space.contains_key(display_uuid)
     }
 
-    fn display_uuid_for_space(&self, space: SpaceId) -> Option<String> {
+    pub fn display_uuid_for_space(&self, space: SpaceId) -> Option<String> {
         self.space_display_map.get(&space).and_then(|uuid| uuid.clone())
     }
 
@@ -3963,6 +3963,39 @@ impl LayoutEngine {
         grew
     }
 
+    /// A window seen at a size other than the one it is locked to has
+    /// evidently resized, so it is not the fixed-size window it was observed
+    /// to be.
+    ///
+    /// `is_resizable` comes from the accessibility API at the moment the
+    /// window was discovered, and a window that answers `false` is pinned to
+    /// whatever size it happened to have then -- `fixed_for_axis` returns the
+    /// locked extent and the layout never asks for another. Apps that build
+    /// their window in stages, Electron ones especially, can answer `false`
+    /// while they are still doing it, and the window spends the rest of its
+    /// life pinned to a size it had for a moment during startup.
+    ///
+    /// A window that really is fixed never changes size, so seeing one change
+    /// is proof the observation was wrong, and it is the only proof available
+    /// -- nothing re-reads the attribute.
+    pub fn note_window_resized(&mut self, window: WindowId, size: CGSize) -> bool {
+        let Some(constraints) = self.window_layout_constraints.get_mut(&window) else {
+            return false;
+        };
+        if constraints.is_resizable {
+            return false;
+        }
+        let moved = (size.width - constraints.locked_width).abs() > 1.0
+            || (size.height - constraints.locked_height).abs() > 1.0;
+        if !moved {
+            return false;
+        }
+        constraints.is_resizable = true;
+        constraints.locked_width = size.width;
+        constraints.locked_height = size.height;
+        true
+    }
+
     /// Discard what was learnt about `window`'s minimum size.
     ///
     /// A learnt minimum is self-reinforcing: the layout stops asking for less
@@ -4243,6 +4276,44 @@ mod tests {
             &LayoutSettings::default(),
             None,
         )
+    }
+
+    /// A window pinned by a transient `is_resizable = false` is pinned for
+    /// good: nothing re-reads the attribute, and `fixed_for_axis` then returns
+    /// its locked extent for ever. Apps that build their window in stages can
+    /// answer `false` while they are still doing it.
+    #[test]
+    fn a_window_that_has_resized_is_not_the_fixed_size_window_it_was_observed_as() {
+        let mut engine = test_engine();
+        let wid = WindowId::new(1, 1);
+
+        // Observed mid-startup at a size it does not keep, reporting fixed.
+        engine.window_layout_constraints.insert(wid, WindowLayoutConstraints {
+            is_resizable: false,
+            locked_width: 420.0,
+            locked_height: 300.0,
+            ..WindowLayoutConstraints::default()
+        });
+        let pinned = *engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!(
+            pinned.fixed_for_axis(true),
+            Some(420.0),
+            "a window reported fixed is held at the size it was reported at"
+        );
+
+        // Seeing it at that same size says nothing; it may really be fixed.
+        assert!(!engine.note_window_resized(wid, CGSize::new(420.0, 300.0)));
+        assert!(!engine.window_layout_constraints.get(&wid).unwrap().is_resizable);
+
+        // Seeing it at another size is proof it was never fixed.
+        assert!(engine.note_window_resized(wid, CGSize::new(1100.0, 800.0)));
+        let freed = *engine.window_layout_constraints.get(&wid).unwrap();
+        assert!(freed.is_resizable);
+        assert_eq!(
+            freed.fixed_for_axis(true),
+            None,
+            "and it is no longer pinned to anything"
+        );
     }
 
     /// A learnt minimum is self-reinforcing. The layout stops asking for less
