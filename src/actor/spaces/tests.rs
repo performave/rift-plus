@@ -935,6 +935,124 @@ fn switching_to_another_listed_desktop_is_not_a_replacement() {
     }
 }
 
+/// A desktop that moved to the *other* display has not been replaced.
+///
+/// `source_still_exists` looks through every display's list rather than only
+/// this display's, and that is the whole of what makes this case come out
+/// right -- a desktop macOS carried across is still listed, just somewhere
+/// else, so it reads as present and nothing is remapped. Recorded traces have
+/// a desktop change display twenty times in one clamshell session and fifteen
+/// in the abuse run, so this is the common case, not the corner.
+///
+/// It is safe to trust the lists against each other because they arrive
+/// together: `CGSCopyManagedDisplaySpaces` answers for every display in one
+/// call, so there is no snapshot in which this display's entry has caught up
+/// with a move and the other display's has not. A test that invents one --
+/// the first version of this did -- is asserting against a state the window
+/// server cannot produce, and the remap it then calls a bug is correct
+/// behaviour for the impossible input it was given.
+#[test]
+fn a_desktop_that_moved_to_the_other_display_is_not_a_replacement() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let moved = SpaceId::new(155);
+    let builtin_next = SpaceId::new(257);
+    let builtin_other = SpaceId::new(5);
+    let external_shown = SpaceId::new(143);
+
+    seed_display_desktops(&[
+        ("builtin", &[moved, builtin_other]),
+        ("external", &[external_shown, SpaceId::new(136)]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(moved)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(external_shown)),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // `moved` is now the external display's, and the built-in shows a desktop
+    // it has not shown before. Everything a replacement looks like, except
+    // that the desktop is still there.
+    seed_display_desktops(&[
+        ("builtin", &[builtin_next, builtin_other]),
+        ("external", &[external_shown, SpaceId::new(136), moved]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(builtin_next)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(external_shown)),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.space_remaps,
+                vec![],
+                "a desktop that changed display was taken for a destroyed one, and \
+                 its layout remapped onto the desktop shown in its place"
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
+/// The same move, caught at the moment the other display is *showing* it.
+///
+/// This is the case `source_is_now_owned_by_another_display` is for, and it is
+/// the one guard here that had no test of its own. It fires before
+/// `source_still_exists` is even consulted, so a bug in it would be masked
+/// whenever the lists happen to be complete and exposed only when they are
+/// not -- which is to say, intermittently.
+#[test]
+fn a_desktop_the_other_display_is_now_showing_is_not_a_replacement() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let moved = SpaceId::new(155);
+    let builtin_next = SpaceId::new(257);
+    let builtin_other = SpaceId::new(5);
+
+    seed_display_desktops(&[
+        ("builtin", &[moved, builtin_other]),
+        ("external", &[SpaceId::new(143)]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(moved)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(SpaceId::new(143))),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // The lists are deliberately left without `moved` anywhere, so that
+    // `source_still_exists` is false and only the ownership guard can save it.
+    seed_display_desktops(&[
+        ("builtin", &[builtin_next, builtin_other]),
+        ("external", &[SpaceId::new(143)]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(builtin_next)),
+            make_screen_with(2, "external", 1000.0, 1000.0, Some(moved)),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.space_remaps,
+                vec![],
+                "a desktop another display is showing right now was taken for destroyed"
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
 #[test]
 fn a_snapshot_that_does_not_list_the_display_cannot_claim_a_replacement() {
     let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
