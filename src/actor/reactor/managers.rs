@@ -415,7 +415,10 @@ impl LayoutManager {
         arrange
     }
 
-    fn calculate_layout(reactor: &mut Reactor, space_scope: Option<SpaceId>) -> LayoutResult {
+    pub(super) fn calculate_layout(
+        reactor: &mut Reactor,
+        space_scope: Option<SpaceId>,
+    ) -> LayoutResult {
         if reactor.state.windows.tracked_window_count() == 0 {
             return LayoutResult::new();
         }

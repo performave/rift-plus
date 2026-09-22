@@ -5891,7 +5891,28 @@ impl Reactor {
     /// rift knows where it drove the window, so while the echoes are still
     /// arriving that is the truer answer than what the app has got round to
     /// reporting.
-    fn origin_frame_for_drag(&self, wid: WindowId, reported: CGRect) -> CGRect {
+    fn origin_frame_for_drag(&mut self, wid: WindowId, reported: CGRect) -> CGRect {
+        // The layout's own answer, for a tiled window, in preference to the
+        // app's. A press captures the base that every update of the gesture is
+        // measured from, and the app's report is a frame or two behind while a
+        // drag is in flight -- so at a spasm's rate the base is stale and
+        // usually *smaller* than the window really is. `target = base + dx`
+        // then comes out below the current width for a drag that is moving
+        // right, and the window shrinks while the pointer grows it: not a jump
+        // at the end but a steady pull the wrong way, for as long as the
+        // gesture lasts.
+        //
+        // Only a floating window's frame is its own; there the report is the
+        // truth and there is nothing else to ask.
+        if let Some(space) = self.best_space_for_window_id(wid)
+            && self.layout_manager.layout_engine.is_window_tiled(space, wid)
+            && let Some(frame) = LayoutManager::calculate_layout(self, Some(space))
+                .into_iter()
+                .find(|(s, _)| *s == space)
+                .and_then(|(_, frames)| frames.into_iter().find(|(w, _)| *w == wid).map(|(_, f)| f))
+        {
+            return frame;
+        }
         if !self.modifier_drag_is_settling() {
             return reported;
         }

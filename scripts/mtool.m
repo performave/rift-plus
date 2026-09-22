@@ -83,6 +83,50 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         return 0;
     }
 
+    // thrash x y amplitude cycles cps [mods] [left|right]
+    //
+    // What a hand does, rather than what is easy to assert about. `spam`
+    // returns to its anchor before every release, so each cycle nets to zero
+    // and any residue is the bug -- a clean measurement, and a gentle one.
+    // Nobody spasming on a window edge releases where they pressed: the button
+    // comes up mid-swing, the distances vary, the pauses vary, and some presses
+    // barely move. This is irregular in every dimension a real gesture is.
+    if (!strcmp(cmd, "thrash") && argc > 5) {
+        CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
+        double amp = atof(argv[4]);
+        int cycles = atoi(argv[5]);
+        double cps = argc > 6 ? atof(argv[6]) : 9.0;
+        CGEventFlags flags = argc > 7 ? parse_flags(argv[7]) : 0;
+        int right = argc > 8 && !strcmp(argv[8], "right");
+        CGMouseButton button = right ? kCGMouseButtonRight : kCGMouseButtonLeft;
+        CGEventType downType = right ? kCGEventRightMouseDown : kCGEventLeftMouseDown;
+        CGEventType moveType = right ? kCGEventRightMouseDragged : kCGEventLeftMouseDragged;
+        CGEventType upType = right ? kCGEventRightMouseUp : kCGEventLeftMouseUp;
+
+        if (cps <= 0.0) cps = 9.0;
+        useconds_t period = (useconds_t)(1000000.0 / cps);
+        srandom(1);   // fixed, so a run repeats exactly
+        post(kCGEventMouseMoved, a, 0, flags);
+        usleep(20000);
+        double at = 0.0;
+        for (int c = 0; c < cycles; c++) {
+            post(downType, CGPointMake(a.x + at, a.y), button, flags);
+            int steps = 1 + (random() % 5);
+            double to = at;
+            for (int i = 0; i < steps; i++) {
+                to = ((double)(random() % 2001) / 1000.0 - 1.0) * amp;
+                post(moveType, CGPointMake(a.x + to, a.y), button, flags);
+                usleep((period / 16) + (random() % (period / 8 + 1)));
+            }
+            post(upType, CGPointMake(a.x + to, a.y), button, flags);
+            at = to;
+            usleep((period / 4) + (random() % (period / 2 + 1)));
+        }
+        printf("thrashed %d cycles at ~%.1f/s, +/-%.0f from %.0f,%.0f button=%s\n",
+               cycles, cps, amp, a.x, a.y, right ? "right" : "left");
+        return 0;
+    }
+
     // spam x y amplitude cycles cps [mods] [left|right]
     //
     // Whole press-drag-release cycles at a click rate, alternating direction
