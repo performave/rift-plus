@@ -83,6 +83,95 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         return 0;
     }
 
+    // spam x y amplitude cycles cps [mods] [left|right]
+    //
+    // Whole press-drag-release cycles at a click rate, alternating direction
+    // every cycle. `drag` cannot do this: it pads 80ms either side of the
+    // button, so a loop around it tops out near 2.5 cycles a second, and the
+    // report Eric is describing is 8-9 -- a hand spasming on a window edge.
+    // What that rate buys is overlap: rift's writes for one drag, and the
+    // app's notifications trailing them, are still in flight when the next
+    // press captures the frame it will measure everything from.
+    if (!strcmp(cmd, "spam") && argc > 5) {
+        CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
+        double amp = atof(argv[4]);
+        int cycles = atoi(argv[5]);
+        double cps = argc > 6 ? atof(argv[6]) : 8.0;
+        CGEventFlags flags = argc > 7 ? parse_flags(argv[7]) : 0;
+        int right = argc > 8 && !strcmp(argv[8], "right");
+        CGMouseButton button = right ? kCGMouseButtonRight : kCGMouseButtonLeft;
+        CGEventType downType = right ? kCGEventRightMouseDown : kCGEventLeftMouseDown;
+        CGEventType moveType = right ? kCGEventRightMouseDragged : kCGEventLeftMouseDragged;
+        CGEventType upType = right ? kCGEventRightMouseUp : kCGEventLeftMouseUp;
+
+        if (cps <= 0.0) cps = 8.0;
+        useconds_t period = (useconds_t)(1000000.0 / cps);
+        post(kCGEventMouseMoved, a, 0, flags);
+        usleep(20000);
+        for (int c = 0; c < cycles; c++) {
+            double to = (c % 2 == 0) ? amp : -amp;
+            post(downType, a, button, flags);
+            // Three samples is enough to read as a drag and not a click, and
+            // is about what a hand produces in the tens of milliseconds a fast
+            // click is down for.
+            for (int i = 1; i <= 3; i++) {
+                double x = a.x + to * ((double)i / 3.0);
+                post(moveType, CGPointMake(x, a.y), button, flags);
+                usleep(period / 8);
+            }
+            post(upType, CGPointMake(a.x + to, a.y), button, flags);
+            usleep(period / 2);
+        }
+        printf("spammed %d cycles at %.1f/s, +/-%.0f from %.0f,%.0f flags=0x%llx button=%s\n",
+               cycles, cps, amp, a.x, a.y, (unsigned long long)flags,
+               right ? "right" : "left");
+        return 0;
+    }
+
+    // wiggle x y amplitude reversals [mods] [steps-per-leg] [left|right]
+    //
+    // One press, the pointer swung back and forth across `amplitude`, one
+    // release. A drag that changes direction under the button is a different
+    // thing from a run of separate drags: the reversal happens while the
+    // gesture's own state is live, and a hand spasming on a window's edge
+    // produces it constantly. Sending it as separate drags -- which is what a
+    // loop around `drag` gives you -- tests the wrong thing.
+    if (!strcmp(cmd, "wiggle") && argc > 5) {
+        CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
+        double amp = atof(argv[4]);
+        int reversals = atoi(argv[5]);
+        CGEventFlags flags = argc > 6 ? parse_flags(argv[6]) : 0;
+        int steps = argc > 7 ? atoi(argv[7]) : 6;
+        if (steps < 1) steps = 1;
+        int right = argc > 8 && !strcmp(argv[8], "right");
+        CGMouseButton button = right ? kCGMouseButtonRight : kCGMouseButtonLeft;
+        CGEventType downType = right ? kCGEventRightMouseDown : kCGEventLeftMouseDown;
+        CGEventType moveType = right ? kCGEventRightMouseDragged : kCGEventLeftMouseDragged;
+        CGEventType upType = right ? kCGEventRightMouseUp : kCGEventLeftMouseUp;
+
+        post(kCGEventMouseMoved, a, 0, flags);
+        usleep(60000);
+        post(downType, a, button, flags);
+        usleep(40000);
+        double at = 0.0;
+        for (int leg = 0; leg < reversals; leg++) {
+            double to = (leg % 2 == 0) ? amp : 0.0;
+            for (int i = 1; i <= steps; i++) {
+                double t = (double)i / steps;
+                double x = at + (to - at) * t;
+                post(moveType, CGPointMake(a.x + x, a.y), button, flags);
+                usleep(8000);   // twice a hand's rate: the spasm case
+            }
+            at = to;
+        }
+        usleep(40000);
+        post(upType, CGPointMake(a.x + at, a.y), button, flags);
+        printf("wiggled from %.0f,%.0f by %.0f over %d reversals flags=0x%llx button=%s\n",
+               a.x, a.y, amp, reversals, (unsigned long long)flags,
+               right ? "right" : "left");
+        return 0;
+    }
+
     // gesture dock-swipe [phase] | gesture processed [phase]
     //
     // rift reads gestures off the event tap as CGEvents of type 29 (gesture)

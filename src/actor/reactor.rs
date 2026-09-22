@@ -587,6 +587,11 @@ pub struct Reactor {
     /// rift's writes, so the last few land after the button is up and have
     /// to be read as echoes too.
     modifier_drag_ended: Option<std::time::Instant>,
+    /// The window a modifier drag last ended on, and the frame rift had
+    /// driven it to. A press that lands while those writes are still in
+    /// flight measures from this rather than from the window's last reported
+    /// frame, which is a frame or two behind.
+    modifier_drag_left_at: Option<(WindowId, CGRect)>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -758,6 +763,7 @@ impl Reactor {
             transaction_manager: transaction_manager::TransactionManager::new(window_tx_store),
             modifier_drag: None,
             modifier_drag_ended: None,
+            modifier_drag_left_at: None,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -2412,6 +2418,7 @@ impl Reactor {
                 let ended_modifier_drag = self.modifier_drag.take();
                 if let Some(drag) = ended_modifier_drag {
                     self.modifier_drag_ended = Some(crate::sys::trace::now());
+                    self.modifier_drag_left_at = Some((drag.window, drag.last_target));
                     // What the gesture asked for against what the window is
                     // actually left at. A drag that ends somewhere other than
                     // where it was aimed is the complaint that is hardest to
@@ -5748,7 +5755,7 @@ impl Reactor {
         let Some(window) = self.state.windows.window(wid) else {
             return;
         };
-        let frame = window.frame_monotonic;
+        let frame = self.origin_frame_for_drag(wid, window.frame_monotonic);
         // Reaching for a window's edge is a request for a size, and a minimum
         // rift merely inferred should not stand in the way of one. Anything
         // the app genuinely will not do it will refuse again, and the refusal
@@ -5831,6 +5838,37 @@ impl Reactor {
         }
     }
 
+    /// Where a drag starting now should measure from.
+    ///
+    /// Normally the window's last reported frame, which is where it is. Not
+    /// while the previous drag's writes are still in flight: an app reports a
+    /// frame or two behind, so a press landing inside that window measures
+    /// from a stale frame, and the gesture is applied to a base that is
+    /// already out of date.
+    ///
+    /// At a hand's speed this never comes up, because the app catches up
+    /// between gestures. At eight or nine presses a second it comes up on
+    /// every one, and the error does not cancel: reproduced in the guest,
+    /// sixteen cycles alternating equally left and right -- which should end
+    /// exactly where they began -- walked a window from 617px to 460px, and a
+    /// later burst took it to 260px. Each press measured from a base the
+    /// previous press had already moved, so the window ratcheted one way
+    /// regardless of which way the pointer went, which is what "it resizes in
+    /// the opposite direction" looks like from the outside.
+    ///
+    /// rift knows where it drove the window, so while the echoes are still
+    /// arriving that is the truer answer than what the app has got round to
+    /// reporting.
+    fn origin_frame_for_drag(&self, wid: WindowId, reported: CGRect) -> CGRect {
+        if !self.modifier_drag_is_settling() {
+            return reported;
+        }
+        match self.modifier_drag_left_at {
+            Some((last, frame)) if last == wid => frame,
+            _ => reported,
+        }
+    }
+
     /// Records what an edge drag started on.
     ///
     /// Same state as a modifier drag -- from here the two are the same gesture
@@ -5849,7 +5887,7 @@ impl Reactor {
         let Some(window) = self.state.windows.window(wid) else {
             return;
         };
-        let frame = window.frame_monotonic;
+        let frame = self.origin_frame_for_drag(wid, window.frame_monotonic);
         self.forget_inferred_minimums_for_resize(wid);
         self.modifier_drag = Some(ModifierDragState {
             window: wid,
