@@ -25,6 +25,15 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A desktop a departed display handed over is laid out for its new screen.**
+  macOS carries a leaving display's desktops to a survivor with their trees
+  intact, but the survivor goes on showing its own, and rift only ever arranged
+  the desktop each display shows. The visitors kept the frames the geometry of
+  a display that no longer exists gave them -- off the edge of the remaining
+  screen, or piled on top of one another at identical coordinates -- while rift
+  still counted them tiled. Each adopted desktop is now caught up once, when it
+  arrives.
+
 - **The mouse gestures survive the sync.** Upstream's event tap subscribes to
   mouse down and up but not *dragged*, because it acquires drags through AX.
   This fork drives modifier drags, the tile-edge grab and the float-strip
