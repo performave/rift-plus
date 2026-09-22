@@ -224,6 +224,57 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         return 0;
     }
 
+    // path x y dx1,dx2,... [mods] [steps-per-leg] [left|right]
+    //
+    // One press, a polyline of horizontal offsets from the press point, one
+    // release. `wiggle` reverses only between its amplitude and zero, which
+    // can never ask the question this is for: what happens when a gesture
+    // pushes a window past a size limit and then comes back *part* of the way.
+    // Going all the way back lands on the origin either way, so a dead zone at
+    // the limit is invisible to it. Here the turning points are given, so
+    // "out to -600, back to -300" is expressible and the width at the end has
+    // one right answer.
+    if (!strcmp(cmd, "path") && argc > 4) {
+        CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
+        double legs[64];
+        int n = 0;
+        for (const char *p = argv[4]; *p && n < 64; ) {
+            legs[n++] = atof(p);
+            const char *c = strchr(p, ',');
+            if (!c) break;
+            p = c + 1;
+        }
+        if (n == 0) { fprintf(stderr, "path: no offsets\n"); return 1; }
+        CGEventFlags flags = argc > 5 ? parse_flags(argv[5]) : 0;
+        int steps = argc > 6 ? atoi(argv[6]) : 8;
+        if (steps < 1) steps = 1;
+        int right = argc > 7 && !strcmp(argv[7], "right");
+        CGMouseButton button = right ? kCGMouseButtonRight : kCGMouseButtonLeft;
+        CGEventType downType = right ? kCGEventRightMouseDown : kCGEventLeftMouseDown;
+        CGEventType moveType = right ? kCGEventRightMouseDragged : kCGEventLeftMouseDragged;
+        CGEventType upType = right ? kCGEventRightMouseUp : kCGEventLeftMouseUp;
+
+        post(kCGEventMouseMoved, a, 0, flags);
+        usleep(60000);
+        post(downType, a, button, flags);
+        usleep(40000);
+        double at = 0.0;
+        for (int leg = 0; leg < n; leg++) {
+            double to = legs[leg];
+            for (int i = 1; i <= steps; i++) {
+                double t = (double)i / steps;
+                post(moveType, CGPointMake(a.x + at + (to - at) * t, a.y), button, flags);
+                usleep(12000);
+            }
+            at = to;
+        }
+        usleep(60000);
+        post(upType, CGPointMake(a.x + at, a.y), button, flags);
+        printf("path from %.0f,%.0f through %d leg(s) ending at %+.0f flags=0x%llx button=%s\n",
+               a.x, a.y, n, at, (unsigned long long)flags, right ? "right" : "left");
+        return 0;
+    }
+
     // gesture dock-swipe [phase] | gesture processed [phase]
     //
     // rift reads gestures off the event tap as CGEvents of type 29 (gesture)
@@ -265,6 +316,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 
     fprintf(stderr, "usage: mtool move <x> <y> | click <x> <y> | "
                     "drag <x1> <y1> <x2> <y2> [cmd+alt+ctrl+shift] [steps] [left|right] | "
+                    "path <x> <y> <dx1,dx2,...> [mods] [steps] [left|right] | "
                     "gesture dock-swipe|processed [phase]\n");
     return 1;
 } }
