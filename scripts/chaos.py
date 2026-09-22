@@ -955,10 +955,24 @@ def check_no_desktop_leak(base: dict, now: dict, phase: str) -> None:
                         f"(new: {new})")
 
 
-def check_no_workspace_leak(base: dict, now: dict, phase: str) -> None:
-    if now["workspace_total"] > base["workspace_total"]:
+def check_no_workspace_leak(base: dict, now: dict, phase: str, patience: float = 12.0) -> None:
+    """The workspace count must come back to where it started.
+
+    Read once, at the end of a scenario, it caught the stand-in desktop rift
+    makes at a departure before its scheduled destruction -- it is retired once
+    nothing shows it, which is after the snapshot -- and reported +1. The same
+    six plug/unplug cycles measured on their own ended exactly level (275 to
+    275, one desktop renumbered). So a count above the start is re-read for a
+    few seconds; one that stays up is a leak.
+    """
+    total = now["workspace_total"]
+    deadline = time.time() + patience
+    while total > base["workspace_total"] and time.time() < deadline:
+        time.sleep(1.0)
+        total = workspace_total(rift("displays") or [])
+    if total > base["workspace_total"]:
         raise Violation(f"{phase}: workspace leak {base['workspace_total']} -> "
-                        f"{now['workspace_total']} (a missed remap orphans the old one)")
+                        f"{total} (a missed remap orphans the old one)")
 
 
 def check_no_limbo(phase: str) -> None:
