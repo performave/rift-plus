@@ -249,6 +249,24 @@ pub fn classify_window_frame_change(
         && let Some(seen) = last_seen
     {
         if seen != transactions.get_last_sent_txid(server) {
+            // A reply to a write rift has since superseded. Usually right to
+            // ignore -- but a size refusal dropped here is never seen again,
+            // because the app does not report a size that does not change, so
+            // record the ones that would have been refusals.
+            if new_frame.size.width > target.size.width + 1.0
+                || new_frame.size.height > target.size.height + 1.0
+            {
+                crate::sys::trace::act(
+                    "refusal_stale",
+                    &serde_json::json!({
+                        "wid": wid.idx.get(),
+                        "seen": seen,
+                        "last_sent": transactions.get_last_sent_txid(server),
+                        "asked": [target.size.width, target.size.height],
+                        "got": [new_frame.size.width, new_frame.size.height],
+                    }),
+                );
+            }
             query_mouse_for_active_drag(drag, mouse_state);
             return FrameChangeDisposition::Handled;
         }
@@ -279,6 +297,23 @@ pub fn classify_window_frame_change(
     if requested {
         query_mouse_for_active_drag(drag, mouse_state);
         if let Some(window) = state.windows.window_mut(wid) {
+            // The reply to a write, with no write on the books to compare it
+            // against: accepted whatever size it is. If it is larger than what
+            // rift last had, it may be a refusal nobody checked -- record it.
+            let before = window.frame_monotonic.size;
+            if new_frame.size.width > before.width + 1.0
+                || new_frame.size.height > before.height + 1.0
+            {
+                crate::sys::trace::act(
+                    "refusal_untracked",
+                    &serde_json::json!({
+                        "wid": wid.idx.get(),
+                        "had": [before.width, before.height],
+                        "got": [new_frame.size.width, new_frame.size.height],
+                        "seen": last_seen,
+                    }),
+                );
+            }
             window.frame_monotonic = new_frame;
         }
         if let Some(server) = server_id {

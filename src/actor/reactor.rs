@@ -2207,6 +2207,26 @@ impl Reactor {
                                     && observed.height <= screen.frame.size.height
                             })
                     };
+                    // What became of a refusal, whichever way it went. One
+                    // reply from Safari that should have widened its slot
+                    // produced no arrange and no act at all, and nothing
+                    // recorded could say which guard had eaten it.
+                    if let window_workflow::FrameChangeDisposition::HandledRefusedSize {
+                        requested,
+                        observed,
+                    } = disposition
+                    {
+                        crate::sys::trace::act(
+                            "refusal",
+                            &serde_json::json!({
+                                "wid": wid.idx.get(),
+                                "asked": [requested.width, requested.height],
+                                "got": [observed.width, observed.height],
+                                "fits_display": fits_display(observed),
+                                "drag_settling": self.modifier_drag_is_settling(),
+                            }),
+                        );
+                    }
                     if let window_workflow::FrameChangeDisposition::HandledRefusedSize {
                         requested,
                         observed,
