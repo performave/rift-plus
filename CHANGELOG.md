@@ -96,7 +96,8 @@ Entries describe this fork's changes relative to
   onto is where it stayed. From the outside: one window does not come back with
   the rest of its desktop. The record now fills that gap from the snapshot
   taken before the churn, which knows where every window was whether or not it
-  had a tree.
+  had a tree. Established by test rather than by the churn battery, whose
+  run-to-run spread is wider than any difference one fix of this size makes.
 
 - **A spasmed resize no longer walks the window the wrong way.** Dragging a
   window's edge fast -- eight or nine presses a second, reversing direction --
