@@ -154,9 +154,50 @@ impl WorkspaceLayouts {
                         tree.create_layout()
                     })
                 }
-                crate::common::collections::hash_map::Entry::Occupied(entry) => {
-                    workspace_layout.last_saved = Some(*entry.get());
-                    *entry.get()
+                crate::common::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let stored = *entry.get();
+                    // A tree remembered for this size is only worth restoring
+                    // if it is still the same arrangement. It was last touched
+                    // the last time the display was this size, and anything
+                    // since -- a reorder, a new stack, a split flipped, a
+                    // window opened -- happened in a different tree and is not
+                    // in it. The size changes far more often than it looks:
+                    // plugging in a display that becomes main takes the menu
+                    // bar off this one, and that is a different size. So
+                    // every attach swapped a stale tree in and every detach
+                    // swapped the current one back, which is why an unplug
+                    // always looked right and a replug reordered the desktop
+                    // or turned a split round, with no churn record involved.
+                    //
+                    // Same shape means only the ratios differ, and keeping a
+                    // size's own ratios is what this per-size memory is for.
+                    // A different shape means the stored tree is out of date:
+                    // carry the current arrangement over instead, the way a
+                    // size seen for the first time already does.
+                    let replaced = match previous_layout {
+                        Some(current)
+                            if current != stored
+                                && tree.contains_layout(current)
+                                && !same_shape(
+                                    &tree.container_tree(current),
+                                    &tree.container_tree(stored),
+                                ) =>
+                        {
+                            let fresh = tree.clone_layout(current);
+                            *entry.get_mut() = fresh;
+                            tree.remove_layout(stored);
+                            tracing::debug!(
+                                ?workspace_id,
+                                ?stored,
+                                ?fresh,
+                                "Stored layout for this size no longer matched the arrangement; carried the current one over"
+                            );
+                            fresh
+                        }
+                        _ => stored,
+                    };
+                    workspace_layout.last_saved = Some(replaced);
+                    replaced
                 }
             };
 
@@ -284,4 +325,19 @@ impl WorkspaceLayouts {
     ) -> crate::common::collections::BTreeSet<crate::model::VirtualWorkspaceId> {
         self.map.keys().copied().collect()
     }
+}
+
+/// Whether two layout trees are the same arrangement: the same windows in the
+/// same places, under the same kinds of container, nested the same way.
+///
+/// Ratios, frames and selection are deliberately left out. They are what a
+/// per-size layout is *meant* to remember differently; everything else is the
+/// user's arrangement, which should not depend on how big the screen is.
+fn same_shape(a: &rift_protocol::ContainerTreeNode, b: &rift_protocol::ContainerTreeNode) -> bool {
+    a.node_type == b.node_type
+        && a.layout_kind == b.layout_kind
+        && a.window_id == b.window_id
+        && a.is_fullscreen == b.is_fullscreen
+        && a.children.len() == b.children.len()
+        && a.children.iter().zip(&b.children).all(|(x, y)| same_shape(x, y))
 }

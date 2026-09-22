@@ -10568,6 +10568,15 @@ mod display_archive {
             (fresh, space2()),
             now,
         );
+        // Let the return pass finish, as its sibling above does. Asserting
+        // before it did was asserting against whatever tree the workspace
+        // last had at this screen size -- which happened to be the recorded
+        // order, and passed for that reason alone. The record is what is
+        // supposed to put the order back, so the record is what gets tested.
+        let landed: Vec<_> = std::iter::once((survivor_wsid, fresh))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        land(&mut f, (fresh, space2()), landed);
 
         assert_eq!(
             order(&test_layout(&mut f.reactor, space2(), screen2())),

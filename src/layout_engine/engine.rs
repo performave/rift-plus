@@ -2298,26 +2298,21 @@ impl LayoutEngine {
                 // stack shows one window at a time, so the visible set is that
                 // single window and there would be nothing to step through —
                 // precisely the case this command exists for.
-                let windows = self.filter_active_workspace_windows(
-                    window_store,
-                    space,
-                    self.workspace_tree(workspace_id).all_windows_in_layout(layout),
-                );
-                if windows.is_empty() {
-                    return EventResponse::default();
-                }
                 let windows =
                     if let LayoutSystemKind::Floating(system) = self.workspace_tree(workspace_id) {
+                        // A floating layout's tree *is* the layout, so it
+                        // answers for its own stack's members.
                         system.cycle_windows(layout)
-                    } else if is_floating {
-                        self.active_floating_windows_in_workspace(window_store, space)
                     } else {
                         self.filter_active_workspace_windows(
                             window_store,
                             space,
-                            self.workspace_tree(workspace_id).visible_windows_in_layout(layout),
+                            self.workspace_tree(workspace_id).all_windows_in_layout(layout),
                         )
                     };
+                if windows.is_empty() {
+                    return EventResponse::default();
+                }
                 if let Some(idx) = windows.iter().position(|&w| Some(w) == self.focused_window) {
                     let next = if forward {
                         (idx + 1) % windows.len()
@@ -4297,6 +4292,108 @@ mod tests {
         )
     }
 
+    fn order_on(engine: &mut LayoutEngine, space: SpaceId) -> Vec<WindowId> {
+        engine.windows_on_space_in_layout_order(space)
+    }
+
+    fn swap_first_two(engine: &mut LayoutEngine, space: SpaceId) {
+        let order = engine.windows_on_space_in_layout_order(space);
+        let workspace = engine.active_workspace(space).expect("an active workspace");
+        let layout = engine.workspace_layouts.active(workspace).expect("an active layout");
+        assert!(
+            engine.workspace_tree_mut(workspace).swap_windows(layout, order[0], order[1]),
+            "the swap must take, or the test proves nothing"
+        );
+    }
+
+    /// A workspace keeps a tree per screen size, and going back to a size it
+    /// has a tree for used to reuse that tree as it was left. It was left the
+    /// last time the display was that size, so anything done since -- here, a
+    /// swap -- happened in a different tree and was simply undone.
+    ///
+    /// The size changes more often than it looks. Plugging in a display that
+    /// becomes main takes the menu bar off this one, which is a different
+    /// size, so every attach swapped a stale tree in and every detach swapped
+    /// the current one back. From the outside: a replug reorders the desktop
+    /// or turns a split round, the unplug always looks right, and no churn
+    /// record is involved at all. In the guest this was the most frequent
+    /// failure left in the matrix.
+    #[test]
+    fn going_back_to_a_screen_size_keeps_what_was_done_at_the_other_one() {
+        let mut store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(4);
+        let with_menu_bar = CGSize::new(2494.0, 1316.0);
+        let without_menu_bar = CGSize::new(2550.0, 1347.0);
+
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, with_menu_bar));
+        for idx in 1..=4 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+        let original = order_on(&mut engine, space);
+
+        // A display attaches and this one loses the menu bar: a first visit to
+        // that size, so the current tree is carried over.
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, without_menu_bar));
+        assert_eq!(order_on(&mut engine, space), original);
+        // Back to the first size once, so it has a tree remembered there.
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, with_menu_bar));
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, without_menu_bar));
+
+        // Rearranged while the display is attached.
+        swap_first_two(&mut engine, space);
+        let rearranged = order_on(&mut engine, space);
+        assert_ne!(rearranged, original);
+
+        // The display leaves; the menu bar comes back.
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, with_menu_bar));
+        assert_eq!(
+            order_on(&mut engine, space),
+            rearranged,
+            "going back to a remembered screen size undid the rearrangement made at the other one"
+        );
+    }
+
+    /// The other half: per-size memory is meant to keep a size's own ratios,
+    /// and it must go on doing that when the arrangement itself is unchanged.
+    #[test]
+    fn a_screen_size_keeps_its_own_ratios_when_the_arrangement_is_the_same() {
+        let mut store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(4);
+        let small = CGSize::new(1440.0, 900.0);
+        let large = CGSize::new(2560.0, 1440.0);
+
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, small));
+        for idx in 1..=2 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+        let workspace = engine.active_workspace(space).unwrap();
+        let small_layout = engine.workspace_layouts.active(workspace).unwrap();
+
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, large));
+        let large_layout = engine.workspace_layouts.active(workspace).unwrap();
+        assert_ne!(
+            small_layout, large_layout,
+            "a first visit to a size gets its own tree"
+        );
+
+        // Same windows, same order: only a ratio could differ. Going back to
+        // the small size must find its own tree, not a copy of the large one.
+        let _ = engine.handle_event(&mut store, LayoutEvent::SpaceExposed(space, small));
+        assert_eq!(
+            engine.workspace_layouts.active(workspace),
+            Some(small_layout),
+            "an unchanged arrangement lost the tree remembered for its screen size"
+        );
+    }
+
     /// A window pinned by a transient `is_resizable = false` is pinned for
     /// good: nothing re-reads the attribute, and `fixed_for_axis` then returns
     /// its locked extent for ever. Apps that build their window in stages can
@@ -6081,6 +6178,38 @@ mod tests {
                 .handle_event(&mut store, LayoutEvent::WindowFocused(space, windows[1]))
                 .changed
         );
+    }
+
+    /// The hidden members of a stack are the whole point of next/prev: a stack
+    /// shows one window at a time, so cycling the *visible* set is cycling a
+    /// list of one. An upstream merge once reinstated exactly that and the
+    /// keys went dead, which is what this guards.
+    #[test]
+    fn next_previous_cycle_the_hidden_members_of_a_stack() {
+        let mut settings = LayoutSettings::default();
+        settings.mode = LayoutMode::Stack;
+        let mut engine = LayoutEngine::new(&VirtualWorkspaceSettings::default(), &settings, None);
+        let mut store = WindowStore::default();
+        let space = SpaceId::new(77);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1000., 800.)),
+        );
+        let windows: Vec<_> = (1..=3).map(|index| WindowId::new(7, index)).collect();
+        for &wid in &windows {
+            let _ = engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, wid));
+        }
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowFocused(space, windows[0]));
+
+        let mut step = |command| {
+            engine
+                .handle_command(&mut store, Some(space), &[space], &HashMap::default(), command)
+                .focus_window
+        };
+        assert_eq!(step(LayoutCommand::NextWindow), Some(windows[1]));
+        assert_eq!(step(LayoutCommand::NextWindow), Some(windows[2]));
+        assert_eq!(step(LayoutCommand::NextWindow), Some(windows[0]));
+        assert_eq!(step(LayoutCommand::PrevWindow), Some(windows[2]));
     }
 
     #[test]

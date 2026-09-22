@@ -34,6 +34,14 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **`next_window` / `prev_window` step through a stack again.** The upstream
+  merge re-applied upstream's version of the cycle list on top of this fork's,
+  shadowing it: the fork asks the layout for *every* window, upstream for the
+  visible ones. In a stack those are the same single window, so the list had
+  one entry and stepping through it landed back where it started -- alt-n and
+  alt-p simply did nothing. The hidden members are the whole point of the
+  command, and a test now says so.
+
 - **A destroyed desktop is matched against its replacement on whichever
   display macOS put it.** The pairing ran display by display: a desktop the
   window server destroyed could only be matched against fresh desktops on the
