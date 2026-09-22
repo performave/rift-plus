@@ -805,6 +805,17 @@ impl Input {
                 if event_type == CGEventType::LeftMouseUp && self.mission_control_active.get() {
                     return false;
                 }
+                // Before any MouseUp. The reactor takes the drag when it sees
+                // one, so a final position sent afterwards finds no drag to
+                // apply it to and is dropped -- and the window is left at
+                // whichever sample was flushed before it. Measured against an
+                // app slow enough to queue: single gestures that returned to
+                // their own anchor left errors of 67, 133 and 200px, one, two
+                // and three samples of a three-step drag. Only the branch
+                // below used to run in the right order, so whether a gesture
+                // ended where it was aimed came down to whether `drag_active`
+                // happened to be set.
+                let ended_modifier_drag = self.end_modifier_drag(event_type);
                 if state.drag_active {
                     state.drag_active = false;
                     self.events_tx.send(Event::MouseUp);
@@ -820,7 +831,7 @@ impl Input {
                 // A release before the drag threshold: it was a click, and
                 // the app already has it.
                 self.pending_float_grab.set(None);
-                if self.end_modifier_drag(event_type) {
+                if ended_modifier_drag {
                     _ = self.events_tx.send(Event::MouseUp);
                     return false;
                 }
@@ -1057,14 +1068,14 @@ impl Input {
         let loc = CGEvent::location(Some(event));
         drag.last = loc;
         if drag.last_sent.elapsed() >= MODIFIER_DRAG_INTERVAL {
-            self.flush_modifier_drag(&mut drag);
+            self.flush_modifier_drag(&mut drag, false);
         }
         self.modifier_drag.set(Some(drag));
         true
     }
 
     /// Reports the drag's total movement so far to the reactor.
-    fn flush_modifier_drag(&self, drag: &mut ModifierDrag) {
+    fn flush_modifier_drag(&self, drag: &mut ModifierDrag, last: bool) {
         let dx = drag.last.x - drag.origin.x;
         let dy = drag.last.y - drag.origin.y;
         // Skipped only when it would repeat what was already reported. The
@@ -1076,10 +1087,10 @@ impl Input {
         // Repeated at a spasm's speed that accumulates: measured against an
         // app slow enough to queue, sixteen out-and-back cycles that each net
         // to zero by construction took a window from 1155px to 433px.
-        if (dx, dy) == drag.last_delta {
+        if (dx, dy) == drag.last_delta && !last {
             return;
         }
-        _ = self.events_tx.send(Event::MouseModifierDrag { dx, dy });
+        _ = self.events_tx.send(Event::MouseModifierDrag { dx, dy, last });
         drag.last_delta = (dx, dy);
         drag.last_sent = Instant::now();
     }
@@ -1094,7 +1105,7 @@ impl Input {
         }
         // Whatever accumulated since the last update still has to land, or the
         // window stops short of where the drag ended.
-        self.flush_modifier_drag(&mut drag);
+        self.flush_modifier_drag(&mut drag, true);
         trace!("Ending modifier drag");
         self.modifier_drag.set(None);
         true

@@ -481,6 +481,15 @@ pub enum Event {
     MouseModifierDrag {
         dx: f64,
         dy: f64,
+        /// The last report of the gesture, sent as the button comes up.
+        ///
+        /// This one may never be coalesced away. A slow app applies rift's
+        /// writes late and out of turn, so an earlier frame can land after the
+        /// final one and the window settles at a size nobody asked for; only
+        /// holding one write in flight prevents that, and only letting this
+        /// one through regardless prevents the cure from eating the position
+        /// the gesture ended at.
+        last: bool,
     },
     /// Sent by the event tap only when the cursor enters a different window.
     /// Window resolution and transition deduplication stay on the input
@@ -592,6 +601,9 @@ pub struct Reactor {
     /// flight measures from this rather than from the window's last reported
     /// frame, which is a frame or two behind.
     modifier_drag_left_at: Option<(WindowId, CGRect)>,
+    /// The update being handled is the gesture's last, and its write must go
+    /// out even if one is already in flight.
+    modifier_drag_final: bool,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -764,6 +776,7 @@ impl Reactor {
             modifier_drag: None,
             modifier_drag_ended: None,
             modifier_drag_left_at: None,
+            modifier_drag_final: false,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -1440,8 +1453,8 @@ impl Reactor {
                 let collapsible = matches!(
                     (pending.as_ref().map(|(_, e)| e), &next.1),
                     (
-                        Some(Event::MouseModifierDrag { .. }),
-                        Event::MouseModifierDrag { .. }
+                        Some(Event::MouseModifierDrag { last: false, .. }),
+                        Event::MouseModifierDrag { last: false, .. }
                     )
                 );
                 if collapsible {
@@ -2670,7 +2683,8 @@ impl Reactor {
                 self.begin_mouse_edge_drag(window, horizontal, vertical);
                 return Ok(EventOutcome::default());
             }
-            Event::MouseModifierDrag { dx, dy } => {
+            Event::MouseModifierDrag { dx, dy, last } => {
+                self.modifier_drag_final = last;
                 // Marked as a resize so the arrange skips animation. Animating
                 // here is worse than pointless: each update starts a fresh
                 // animation that the next one replaces a few milliseconds

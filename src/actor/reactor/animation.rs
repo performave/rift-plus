@@ -195,27 +195,6 @@ impl AnimationManager {
                                 );
                                 continue;
                             }
-                            // A different frame is already out and unanswered,
-                            // and a drag is still running. Stacking another on
-                            // top of it is how an app ends up applying a frame
-                            // from several updates ago *after* a newer one: the
-                            // drag writes every 8ms, which is 125 a second, and
-                            // an app that manages twenty builds a queue that
-                            // outlives the gesture. The window then goes on
-                            // moving after the pointer has stopped, and lands
-                            // wherever the backlog ran out.
-                            //
-                            // Nothing is lost by dropping this one. The drag
-                            // sends a fresher frame in another 8ms, and the
-                            // arrange that follows the release is not a drag
-                            // update, so the final position is always written.
-                            if reactor.modifier_drag.is_some() {
-                                crate::sys::trace::act(
-                                    "layout_skip",
-                                    &(wid.idx.get(), "write still outstanding"),
-                                );
-                                continue;
-                            }
                         }
                         any_frame_changed = true;
                         let txid = wsid
@@ -362,16 +341,6 @@ impl AnimationManager {
                 if pending.same_as(target_frame) {
                     trace!(?wid, ?target_frame, "Skipping redundant instant layout request");
                     crate::sys::trace::act("layout_skip", &(wid.idx.get(), "redundant"));
-                    continue;
-                }
-                // The same coalescing as the animated path above: during a
-                // drag, one frame in flight per window, and the next update
-                // carries a fresher one anyway.
-                if reactor.modifier_drag.is_some() {
-                    crate::sys::trace::act(
-                        "layout_skip",
-                        &(wid.idx.get(), "write still outstanding"),
-                    );
                     continue;
                 }
             }
