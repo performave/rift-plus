@@ -1005,6 +1005,43 @@ def s_become_main(base):
     check_full(base, snapshot("main display left"), "become-main unplugged")
 
 
+@scenario("clamshell", doc="the main display leaves and comes back, as a lid close does")
+def s_clamshell(base):
+    """The closest this guest gets to closing a laptop lid.
+
+    A lid close is not an ordinary unplug: the display that goes away is the
+    one holding the menu bar, so macOS has to move the menu bar, the command
+    space and every desktop the display owned onto a survivor, and then undo
+    all of it when the lid opens. Eric hit a restore failure doing exactly that
+    -- lid shut while unplugging, lid opened before plugging back in -- and
+    none of the existing scenarios remove the *main* display, so none of them
+    exercise that path.
+
+    The guest cannot remove its own framebuffer, so the probe is made main
+    first and removed in that role. What that does not reproduce is the pseudo
+    display a real lid reports (see `settle-and-return-in-one-report`) or the
+    two overlapping transitions of Eric's case, where the external left while
+    the main one was already gone.
+    """
+    plug(); settle()
+    a = snapshot("attached")
+    ext = next((d for d in a["displays"] if d.get("name") == "rift-vm-probe"), None)
+    if not ext:
+        raise Violation("external display not visible to rift")
+    make_main(int(ext["screen_id"])); settle()
+    main_held = snapshot("probe is main")
+
+    # Lid shut: the display owning the menu bar disappears.
+    unplug(); settle(8)
+    check_full(base, snapshot("main display gone"), "clamshell shut")
+
+    # Lid open: it comes back, and should take its desktops with it.
+    plug(); settle(8)
+    back = snapshot("main display back")
+    check_full(main_held, back, "clamshell open")
+    make_main(1); settle(3)
+
+
 @scenario("churn-during-space-switch", doc="unplug while a space switch is in flight")
 def s_churn_during_switch(base):
     plug(); settle()

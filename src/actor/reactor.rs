@@ -5,6 +5,7 @@
 //! changes by sending requests out to the other actors in the system.
 
 mod animation;
+mod desktop_match;
 mod display_archive;
 mod display_record;
 mod events;
