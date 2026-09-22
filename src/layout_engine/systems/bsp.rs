@@ -2304,6 +2304,18 @@ impl LayoutSystem for BspLayoutSystem {
                         // to be measured from.
                         let width = new_frame.size.width;
                         let here = rects.get(&node).copied().unwrap_or(old_frame);
+                        note(
+                            "no split owns that edge; resizing through the other one",
+                            serde_json::json!({
+                                "here": [here.origin.x, here.size.width],
+                                "want_width": width,
+                                "to": if left && !right {
+                                    here.origin.x + width
+                                } else {
+                                    here.max().x - width
+                                },
+                            }),
+                        );
                         if left && !right {
                             let _ = self.move_edge_to(
                                 &rects,
