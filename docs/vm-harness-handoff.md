@@ -153,8 +153,25 @@ below were removed.
 
 ## Findings that were retracted — read this before adding checks
 
-Five results looked like rift bugs and were not. Each is a trap the next
+Six results looked like rift bugs and were not. Each is a trap the next
 person will hit:
+
+- **Windows "stranded off-screen" and "piled on top of each other" after a
+  churn.** The single largest source of false failures here, and the one that
+  survived longest. rift does not arrange a desktop no display is showing --
+  deliberately -- so the frames on one are the last ones applied, which after a
+  churn are the ones the departed display gave them. `check_frames` and
+  `check_frames_within_display` judged those as geometry, so a window sitting
+  at x=2600 on a 56..2550 display read as stranded, and two windows that had
+  shared a 4470-wide arrangement read as overlapping.
+
+  It failed `plain-replug` in all three restoration modes in the first matrix
+  run, which is how it finally got measured properly. Across six plug/unplug
+  transitions, twice over, offences on *shown* desktops numbered zero; the one
+  hidden-desktop offence appeared every time and resolved every time within
+  seconds of switching to that desktop -- x=2600 became x=61. The layout was
+  never wrong, it had not been applied yet, and those are not the same thing.
+  Both checks now take shown desktops only.
 
 - **Frame overlaps.** A slot narrower than an app's minimum size makes the app
   render at its minimum and overflow into its neighbour. Eight windows in a bsp
