@@ -10142,6 +10142,74 @@ mod display_archive {
     /// arrangement when the display is back, scaled to that screen, while
     /// an untouched desktop gets its tree from the record. The command puts
     /// the tree from the departure back on demand.
+    /// The other side of the same coin. A reordering nobody asked for is the
+    /// window server rebuilding a tree during the churn, and it has to be put
+    /// back -- but it is indistinguishable, after the fact, from the user
+    /// swapping two windows: the same windows, a different order. Reading
+    /// every difference as the user's is why a plain replug came back with
+    /// every window kept and its slots shuffled.
+    #[test]
+    fn a_reordering_nobody_asked_for_is_put_back() {
+        let mut f = spaces_fixture();
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], space2());
+        f.reactor.handle_event(Event::WindowServerAppeared(
+            survivor_wsid,
+            space2(),
+            SpaceEventKind::User,
+        ));
+        let merged: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        takeover(
+            &mut f,
+            vec![space2(), space2_extra()],
+            vec![space2(), space2_extra()],
+            merged,
+        );
+
+        // The same reordering as the test above, but reaching around the
+        // reactor: nothing tells the record a command was issued, which is
+        // exactly the position a churn leaves it in.
+        let survivor = f.survivor;
+        let order = move |layout: &[(WindowId, CGRect)]| -> Vec<WindowId> {
+            layout.iter().map(|(wid, _)| *wid).filter(|wid| *wid != survivor).collect()
+        };
+        let first = order(&f.layout_before)[0];
+        f.reactor.send_layout_event(LayoutEvent::WindowFocused(space2(), first));
+        let _ = f.reactor.layout_manager.layout_engine.handle_command(
+            &mut f.reactor.state.windows,
+            Some(space2()),
+            &[space2()],
+            &crate::common::collections::HashMap::default(),
+            LayoutCommand::MoveNode(Direction::Right),
+        );
+        assert_ne!(
+            order(&test_layout(&mut f.reactor, space2(), screen2())),
+            order(&f.layout_before),
+            "the reordering must have taken effect, or this tests nothing"
+        );
+
+        let fresh = SpaceId::new(13);
+        let now: Vec<_> = std::iter::once((survivor_wsid, space2()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space2())))
+            .collect();
+        replug_after_takeover(
+            &mut f,
+            vec![fresh],
+            vec![space2(), space2_extra()],
+            (fresh, space2()),
+            now,
+        );
+
+        assert_eq!(
+            order(&test_layout(&mut f.reactor, space2(), screen2())),
+            order(&f.layout_before),
+            "the recorded order comes back, because nothing asked for the other one"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     #[test]
     fn spaces_mode_keeps_a_desktop_rearranged_while_away_and_can_put_it_back() {
         let mut f = spaces_fixture();
@@ -10170,13 +10238,14 @@ mod display_archive {
         };
         let first = order(&f.layout_before)[0];
         f.reactor.send_layout_event(LayoutEvent::WindowFocused(space2(), first));
-        let _ = f.reactor.layout_manager.layout_engine.handle_command(
-            &mut f.reactor.state.windows,
-            Some(space2()),
-            &[space2()],
-            &crate::common::collections::HashMap::default(),
-            LayoutCommand::MoveNode(Direction::Right),
-        );
+        // Through the reactor, not straight into the layout engine. The record
+        // learns that a reordering was asked for from the command passing
+        // through, and a test that reaches around that is testing a path no
+        // user takes -- reordering by hand and by churn are indistinguishable
+        // once they have happened.
+        let _ = f.reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveNode(
+            Direction::Right,
+        ))));
         let rearranged = order(&test_layout(&mut f.reactor, space2(), screen2()));
         assert_ne!(
             rearranged,

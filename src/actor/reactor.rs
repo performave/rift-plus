@@ -3038,6 +3038,13 @@ impl Reactor {
                     .filter(|wid| self.mouse_follows_focus_permitted_for_app(*wid));
                 let command_space = self.command_context_space();
                 let (visible_spaces, visible_space_centers) = self.visible_spaces_for_layout(false);
+                // Before dispatching: a record standing needs to know the user
+                // edited these desktops, because after the fact their edit and
+                // the window server's are the same thing -- the same windows
+                // in a different order.
+                let commanded: Vec<SpaceId> =
+                    command_space.into_iter().chain(visible_spaces.iter().copied()).collect();
+                self.note_user_layout_command(&commanded);
                 return command_workflow::handle_command_layout(
                     &mut self.state,
                     &mut self.layout_manager,

@@ -189,6 +189,20 @@ pub(super) struct DisplayRecord {
     /// Windows rift itself has sent somewhere; their arrival is not the
     /// user's doing.
     own_moves: HashSet<WindowId>,
+    /// Desktops the user aimed a layout command at while a display was away.
+    ///
+    /// Reordering is the one edit the record cannot tell from the window
+    /// server's own. A window moved to another desktop shows up in `placed`,
+    /// and a layout mode change is visible in `modes`, but a window swapped
+    /// past its neighbour leaves a desktop holding exactly the same windows
+    /// in a different order -- which is also what a churn does to a tree it
+    /// rebuilds. Reading every such difference as the user's meant a churn
+    /// that reordered a desktop had its reordering preserved as though it had
+    /// been asked for, and the recorded order was never put back.
+    ///
+    /// So rift records the commands it ran instead of trying to infer them
+    /// afterwards. The window server issues none.
+    user_commanded: HashSet<SpaceId>,
     pass: Option<Pass>,
 }
 
@@ -578,6 +592,7 @@ impl Reactor {
             modes,
             windows,
             placed: HashMap::default(),
+            user_commanded: HashSet::default(),
             displays,
             survivor,
             met: seen.clone(),
@@ -932,6 +947,19 @@ impl Reactor {
     /// is where it belongs from now on. A window the record does not know
     /// — opened meanwhile — is recorded where it is, so it too is left
     /// alone.
+    /// The user aimed a layout command at these desktops. Only meaningful
+    /// while a record stands, and only for a desktop of a display that is
+    /// away — a command on a display that is present is not something the
+    /// return has to preserve, because nothing is going to overwrite it.
+    pub(super) fn note_user_layout_command(&mut self, spaces: &[SpaceId]) {
+        let Some(record) = self.display_archive.record.as_mut() else {
+            return;
+        };
+        for space in spaces {
+            record.user_commanded.insert(*space);
+        }
+    }
+
     pub(super) fn note_window_placed_while_away(&mut self, wid: WindowId, space: SpaceId) {
         let on_screen: Vec<&str> = self
             .space_state
@@ -1293,7 +1321,25 @@ impl Reactor {
                     .filter(counts)
                     .collect();
                 if then != now {
-                    return true;
+                    // Only the user's reordering is kept. Theirs comes with
+                    // a command aimed at the desktop, or with a window they
+                    // moved onto or off it; the window server's comes with
+                    // neither.
+                    let user_moved_something = record
+                        .placed
+                        .iter()
+                        .any(|(w, (to, _))| *to == here || record.windows.get(w) == Some(x));
+                    if record.user_commanded.contains(x)
+                        || record.user_commanded.contains(&here)
+                        || user_moved_something
+                    {
+                        return true;
+                    }
+                    debug!(
+                        desktop = x.get(),
+                        "The order changed with no command and no placement behind it; \
+                         restoring the recorded one"
+                    );
                 }
                 let modes_now = self.layout_manager.layout_engine.layout_modes_on_space(here);
                 record
