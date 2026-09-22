@@ -615,6 +615,43 @@ confidently and wrongly:
 And one about validating: a post-fix run held four cycles and read as a result
 until the *pre-fix* binary held four cycles too. Run the control first.
 
+## The definitive matrix, and what is left (2026-09-22, resumed)
+
+Baseline (`a47039ce`, before tonight's churn, fullscreen and per-size fixes)
+against the build with all of them (`695b6512`), back to back, one sitting,
+each rebooted with a fresh `layout.ron` and a five-window baseline:
+
+| mode | baseline | all fixes |
+| --- | --- | --- |
+| spaces (default) | 1 of 4 | **4 of 4** |
+| float | 3 of 4 | 3 of 4 |
+| tile | 2 of 4 | 1 of 4 |
+| total | 6 of 12 | **8 of 12** |
+
+Earlier baselines tonight scored 2, 4, 5 and 5, so 8 is the first result
+outside the plus-or-minus-two band, and the default mode is where it moved.
+
+**What the remaining four are.** Three are Safari, always 574 wide, pushed past
+the edge of the display; one is two TextEdits overlapping by 3px with one of
+them 115px wide. All four are the app-minimum confound, made worse because the
+guest's display came back from the restart **1216px wide** (it was 2494). Five
+windows' minimums -- TextEdit around 315-355, Safari 574 -- do not fit in 1216px
+in any arrangement. rift converges on it by moving the split toward what the
+app accepts: Safari's slot went 535, 556, 565, 570 over successive arranges and
+ended 4px over the edge, inside the check's slack. The failures are snapshots
+taken mid-convergence.
+
+One loose end inside that: during the matrix run the first refusal was not
+followed by another arrange until something else triggered one; when the
+desktop was re-exposed by hand, each refusal was followed by an arrange as it
+should be. Both refusal paths are pinned by unit tests and learn correctly.
+Worth watching for on a normal-sized display; not seen there.
+
+**Fix the display size before the next run.** A matrix on a 1216px display is
+measuring the confound. Resize the VM window back, or set the guest's
+resolution, and check `rift query displays` reports ~2494 wide before trusting
+geometry results.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
