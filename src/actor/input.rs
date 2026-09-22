@@ -987,10 +987,17 @@ impl Input {
         loc: CGPoint,
     ) -> Option<ModifierDrag> {
         if !state.event_processing_enabled {
+            info!("Modifier drag: event processing is disabled; no drag started");
             return None;
         }
         let button = mouse_button(event_type)?;
-        let (modifier, action) = state.mouse.action_for(button)?;
+        let Some((modifier, action)) = state.mouse.action_for(button) else {
+            info!(
+                ?button,
+                "Modifier drag: no action configured for this button; no drag started"
+            );
+            return None;
+        };
         let held = modifiers_from_flags(CGEvent::flags(Some(event)));
         if held != modifier {
             // Logged, and at info, because this is the first of three ways a
@@ -1020,7 +1027,7 @@ impl Input {
             );
             return None;
         };
-        debug!(?button, ?action, ?window, "Beginning modifier drag");
+        info!(?button, ?action, ?window, "Modifier drag: beginning");
         _ = self.events_tx.send(Event::MouseModifierDragBegin { window, at: loc, action });
         Some(ModifierDrag {
             button,
