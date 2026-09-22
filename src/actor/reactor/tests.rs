@@ -4374,6 +4374,7 @@ fn modifier_drag_echoes_do_not_hold_the_window() {
         dx: -40.0,
         dy: 0.0,
         last: false,
+        at_x: 0.0,
     });
 
     let mut echoed = initial_frame;
@@ -12485,7 +12486,12 @@ fn a_modifier_resize_carries_the_neighbour_with_it() {
     // The tap reports movement measured from the press, not per step.
     for dx in [-1.3, 58.7, 153.0, 200.0] {
         let before = apps.windows[&right].frame;
-        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0., last: false });
+        reactor.handle_event(Event::MouseModifierDrag {
+            dx,
+            dy: 0.,
+            last: false,
+            at_x: 0.,
+        });
         apps.simulate_until_quiet(&mut reactor);
         let txid = reactor.transaction_manager.get_last_sent_txid(wsid);
         reactor.handle_event(Event::WindowFrameChanged(
@@ -12575,7 +12581,12 @@ fn a_slow_apps_report_delivered_after_the_release_is_not_a_refusal() {
     // dropping every request on the floor is what an app whose writes are
     // superseding each other looks like from here.
     for dx in [20., 120., 200.] {
-        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0., last: false });
+        reactor.handle_event(Event::MouseModifierDrag {
+            dx,
+            dy: 0.,
+            last: false,
+            at_x: 0.,
+        });
         let _ = apps.requests();
     }
     reactor.handle_event(Event::MouseUp);

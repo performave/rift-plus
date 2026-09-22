@@ -495,6 +495,15 @@ pub enum Event {
         /// final report to mark, and false is what it meant.
         #[serde(default)]
         last: bool,
+        /// Where the pointer was when this report was generated.
+        ///
+        /// Not where it is when the reactor gets round to the event: the tap
+        /// queues updates and the reactor drains them afterwards, so sampling
+        /// the cursor here reads the same position for every update in a burst
+        /// and says nothing about which way the hand went. That is the one
+        /// thing the record needs and the only thing it cannot reconstruct.
+        #[serde(default)]
+        at_x: f64,
     },
     /// Sent by the event tap only when the cursor enters a different window.
     /// Window resolution and transition deduplication stay on the input
@@ -609,6 +618,8 @@ pub struct Reactor {
     /// The update being handled is the gesture's last, and its write must go
     /// out even if one is already in flight.
     modifier_drag_final: bool,
+    /// Where the pointer was when the update being handled was generated.
+    modifier_drag_at_x: f64,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -782,6 +793,7 @@ impl Reactor {
             modifier_drag_ended: None,
             modifier_drag_left_at: None,
             modifier_drag_final: false,
+            modifier_drag_at_x: 0.0,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -2688,8 +2700,9 @@ impl Reactor {
                 self.begin_mouse_edge_drag(window, horizontal, vertical);
                 return Ok(EventOutcome::default());
             }
-            Event::MouseModifierDrag { dx, dy, last } => {
+            Event::MouseModifierDrag { dx, dy, last, at_x } => {
                 self.modifier_drag_final = last;
+                self.modifier_drag_at_x = at_x;
                 // Marked as a resize so the arrange skips animation. Animating
                 // here is worse than pointless: each update starts a fresh
                 // animation that the next one replaces a few milliseconds
@@ -5992,7 +6005,7 @@ impl Reactor {
         // the user actually went, and without it "it resizes the wrong way"
         // cannot be confirmed or denied from a dump, which is why this has
         // taken so many passes.
-        let cursor_x = window_server::current_cursor_location().ok().map(|p| p.x);
+        let cursor_x = self.modifier_drag_at_x;
         crate::sys::trace::act(
             "modifier_drag",
             &serde_json::json!({

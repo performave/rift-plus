@@ -1090,7 +1090,12 @@ impl Input {
         if (dx, dy) == drag.last_delta && !last {
             return;
         }
-        _ = self.events_tx.send(Event::MouseModifierDrag { dx, dy, last });
+        _ = self.events_tx.send(Event::MouseModifierDrag {
+            dx,
+            dy,
+            last,
+            at_x: drag.last.x,
+        });
         drag.last_delta = (dx, dy);
         drag.last_sent = Instant::now();
     }
