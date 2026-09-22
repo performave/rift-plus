@@ -1107,6 +1107,19 @@ impl Reactor {
         was.sort_by_key(|d| d.space.get());
         current.sort_by_key(|d| d.space.get());
         let matching = desktop_match::match_desktops(&was, &current);
+        if !matching.unclaimed.is_empty() {
+            // Desktops the window server lists that no recorded desktop's
+            // windows account for: minted for the return, or made by the user
+            // while a display was away. Which of the two is decided below, on
+            // provenance; logging them here is what makes a churn that went
+            // wrong readable in a trace afterwards, since this is the point
+            // where the count of desktops rift can explain stops matching the
+            // count it can see.
+            debug!(
+                unclaimed = ?matching.unclaimed.iter().map(|s| s.get()).collect::<Vec<_>>(),
+                "Desktops no recorded desktop's windows speak for"
+            );
+        }
         eprintln!(
             "DBG cur={:?}",
             current

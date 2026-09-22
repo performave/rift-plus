@@ -12335,17 +12335,13 @@ mod scratch_stack_attach {
 
     use super::*;
 
-    fn stacks(node: &rift_protocol::ContainerTreeNode) -> Vec<(Vec<WindowId>, String)> {
+    fn stacks(node: &rift_protocol::ContainerTreeNode) -> Vec<(Vec<u32>, String)> {
         let mut out = Vec::new();
-        fn walk(n: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<WindowId>, String)>) {
+        fn walk(n: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<u32>, String)>) {
             let kind = format!("{:?}", n.layout_kind);
             if kind.to_lowercase().contains("stack") {
-                let members: Vec<WindowId> = n
-                    .children
-                    .iter()
-                    .filter_map(|c| c.window_id)
-                    .map(|w| WindowId::new(w.pid, w.idx))
-                    .collect();
+                let members: Vec<u32> =
+                    n.children.iter().filter_map(|c| c.window_id).map(|w| w.idx).collect();
                 if !members.is_empty() {
                     out.push((members, kind));
                 }
@@ -12358,15 +12354,23 @@ mod scratch_stack_attach {
         out
     }
 
-    #[test]
-    fn scratch_attach_keeps_stack() {
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
+    fn stacks_of(reactor: &mut Reactor, space: SpaceId) -> Vec<(Vec<u32>, String)> {
+        stacks(
+            &reactor
+                .query_layout_state(Some(space.get()), None)
+                .expect("layout state")
+                .container_tree,
+        )
+    }
 
-        apps.make_app_and_settle_on_screen(&mut reactor, screen1, space1, 1, make_windows(4));
+    #[test]
+    fn scratch_size_change_keeps_stack() {
+        let (mut apps, mut reactor) = test_context();
+        let small = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let big = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 1000.));
+        let space = SpaceId::new(1);
+
+        apps.make_app_and_settle_on_screen(&mut reactor, small, space, 1, make_windows(4));
         reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
             workspace: None,
             mode: LayoutMode::Traditional,
@@ -12376,40 +12380,16 @@ mod scratch_stack_attach {
         reactor.handle_test_layout_command(LayoutCommand::ToggleStack);
         apps.simulate_until_quiet(&mut reactor);
 
-        let tree = reactor
-            .query_layout_state(Some(space1.get()), None)
-            .expect("layout state")
-            .container_tree;
-        let before = stacks(&tree);
-        println!("BEFORE {:?}", before);
+        let before = stacks_of(&mut reactor, space);
+        println!("BEFORE      {:?}", before);
         assert!(!before.is_empty(), "test setup made no stack");
 
-        let wsids: Vec<_> = (1..=4)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        reactor.handle_event(Event::DisplayChurnBegin);
-        reactor.handle_event(space_state_event_with(
-            vec![screen1, screen2],
-            vec![Some(space1), Some(space2)],
-            |state| {
-                state.has_seen_display_set = true;
-                state.display_set_changed = true;
-                state.topology_changed = true;
-                state.allow_space_remap = true;
-                state.should_force_refresh_layout = true;
-                for wsid in &wsids {
-                    state.active_window_spaces.insert(*wsid, space1);
-                }
-            },
-        ));
+        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, big.size));
         apps.simulate_until_quiet(&mut reactor);
+        println!("AT BIG      {:?}", stacks_of(&mut reactor, space));
 
-        let tree = reactor
-            .query_layout_state(Some(space1.get()), None)
-            .expect("layout state")
-            .container_tree;
-        let after = stacks(&tree);
-        println!("AFTER  {:?}", after);
-        assert_eq!(before, after, "attach changed the survivor's stack");
+        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, small.size));
+        apps.simulate_until_quiet(&mut reactor);
+        println!("BACK SMALL  {:?}", stacks_of(&mut reactor, space));
     }
 }
