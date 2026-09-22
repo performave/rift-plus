@@ -255,7 +255,10 @@ only by reading the guest's process and LaunchAgent list directly.
 ## Traps inside the harness itself
 
 Three scenarios silently tested nothing until these were found. Any new
-scenario should be checked the same way — make it fail first, on purpose.
+scenario should be checked the same way — make it fail first, on purpose. The
+same is true of a fixture: a run that reports a failure is worth nothing until
+its own machinery has been ruled out, and most of the entries below were
+discovered as rift bugs that turned out to be the harness.
 
 - **`toggle-stack` is a hard no-op in bsp** (`apply_stacking_to_parent_of_selection`
   returns immediately) and moves a window to the next column in scrolling. Only
@@ -267,6 +270,24 @@ scenario should be checked the same way — make it fail first, on purpose.
 - **`space create` acts on whichever display owns the menu bar**, so making a
   second desktop *on the external* means making the external main first. It
   also needs the scripting addition.
+- **Desktop indices come from `space_ids`, not from active-then-inactive.**
+  `space move-window` and `space switch` take the index macOS numbers desktops
+  by, where the shown desktop sits wherever the user left it -- often in the
+  middle of the list. `chaos.all_space_ids` concatenates each display's active
+  desktops and then its inactive ones, which agrees with that order only when
+  the shown desktop happens to be first. A fixture indexing the other way sends
+  windows to the wrong desktop and then reports rift for not putting them where
+  it asked. `query displays` now reports `space_ids`, the ordered list, which
+  is the one to use.
+- **`query windows` with no `--space-id` answers for one display.** It is the
+  active *context* display's shown desktop, not every window rift knows about.
+  On a two-display run that reads as the probe display having taken every
+  window and the other being empty. Ask per display, by desktop id.
+- **A fixture that moves windows and does not put them back gets worse each
+  run.** Three runs in, the shown desktop was empty and the tests reported
+  "nothing to move" -- a fixture out of subjects, wearing a product failure's
+  clothes. Restore *after* the verdicts, never between them, or the cleanup
+  decides the next test's starting state.
 - **The transient sampler must be cheap.** A full `snapshot()` is a rift-cli
   call per desktop for windows and another for the layout — twenty-odd round
   trips once churn has left a pile of desktops behind, which cannot finish
