@@ -11,6 +11,20 @@ set -uo pipefail
 SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$1"; shift
 
+# One at a time. There is a single guest, and a second run rebooting it, wiping
+# layout.ron and copying a different binary over the first one's is invisible in
+# both outputs: each prints its own version banner and neither says the other
+# exists. A killed wrapper loop that advanced to its next iteration is enough to
+# cause it.
+LOCK=/tmp/rift-vm-ab.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+    echo "  refusing to run: another vm-ab holds $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null))"
+    echo "  wait for it, or remove the directory if it is stale"
+    exit 2
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
 # Every one-shot the harness has ever bootstrapped is still in
 # ~/Library/LaunchAgents with RunAtLoad, and this script's first act is a
 # reboot -- so each of them fires at the login that follows. A guest was found
@@ -53,6 +67,16 @@ sleep 10
 sudo ~/rift-harness/bin/rift sa load 2>&1 | tail -1
 ~/rift-harness/bin/dtool setmain 1 >/dev/null 2>&1; sleep 3
 ~/rift-harness/bin/rift --version | head -1"
+
+# Printing the version is not checking it. A second vm-ab copying its own
+# binary over this one leaves a run that says rift-final in its header, reports
+# the other build's version four lines down, and compares the wrong pair.
+WANT="$("$SC/vm-ssh" "~/rift-harness/builds/$BIN --version 2>&1 | head -1")"
+GOT="$("$SC/vm-ssh" "~/rift-harness/bin/rift --version 2>&1 | head -1")"
+if [[ "$WANT" != "$GOT" ]]; then
+    echo "  refusing to compare: asked for $BIN ($WANT) but the guest is running $GOT"
+    exit 2
+fi
 # Twice: the first pass opens the apps, the second tiles them once they have
 # all settled onto the shown desktop.
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
