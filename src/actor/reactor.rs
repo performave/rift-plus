@@ -2185,8 +2185,23 @@ impl Reactor {
                         // how a window ends up with a few pixels of travel in
                         // it. An app's real minimum still arrives through AX,
                         // and a real refusal is still learnt once the drag is
-                        // over.
-                        && self.modifier_drag.is_none()
+                        // over -- once it is really over, and not the instant
+                        // the button comes up. The app's notifications trail
+                        // rift's writes, so the last of them are generated
+                        // before the release and delivered after it: in the
+                        // trace this was found from, eight of ChatGPT's
+                        // reached the reactor four milliseconds past the drop.
+                        // An app slow enough to have applied none of the
+                        // writes -- Electron, where they pile up and supersede
+                        // each other -- answers with the frame it had before
+                        // the drag, which against the frame rift last asked
+                        // for is a refusal to shrink. The minimum learnt from
+                        // it is exactly the size the user was dragging away
+                        // from, and the arrange it asks for pins the tile
+                        // back at it: the whole resize disappeared a few
+                        // milliseconds after the release. Wait out the same
+                        // settling window the echo check below uses.
+                        && !self.modifier_drag_is_settling()
                         && self
                             .layout_manager
                             .layout_engine

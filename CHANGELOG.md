@@ -25,6 +25,18 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A modifier-drag resize survives an app that is slow to apply it.** The
+  resize worked and then undid itself a few milliseconds after the button came
+  up, on ChatGPT and Zen. An app's move notifications trail rift's writes, so
+  the last of them are generated before the release and delivered after it; an
+  Electron app slow enough to have applied none of the writes -- they pile up
+  and supersede one another -- answers with the frame it had before the drag
+  began. Measured against the frame rift last asked for, that reads as a window
+  refusing to shrink, and the minimum learnt from it was exactly the size the
+  user was dragging away from: the next arrange pinned the tile back at it.
+  Refusals are now ignored for as long as the drag's echoes keep arriving,
+  which is what the neighbouring check already did for the same reports.
+
 - **A desktop a departed display handed over is laid out for its new screen.**
   macOS carries a leaving display's desktops to a survivor with their trees
   intact, but the survivor goes on showing its own, and rift only ever arranged

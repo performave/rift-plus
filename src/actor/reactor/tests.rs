@@ -12397,6 +12397,86 @@ fn a_modifier_resize_carries_the_neighbour_with_it() {
     );
 }
 
+/// And it has to survive an app that applies none of it until after the
+/// release.
+///
+/// Electron apps — ChatGPT and Zen, where Eric hit this — are slow enough that
+/// rift's writes supersede one another before the app touches a single one, so
+/// the frame it eventually reports is the one it had when the drag began. Its
+/// notifications are also generated before the release and delivered after it,
+/// and against the frame rift last asked for such a report reads as a window
+/// refusing to shrink. Remembered as a minimum, that size is exactly the one
+/// the user was dragging away from: the arrange it asks for pins the tile back
+/// at it and the whole resize vanishes a few milliseconds after the button
+/// comes up.
+#[test]
+fn a_slow_apps_report_delivered_after_the_release_is_not_a_refusal() {
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(2560., 1400.));
+    let space = SpaceId::new(1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    // The trace this came from was a bsp desktop, and only bsp holds a window
+    // to a learnt minimum; traditional tiling ignores one for a window the
+    // accessibility API calls resizable.
+    reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
+        workspace: None,
+        mode: LayoutMode::Bsp,
+    });
+    apps.simulate_until_quiet(&mut reactor);
+
+    let right = WindowId::new(1, 2);
+    let start = apps.windows[&right].frame;
+    let wsid = reactor.test_window_server_id(right);
+
+    reactor.handle_event(Event::MouseModifierDragBegin {
+        window: wsid,
+        at: CGPoint::new(start.origin.x + 60., start.mid().y),
+        action: crate::common::config::MouseAction::Resize,
+    });
+    // The app applies nothing and answers nothing while the drag runs:
+    // dropping every request on the floor is what an app whose writes are
+    // superseding each other looks like from here.
+    for dx in [20., 120., 200.] {
+        reactor.handle_event(Event::MouseModifierDrag { dx, dy: 0. });
+        let _ = apps.requests();
+    }
+    reactor.handle_event(Event::MouseUp);
+    let _ = apps.requests();
+
+    // Only now does it answer rift's last write — carrying the frame it still
+    // has, which is the one it had before the drag.
+    let txid = reactor.transaction_manager.get_last_sent_txid(wsid);
+    reactor.handle_event(Event::WindowFrameChanged(
+        right,
+        start,
+        Some(txid),
+        Requested(false),
+        Some(crate::sys::event::MouseState::Up),
+    ));
+
+    let settings = reactor.config.settings.clone();
+    let laid_out = reactor
+        .layout_manager
+        .layout_engine
+        .calculate_layout(
+            space,
+            screen,
+            &settings.layout.gaps,
+            settings.ui.stack_line.thickness,
+            settings.ui.stack_line.horiz_placement,
+            settings.ui.stack_line.vert_placement,
+        )
+        .into_iter()
+        .find(|(wid, _)| *wid == right)
+        .map(|(_, frame)| frame)
+        .expect("the dragged tile is still in the layout");
+    assert!(
+        (laid_out.origin.x - (start.origin.x + 200.)).abs() < 2.,
+        "the resize has to outlive the app's stale report: {laid_out:?} \
+         against a drag from {start:?}"
+    );
+}
+
 #[test]
 fn display_churn_release_still_flushes_the_deferred_inventory_refresh() {
     let (mut apps, mut reactor) = test_context();
