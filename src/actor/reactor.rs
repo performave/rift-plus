@@ -2418,7 +2418,25 @@ impl Reactor {
                 let ended_modifier_drag = self.modifier_drag.take();
                 if let Some(drag) = ended_modifier_drag {
                     self.modifier_drag_ended = Some(crate::sys::trace::now());
-                    self.modifier_drag_left_at = Some((drag.window, drag.last_target));
+                    // Where the window was actually *sent*, which is not where
+                    // the drag aimed whenever a limit came between the two: a
+                    // gesture asking for 370 against a 480 floor is written as
+                    // 480. Recording the aim meant the next press in a fast
+                    // run measured from 370 -- a width the window never had --
+                    // and the difference showed up as a jump. The transaction
+                    // manager holds the frame rift last wrote, which is the
+                    // arranged one, clamps and all.
+                    // With nothing pending the app has caught up and its own
+                    // frame is the truth; the aim is the last resort and is
+                    // only right when neither of the other two exists.
+                    let window = self.state.windows.window(drag.window);
+                    let pending = window
+                        .and_then(|w| w.info.sys_id)
+                        .and_then(|wsid| self.transaction_manager.get_target_frame(wsid));
+                    let left_at = pending
+                        .or_else(|| window.map(|w| w.frame_monotonic))
+                        .unwrap_or(drag.last_target);
+                    self.modifier_drag_left_at = Some((drag.window, left_at));
                     // What the gesture asked for against what the window is
                     // actually left at. A drag that ends somewhere other than
                     // where it was aimed is the complaint that is hardest to
