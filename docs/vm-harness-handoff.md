@@ -524,16 +524,32 @@ between desktops, so anything read later describes the churn rather than what
 preceded it, and a record taught the wrong home sends the window to the wrong
 place on return.
 
-**Measured, matrix, same sitting:** 2 of 12 before, 5 of 12 after, with the
-grouping failure down from seven to four. Read the column, not the cell -- and
-note that the remaining grouping failures say the record is not the only path
-that loses a window.
+**What the matrix can and cannot say about the fix.** A unit test settles that
+the record now holds a window in no tree, and fails without the change. The
+matrix does not settle anything, and the first reading of it was wrong.
 
-**Still open, on this evidence.** Four grouping failures, one workspace leak
-(`237 -> 238`, a missed remap orphaning the old one), and two genuine geometry
-faults on *shown* desktops -- an off-display tiled window and a 924x1039
-overlap. Those last two are the first geometry findings here that survive the
-shown-desktop filter, so they are worth more than any that preceded them.
+The fix scored 5 of 12 where the build before it had scored 2, which looked
+like a result until the same pre-fix build was re-run in the same sitting as
+the fix and scored **5 of 12 itself**. Back to back, that sitting: pre-fix 5,
+fix 6, differing in three cells of which the fix wins two. That is inside the
+plus-or-minus-two band, so the matrix neither confirms nor contradicts the
+change, and the earlier 2-versus-5 was the build's own spread across sittings.
+
+This is the second time that mistake has been made here -- see the noise-band
+table above, where a scenario was bisected out before anyone re-ran the old
+build as a control. The control costs one run. Run it first.
+
+**Still open, on this evidence.** The fix run's six failures were two workspace
+leaks (`245 -> 246`, `247 -> 248` -- a missed remap orphaning the old one), a
+slot reordering, a split orientation change, and two grouping failures. The
+grouping ones say the record is not the only path by which a window loses its
+desktop.
+
+Worth more than any of those: geometry faults that survive the shown-desktop
+filter. Two have now been seen -- an off-display tiled window, and overlaps of
+924x1039 and 346x517 where one window fills the display and another sits inside
+it. Every geometry finding here before the filter went in is suspect; these are
+not.
 
 ## What this guest cannot test at all
 
