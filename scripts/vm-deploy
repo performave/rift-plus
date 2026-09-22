@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# vm-deploy <build-basename-in-guest-builds> -- put a build on the guest and
+# start it on a clean footing, without running anything.
+#
+# The same bring-up `vm-ab` does, minus the reboot and the battery: apps quit,
+# the saved layout thrown away, rift restarted on the binary asked for, the
+# scripting addition loaded, the display arrangement put back. Done by hand it
+# was done slightly differently every time -- once with a LaunchAgent bootstrap
+# that failed silently and left the previous build running -- so it lives here,
+# and it refuses to report success unless the running version is the one asked
+# for.
+set -uo pipefail
+SC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$1"
+"$SC/vm-ssh" "U=\$(id -u)
+killall Safari TextEdit 2>/dev/null; sleep 3
+launchctl bootout gui/\$U/rift-harness 2>/dev/null; sleep 3
+cp ~/rift-harness/builds/$BIN ~/rift-harness/bin/rift || exit 1
+cp ~/rift-harness/builds/$BIN-cli ~/rift-harness/bin/rift-cli || exit 1
+codesign --force --sign - ~/rift-harness/bin/rift ~/rift-harness/bin/rift-cli >/dev/null 2>&1
+rm -f ~/.rift/layout.ron
+: > /tmp/rift.err
+for i in 1 2 3; do launchctl bootstrap gui/\$U ~/Library/LaunchAgents/rift-harness.plist 2>/dev/null && break; sleep 3; done
+sleep 10
+sudo ~/rift-harness/bin/rift sa load 2>&1 | tail -1
+~/rift-harness/bin/dtool setmain 1 >/dev/null 2>&1; sleep 2" >/dev/null 2>&1
+WANT="$("$SC/vm-ssh" "~/rift-harness/builds/$BIN --version 2>&1 | head -1")"
+GOT="$("$SC/vm-ssh" "pgrep -x rift >/dev/null && ~/rift-harness/bin/rift --version 2>&1 | head -1")"
+if [[ -z "$GOT" || "$WANT" != "$GOT" ]]; then
+    echo "  vm-deploy: asked for $BIN ($WANT) but the guest is running '${GOT:-nothing}'"
+    exit 2
+fi
+echo "  deployed $GOT"

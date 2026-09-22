@@ -127,6 +127,55 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return 0;
     }
 
-    fprintf(stderr, "usage: dtool count|list|mon [seconds]|setmain <id>|fullscreen\n");
+    // modes [id] | setmode <width> <height> [id]
+    //
+    // The guest's display follows the VM window on the host, so a restart can
+    // hand it a different size -- one came back 1216px wide instead of 2494,
+    // and a churn battery on it measured nothing but five windows' minimum
+    // sizes not fitting. These pick the size from inside the guest, with no
+    // host involvement, so a run can be put back on a known footing first.
+    if (!strcmp(cmd, "modes") || !strcmp(cmd, "setmode")) {
+        int want_w = 0, want_h = 0;
+        CGDirectDisplayID display = CGMainDisplayID();
+        if (!strcmp(cmd, "setmode")) {
+            if (argc < 4) { fprintf(stderr, "setmode <width> <height> [id]\n"); return 1; }
+            want_w = atoi(argv[2]); want_h = atoi(argv[3]);
+            if (argc > 4) display = (CGDirectDisplayID)strtoul(argv[4], NULL, 10);
+        } else if (argc > 2) {
+            display = (CGDirectDisplayID)strtoul(argv[2], NULL, 10);
+        }
+        const void *keys[] = { kCGDisplayShowDuplicateLowResolutionModes };
+        const void *vals[] = { kCFBooleanTrue };
+        CFDictionaryRef opts = CFDictionaryCreate(NULL, keys, vals, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, opts);
+        CFRelease(opts);
+        if (!modes) { fprintf(stderr, "no modes for display %u\n", display); return 1; }
+        CGDisplayModeRef pick = NULL;
+        for (CFIndex i = 0; i < CFArrayGetCount(modes); i++) {
+            CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+            size_t w = CGDisplayModeGetWidth(m), h = CGDisplayModeGetHeight(m);
+            if (want_w == 0) {
+                printf("%zux%zu pixels=%zux%zu\n", w, h,
+                       CGDisplayModeGetPixelWidth(m), CGDisplayModeGetPixelHeight(m));
+            } else if ((int)w == want_w && (int)h == want_h && !pick) {
+                pick = m;
+            }
+        }
+        if (want_w) {
+            if (!pick) { fprintf(stderr, "no %dx%d mode\n", want_w, want_h); CFRelease(modes); return 1; }
+            CGDisplayConfigRef cfg;
+            CGBeginDisplayConfiguration(&cfg);
+            CGConfigureDisplayWithDisplayMode(cfg, display, pick, NULL);
+            CGError e = CGCompleteDisplayConfiguration(cfg, kCGConfigurePermanently);
+            printf("setmode %dx%d on %u -> %s\n", want_w, want_h, display,
+                   e == kCGErrorSuccess ? "ok" : "failed");
+        }
+        CFRelease(modes);
+        return 0;
+    }
+
+    fprintf(stderr, "usage: dtool count|list|mon [seconds]|setmain <id>|fullscreen|"
+                    "modes [id]|setmode <w> <h> [id]\n");
     return 1;
 } }
