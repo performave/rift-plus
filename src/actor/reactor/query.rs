@@ -488,6 +488,7 @@ impl Reactor {
                     },
                     active_space_ids: per_display_active_space_ids,
                     inactive_space_ids: per_display_inactive_space_ids,
+                    space_ids: all_space_ids.iter().map(|space| space.get()).collect(),
                 }
             })
             .collect()

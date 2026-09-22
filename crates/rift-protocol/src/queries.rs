@@ -13,9 +13,7 @@ pub struct WindowId {
 
 impl<'de> Deserialize<'de> for WindowId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         struct WindowIdVisitor;
 
         impl<'de> Visitor<'de> for WindowIdVisitor {
@@ -28,9 +26,7 @@ impl<'de> Deserialize<'de> for WindowId {
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
+            where E: de::Error {
                 let value = value
                     .strip_prefix("WindowId { pid: ")
                     .and_then(|value| value.strip_suffix(" }"))
@@ -44,9 +40,7 @@ impl<'de> Deserialize<'de> for WindowId {
             }
 
             fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
+            where A: SeqAccess<'de> {
                 let pid =
                     sequence.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
                 let idx =
@@ -56,9 +50,7 @@ impl<'de> Deserialize<'de> for WindowId {
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
+            where A: MapAccess<'de> {
                 let mut pid = None;
                 let mut idx = None;
                 while let Some(key) = map.next_key::<String>()? {
@@ -233,4 +225,13 @@ pub struct DisplayData {
     pub is_active_context: bool,
     pub active_space_ids: Vec<u64>,
     pub inactive_space_ids: Vec<u64>,
+    /// Every space on this display, in the order Mission Control shows them.
+    ///
+    /// The two lists above cannot be zipped back together -- splitting them
+    /// throws away where the shown space sat -- and that position is exactly
+    /// what `space move-window` and `space switch` take as their index. A
+    /// client that wants to name a desktop the way the user sees it numbered
+    /// needs this list, so it is reported whole as well.
+    #[serde(default)]
+    pub space_ids: Vec<u64>,
 }

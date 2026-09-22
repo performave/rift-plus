@@ -45,6 +45,10 @@ pub struct RuntimeDisplayData {
     pub active_space_ids: Vec<u64>,
     /// Inactive space ids for this display (empty if none).
     pub inactive_space_ids: Vec<u64>,
+    /// Every space on this display in Mission Control order, shown one
+    /// included. The split above loses where the shown space sat, which is
+    /// what the space commands index by.
+    pub space_ids: Vec<u64>,
 }
 
 pub(crate) fn protocol_rect(frame: objc2_core_foundation::CGRect) -> protocol::Rect {
@@ -111,15 +115,14 @@ impl From<RuntimeDisplayData> for protocol::DisplayData {
             is_active_context: value.is_active_context,
             active_space_ids: value.active_space_ids,
             inactive_space_ids: value.inactive_space_ids,
+            space_ids: value.space_ids,
         }
     }
 }
 
 impl Serialize for RuntimeWindowData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         #[serde_as]
         #[derive(Serialize)]
         struct WindowDataSer<'a> {
@@ -153,9 +156,7 @@ impl Serialize for RuntimeWindowData {
 
 impl<'de> Deserialize<'de> for RuntimeWindowData {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[serde_as]
         #[derive(Deserialize)]
         struct WindowDataDe {
@@ -201,9 +202,7 @@ impl<'de> Deserialize<'de> for RuntimeWindowData {
 
 impl Serialize for RuntimeDisplayData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         #[serde_as]
         #[derive(Serialize)]
         struct DisplayDataSer<'a> {
@@ -217,6 +216,7 @@ impl Serialize for RuntimeDisplayData {
             is_active_context: bool,
             active_space_ids: &'a [u64],
             inactive_space_ids: &'a [u64],
+            space_ids: &'a [u64],
         }
 
         let helper = DisplayDataSer {
@@ -229,6 +229,7 @@ impl Serialize for RuntimeDisplayData {
             is_active_context: self.is_active_context,
             active_space_ids: &self.active_space_ids,
             inactive_space_ids: &self.inactive_space_ids,
+            space_ids: &self.space_ids,
         };
 
         helper.serialize(serializer)
@@ -237,9 +238,7 @@ impl Serialize for RuntimeDisplayData {
 
 impl<'de> Deserialize<'de> for RuntimeDisplayData {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         #[serde_as]
         #[derive(Deserialize)]
         struct DisplayDataDe {
@@ -253,6 +252,8 @@ impl<'de> Deserialize<'de> for RuntimeDisplayData {
             is_active_context: bool,
             active_space_ids: Vec<u64>,
             inactive_space_ids: Vec<u64>,
+            #[serde(default)]
+            space_ids: Vec<u64>,
         }
 
         let helper = DisplayDataDe::deserialize(deserializer)?;
@@ -270,6 +271,7 @@ impl<'de> Deserialize<'de> for RuntimeDisplayData {
             is_active_context: helper.is_active_context,
             active_space_ids: helper.active_space_ids,
             inactive_space_ids: helper.inactive_space_ids,
+            space_ids: helper.space_ids,
         })
     }
 }
@@ -337,6 +339,11 @@ mod tests {
             is_active_context: false,
             active_space_ids: vec![42],
             inactive_space_ids: vec![43, 44],
+            // The shown space sits *between* the two inactive ones. That is
+            // the case the split cannot express and the reason `space_ids`
+            // is reported at all: from the two lists alone a client would
+            // have to guess 42 came first.
+            space_ids: vec![43, 42, 44],
         };
 
         let value = serde_json::to_value(&data).expect("serialize DisplayData");
@@ -350,7 +357,16 @@ mod tests {
             "is_active_context": false,
             "active_space_ids": [42],
             "inactive_space_ids": [43, 44],
+            "space_ids": [43, 42, 44],
         });
         assert_eq!(value, expected);
+
+        // Older clients sent the shape without it; they must still decode.
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("space_ids");
+        let back: RuntimeDisplayData =
+            serde_json::from_value(legacy).expect("decode a pre-space_ids display");
+        assert!(back.space_ids.is_empty());
+        assert_eq!(back.inactive_space_ids, vec![43, 44]);
     }
 }
