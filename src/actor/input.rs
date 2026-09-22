@@ -138,6 +138,11 @@ struct ModifierDrag {
     origin: CGPoint,
     last: CGPoint,
     last_sent: Instant,
+    /// The movement last reported. A flush is skipped when it would repeat
+    /// this, which is not the same as skipping a zero: a drag that has been
+    /// somewhere and come back reports zero, and that is the one report that
+    /// puts the window back.
+    last_delta: (f64, f64),
 }
 
 /// Minimum gap between modifier-drag updates sent to the reactor.
@@ -750,6 +755,7 @@ impl Input {
                         origin: loc,
                         last: loc,
                         last_sent: Instant::now(),
+                        last_delta: (0.0, 0.0),
                     }));
                     return false;
                 }
@@ -967,6 +973,7 @@ impl Input {
             origin: down,
             last: loc,
             last_sent: Instant::now(),
+            last_delta: (0.0, 0.0),
         }));
         // Report the movement already made, so the window catches up to the
         // pointer instead of starting from the press point.
@@ -1034,6 +1041,7 @@ impl Input {
             origin: loc,
             last: loc,
             last_sent: Instant::now(),
+            last_delta: (0.0, 0.0),
         })
     }
 
@@ -1059,10 +1067,20 @@ impl Input {
     fn flush_modifier_drag(&self, drag: &mut ModifierDrag) {
         let dx = drag.last.x - drag.origin.x;
         let dy = drag.last.y - drag.origin.y;
-        if dx == 0.0 && dy == 0.0 {
+        // Skipped only when it would repeat what was already reported. The
+        // test used to be `dx == 0 && dy == 0`, which is true both before the
+        // pointer has moved *and* after it has gone somewhere and come back --
+        // and the second of those is the report that returns the window. It
+        // was dropped, so a gesture ending where it began left the window
+        // wherever the last flush had caught it, part-way through the swing.
+        // Repeated at a spasm's speed that accumulates: measured against an
+        // app slow enough to queue, sixteen out-and-back cycles that each net
+        // to zero by construction took a window from 1155px to 433px.
+        if (dx, dy) == drag.last_delta {
             return;
         }
         _ = self.events_tx.send(Event::MouseModifierDrag { dx, dy });
+        drag.last_delta = (dx, dy);
         drag.last_sent = Instant::now();
     }
 

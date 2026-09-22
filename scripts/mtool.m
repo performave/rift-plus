@@ -111,16 +111,24 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         for (int c = 0; c < cycles; c++) {
             double to = (c % 2 == 0) ? amp : -amp;
             post(downType, a, button, flags);
-            // Three samples is enough to read as a drag and not a click, and
-            // is about what a hand produces in the tens of milliseconds a fast
-            // click is down for.
+            // Out and back, releasing where it started. A cycle that ends away
+            // from its anchor leaves the window legitimately offset by that
+            // last leg, so a run of them measures the final drag rather than
+            // any accumulated error -- and "did it drift" is the whole
+            // question. Returning to the anchor makes every cycle net zero by
+            // construction, so anything left over is the bug.
             for (int i = 1; i <= 3; i++) {
                 double x = a.x + to * ((double)i / 3.0);
                 post(moveType, CGPointMake(x, a.y), button, flags);
                 usleep(period / 8);
             }
-            post(upType, CGPointMake(a.x + to, a.y), button, flags);
-            usleep(period / 2);
+            for (int i = 2; i >= 0; i--) {
+                double x = a.x + to * ((double)i / 3.0);
+                post(moveType, CGPointMake(x, a.y), button, flags);
+                usleep(period / 8);
+            }
+            post(upType, a, button, flags);
+            usleep(period / 4);
         }
         printf("spammed %d cycles at %.1f/s, +/-%.0f from %.0f,%.0f flags=0x%llx button=%s\n",
                cycles, cps, amp, a.x, a.y, (unsigned long long)flags,
