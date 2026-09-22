@@ -1360,6 +1360,70 @@ mod tests {
         assert!((f2.origin.x - 600.0).abs() < 1.0);
     }
 
+    /// Dragging the outer edge of a window at the side of the screen used to
+    /// do nothing at all. No split owns that edge -- the rightmost window's
+    /// right edge is the screen's, not a boundary between two windows -- so
+    /// the walk up the tree found nothing to move and returned silently, in
+    /// both directions. Whether a drag worked came down to which half of the
+    /// window the press landed in, which is what made it look intermittent.
+    #[test]
+    fn dragging_the_screen_side_edge_resizes_through_the_other_boundary() {
+        let mut system = BspLayoutSystem::default();
+        let layout = system.create_layout();
+        let w1 = w(101);
+        let w2 = w(102);
+        system.add_window_after_selection(layout, w1);
+        system.add_window_after_selection(layout, w2);
+
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1600.0, 900.0));
+        let gaps = crate::common::config::GapSettings::default();
+        let layout_of = |system: &mut BspLayoutSystem| -> HashMap<WindowId, CGRect> {
+            system
+                .calculate_layout(
+                    layout,
+                    screen,
+                    0.0,
+                    &Default::default(),
+                    &Default::default(),
+                    0.0,
+                    Default::default(),
+                    Default::default(),
+                )
+                .into_iter()
+                .collect()
+        };
+
+        let before = layout_of(&mut system);
+        let right = *before.get(&w2).expect("w2 frame missing");
+        assert!(
+            (right.max().x - screen.max().x).abs() < 1.0,
+            "w2 must be the window against the right of the screen, or this \
+             tests nothing"
+        );
+
+        // Drag w2's right edge inwards: its origin stays, its width shrinks.
+        // That edge cannot move, so the split on its left has to instead.
+        let asked = CGRect::new(right.origin, CGSize::new(400.0, right.size.height));
+        system.on_window_resized(layout, w2, right, asked, screen, &gaps);
+
+        let after = layout_of(&mut system);
+        let now = *after.get(&w2).expect("w2 frame missing");
+        assert!(
+            (now.size.width - 400.0).abs() < 2.0,
+            "w2 should be the width that was asked for, got {}",
+            now.size.width
+        );
+        assert!(
+            (now.max().x - screen.max().x).abs() < 1.0,
+            "and should still sit against the right of the screen"
+        );
+        let neighbour = *after.get(&w1).expect("w1 frame missing");
+        assert!(
+            neighbour.size.width > before.get(&w1).unwrap().size.width,
+            "the neighbour gives up the space instead"
+        );
+    }
+
     #[test]
     fn non_binding_window_minimum_keeps_half_split_centered() {
         let mut system = BspLayoutSystem::default();
@@ -1503,6 +1567,16 @@ impl BspLayoutSystem {
     /// middle of a row has each of its edges owned by a different split, and
     /// resizing by size alone always found the same one, so dragging its left
     /// edge moved its right edge instead.
+    /// Move the boundary on one side of `leaf` to an absolute position.
+    ///
+    /// Returns whether a boundary was found to move. A window at the edge of
+    /// the screen has no split owning its outer side -- the rightmost window's
+    /// right edge is the screen's, not a boundary between two windows -- and
+    /// the walk below then reaches the root having found nothing. That is not
+    /// an error; it is the caller's cue to express the same size change
+    /// through the other side, which for such a window is the only side that
+    /// can move.
+    #[must_use]
     fn move_edge_to(
         &mut self,
         rects: &HashMap<NodeId, CGRect>,
@@ -1511,7 +1585,7 @@ impl BspLayoutSystem {
         near_side: bool,
         position: f64,
         gap: f64,
-    ) {
+    ) -> bool {
         let mut current = leaf;
         while let Some(parent) = current.parent(&self.tree.map) {
             let is_first = Some(current) == parent.first_child(&self.tree.map);
@@ -1525,7 +1599,7 @@ impl BspLayoutSystem {
                 continue;
             }
             let Some(rect) = rects.get(&parent) else {
-                return;
+                return false;
             };
             let (origin, total) = if horizontal {
                 (rect.origin.x, rect.size.width)
@@ -1534,7 +1608,7 @@ impl BspLayoutSystem {
             };
             let available = total - gap;
             if available <= 0.0 {
-                return;
+                return false;
             }
             // The first child runs from the container's origin to the
             // boundary; the second starts a gap after it.
@@ -1580,7 +1654,7 @@ impl BspLayoutSystem {
                     split.first_child(&self.tree.map).and_then(|n| rects.get(&n)),
                     rects.get(&split),
                 ) else {
-                    return;
+                    return false;
                 };
                 let (split_origin, first_old) = if horizontal {
                     (split_rect.origin.x, first.size.width)
@@ -1590,7 +1664,7 @@ impl BspLayoutSystem {
                 let boundary = split_origin + first_old;
                 let available = interval.1 - gap;
                 if available <= 0.0 {
-                    return;
+                    return false;
                 }
                 let ratio = ((boundary - interval.0) / available).clamp(0.05, 0.95) as f32;
                 if let Some(NodeKind::Split { ratio: r, .. }) = self.kind.get_mut(split) {
@@ -1603,8 +1677,11 @@ impl BspLayoutSystem {
                     (interval.0 + first_len + gap, available - first_len)
                 };
             }
-            return;
+            return true;
         }
+        // The walk reached the root without finding a split that owns this
+        // side: the window is at the edge of the screen there.
+        false
     }
 
     /// Gives every leaf under `node` an equal share along each axis, the way
@@ -2133,20 +2210,79 @@ impl LayoutSystem for BspLayoutSystem {
                     );
                     // Both moving is a resize about the centre; treat it as
                     // the far edge, which is what a plain size change was.
-                    if left && !right {
-                        self.move_edge_to(&rects, node, true, true, new_frame.origin.x, gap);
+                    //
+                    // Either may turn out not to exist. A window against the
+                    // side of the screen has no split owning its outer edge --
+                    // the rightmost window's right edge is the screen's, not a
+                    // boundary between two windows -- so dragging that edge
+                    // moved nothing at all, in either direction, and the
+                    // gesture did nothing. Whether it did depended on which
+                    // half of the window the press landed in, which is what
+                    // made it look intermittent.
+                    //
+                    // The size the user is asking for is still reachable: it
+                    // is the *other* boundary that has to move instead, to
+                    // wherever leaves the window that wide. The edge that
+                    // cannot move stays where it is, so that is the edge to
+                    // measure the new width from.
+                    let moved = if left && !right {
+                        self.move_edge_to(&rects, node, true, true, new_frame.origin.x, gap)
                     } else {
-                        self.move_edge_to(&rects, node, true, false, new_frame.max().x, gap);
+                        self.move_edge_to(&rects, node, true, false, new_frame.max().x, gap)
+                    };
+                    if !moved {
+                        let width = new_frame.size.width;
+                        if left && !right {
+                            let _ = self.move_edge_to(
+                                &rects,
+                                node,
+                                true,
+                                false,
+                                old_frame.origin.x + width,
+                                gap,
+                            );
+                        } else {
+                            let _ = self.move_edge_to(
+                                &rects,
+                                node,
+                                true,
+                                true,
+                                old_frame.max().x - width,
+                                gap,
+                            );
+                        }
                     }
                 }
                 if height_changed {
                     let top = moved(new_frame.origin.y, old_frame.origin.y);
                     let bottom = moved(new_frame.max().y, old_frame.max().y);
                     let gap = gaps.inner.vertical as f64;
-                    if top && !bottom {
-                        self.move_edge_to(&rects, node, false, true, new_frame.origin.y, gap);
+                    let moved = if top && !bottom {
+                        self.move_edge_to(&rects, node, false, true, new_frame.origin.y, gap)
                     } else {
-                        self.move_edge_to(&rects, node, false, false, new_frame.max().y, gap);
+                        self.move_edge_to(&rects, node, false, false, new_frame.max().y, gap)
+                    };
+                    if !moved {
+                        let height = new_frame.size.height;
+                        if top && !bottom {
+                            let _ = self.move_edge_to(
+                                &rects,
+                                node,
+                                false,
+                                false,
+                                old_frame.origin.y + height,
+                                gap,
+                            );
+                        } else {
+                            let _ = self.move_edge_to(
+                                &rects,
+                                node,
+                                false,
+                                true,
+                                old_frame.max().y - height,
+                                gap,
+                            );
+                        }
                     }
                 }
             }
