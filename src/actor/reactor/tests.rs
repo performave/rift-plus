@@ -10071,6 +10071,20 @@ mod display_archive {
             vec![made.get()],
             "the made desktop is destroyed once nothing shows it"
         );
+        // And is forgotten with it. Nothing can ever return to a destroyed
+        // desktop's id, so workspaces left keyed on it are unreachable -- but
+        // they used to stay, and the workspace count climbed by one for every
+        // churn cycle that made and unmade a desktop and never came back down.
+        // That is what the harness reports as a workspace leak.
+        assert!(
+            !f.reactor
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager()
+                .initialized_spaces()
+                .contains(&made),
+            "the destroyed desktop's workspaces go with it"
+        );
         spaces_cleanup(&f, &[]);
     }
 

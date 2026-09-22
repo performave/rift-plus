@@ -1398,6 +1398,25 @@ impl LayoutEngine {
         }
     }
 
+    /// Forget a desktop that is gone for good.
+    ///
+    /// `remap_space` is for a desktop that came back under a new number; this
+    /// is for one that did not come back at all — the desktop rift made at a
+    /// departure and destroyed again once its windows had somewhere better to
+    /// be. Nothing can ever return to that `SpaceId`, so everything keyed on
+    /// it is dead weight: its workspaces stay in `workspaces_by_space`, and
+    /// `workspace_total` climbs by one for every churn cycle that makes and
+    /// unmakes a desktop. That count is what the harness reports as a
+    /// workspace leak.
+    pub fn forget_space(&mut self, space: SpaceId) {
+        self.floating.forget_space(space);
+        self.floating_positions.forget_space(space);
+        let dropped = self.virtual_workspace_manager.take_workspaces_of(space);
+        self.workspace_layouts.remove_workspaces(dropped);
+        self.space_display_map.remove(&space);
+        self.display_last_space.retain(|_, held| *held != space);
+    }
+
     pub fn remap_space(
         &mut self,
         window_store: &mut WindowStore,

@@ -577,6 +577,20 @@ impl WorkspaceStore {
     /// initialized. For snapshots only: a live space's workspaces are
     /// recreated by the next `list_workspaces`, but their window assignments
     /// and names would be gone.
+    /// Like `forget_space`, but reports the workspaces it dropped so their
+    /// layout state can go with them. Layout state keyed on a workspace id
+    /// that no longer resolves fails the validation every save runs, and the
+    /// layout is then never persisted again.
+    #[must_use]
+    pub(crate) fn take_workspaces_of(&mut self, space: SpaceId) -> Vec<VirtualWorkspaceId> {
+        let dropped = self.workspaces_by_space.remove(&space).unwrap_or_default();
+        for workspace in &dropped {
+            self.workspaces.remove(*workspace);
+        }
+        self.active_workspace_per_space.remove(&space);
+        dropped
+    }
+
     pub(crate) fn forget_space(&mut self, space: SpaceId) {
         for workspace in self.workspaces_by_space.remove(&space).unwrap_or_default() {
             self.workspaces.remove(workspace);

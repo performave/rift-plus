@@ -78,6 +78,11 @@ impl FloatingPositionStore {
         locations
     }
 
+    /// Drop every position held for a desktop that no longer exists.
+    pub fn forget_space(&mut self, space: SpaceId) {
+        self.positions.retain(|(held, _, _), _| *held != space);
+    }
+
     pub fn remap_space(&mut self, old_space: SpaceId, new_space: SpaceId) {
         if old_space == new_space {
             return;
@@ -234,13 +239,9 @@ mod tests {
 
     use super::*;
 
-    fn workspace() -> VirtualWorkspaceId {
-        KeyData::from_ffi(1).into()
-    }
+    fn workspace() -> VirtualWorkspaceId { KeyData::from_ffi(1).into() }
 
-    fn frame() -> CGRect {
-        CGRect::new(CGPoint::new(10.0, 20.0), CGSize::new(300.0, 200.0))
-    }
+    fn frame() -> CGRect { CGRect::new(CGPoint::new(10.0, 20.0), CGSize::new(300.0, 200.0)) }
 
     #[test]
     fn window_lifecycle_cleanup_removes_all_saved_frames() {

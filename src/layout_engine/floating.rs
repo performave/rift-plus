@@ -21,9 +21,7 @@ pub(crate) struct FloatingManager {
 }
 
 impl FloatingManager {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
+    pub(crate) fn new() -> Self { Self::default() }
 
     pub(crate) fn is_floating(&self, window_id: WindowId) -> bool {
         self.floating_windows.contains(&window_id)
@@ -140,9 +138,7 @@ impl FloatingManager {
         self.last_floating_focus = wid;
     }
 
-    pub(crate) fn last_focus(&self) -> Option<WindowId> {
-        self.last_floating_focus
-    }
+    pub(crate) fn last_focus(&self) -> Option<WindowId> { self.last_floating_focus }
 
     pub(crate) fn normalize_persisted_focus(&mut self) {
         if self
@@ -180,6 +176,11 @@ impl FloatingManager {
         {
             space_map.entry(wid.pid).or_default().insert(wid);
         }
+    }
+
+    /// Drop everything held for a desktop that no longer exists.
+    pub(crate) fn forget_space(&mut self, space: SpaceId) {
+        self.active_floating_windows.remove(&space);
     }
 
     pub(crate) fn remap_space(&mut self, old_space: SpaceId, new_space: SpaceId) {

@@ -1693,6 +1693,12 @@ impl Reactor {
             }
             if scripting_addition::destroy_space(made.get()) {
                 info!(desktop = made.get(), "Destroyed the desktop made at departure");
+                // And forget what was keyed on it. Nothing can return to a
+                // destroyed desktop's id, so its workspaces are unreachable --
+                // but they stayed in the workspace store, so a churn that made
+                // and unmade a desktop added one to the workspace count every
+                // cycle and never gave it back.
+                self.layout_manager.layout_engine.forget_space(made);
             } else {
                 warn!(
                     desktop = made.get(),
