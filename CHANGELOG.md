@@ -86,6 +86,27 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **A spasmed resize no longer walks the window the wrong way.** Dragging a
+  window's edge fast -- eight or nine presses a second, reversing direction --
+  moved it steadily *against* the hand, and a burst of equal left and right
+  swings that should have ended where it began walked a window from 617px to
+  460px and later to 260px. Every press captured the base its gesture measured
+  from by asking the app where the window was, and an app reports a frame or
+  two behind while writes are still in flight, so at that rate the base was
+  always stale and usually smaller than the window really was: `base + dx` then
+  came out below the current width for a drag moving right. Not a jump at the
+  end, a steady pull the wrong way for as long as the gesture lasted, which is
+  what made it read as the window resizing in the opposite direction. A tiled
+  window's base now comes from its layout, which is the authority on where it
+  is, and rift remembers where it drove a window rather than where it aimed.
+
+  Three smaller faults of the same shape came with it: a gesture ending exactly
+  where it began reported nothing at all, so the window kept the peak of the
+  swing; coalescing dropped a gesture's final write for the same reason; and
+  more than one frame in flight per window let the writes arrive out of order.
+  Measured after: zero drift over a spam of whole press-drag-release cycles,
+  and exact travel in all six directional cases.
+
 - **A modifier-drag resize survives an app that is slow to apply it.** The
   resize worked and then undid itself a few milliseconds after the button came
   up, on ChatGPT and Zen. An app's move notifications trail rift's writes, so
