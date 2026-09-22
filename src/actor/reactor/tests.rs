@@ -12441,10 +12441,15 @@ fn a_stack_keeps_its_order_through_the_desktops_a_display_attach_walks_it_over()
 
     /// Every stacked container, as its ordered members — what the harness
     /// compares across a churn.
-    fn stacks(reactor: &mut Reactor, space: SpaceId) -> Vec<(Vec<u32>, LayoutKind)> {
-        fn walk(node: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<u32>, LayoutKind)>) {
-            if let Some(kind @ (LayoutKind::HorizontalStack | LayoutKind::VerticalStack)) =
-                node.layout_kind
+    fn stacks(reactor: &mut Reactor, space: SpaceId) -> Vec<(Vec<u32>, rift_protocol::LayoutKind)> {
+        fn walk(
+            node: &rift_protocol::ContainerTreeNode,
+            out: &mut Vec<(Vec<u32>, rift_protocol::LayoutKind)>,
+        ) {
+            if let Some(
+                kind @ (rift_protocol::LayoutKind::HorizontalStack
+                | rift_protocol::LayoutKind::VerticalStack),
+            ) = node.layout_kind
             {
                 let members: Vec<u32> = node
                     .children
