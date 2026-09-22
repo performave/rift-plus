@@ -467,6 +467,18 @@ floor is real -- 124px, a request for 40px refused -- and the returns are
 exact: zero slack on a single partial return, zero across four, and zero on a
 six-reversal spasm with four legs past the floor, over three runs.
 
+**That floor is rift's, not the app's.** Worth stating plainly, because the
+write-up above first implied otherwise. bsp clamps every split ratio to
+[0.05, 0.95] (`bsp.rs`), the display is 2494px wide and about 2484px after
+gaps, and five percent of 2484 is 124.2. `query windows` now reports
+`min_size` -- the app's declared minimum where it gives one, the figure rift
+has inferred otherwise -- and for TextEdit and Safari it is *none*, before and
+after a drag refused at 124px. So a resize stopping there is the ratio clamp,
+not an app refusing, and the two are not the same finding. It also means the
+clamp, and not any app, is what bounds how far a boundary can be pushed inside
+its own container -- in a nested split that bound is five percent of the
+parent, not of the screen.
+
 This does not clear the host. ChatGPT and Zen are Electron, their own minimums
 are far larger than TextEdit's, and a floor of ~480 is an entirely ordinary
 thing for them to have. What it does say is that the reported symptom is what
