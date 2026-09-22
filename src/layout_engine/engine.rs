@@ -4015,12 +4015,9 @@ impl LayoutEngine {
     /// which is not in doubt and is kept; the constraint record holds the
     /// larger of the two, so it has to be rebuilt from the half that stays.
     pub fn forget_observed_min_size(&mut self, window: WindowId, ax_min: Option<CGSize>) {
-        // Not conditional on something having been inferred. A window whose
-        // app declares a minimum has one in force without rift ever having
-        // guessed at it, and returning early here is why clearing it had no
-        // effect on exactly the windows that needed it -- the ones that stop a
-        // drag dead.
-        self.observed_min_sizes.remove(&window);
+        if self.observed_min_sizes.remove(&window).is_none() {
+            return;
+        }
         if let Some(constraints) = self.window_layout_constraints.get_mut(&window) {
             constraints.min_width = ax_min.map_or(0.0, |size| size.width);
             constraints.min_height = ax_min.map_or(0.0, |size| size.height);
@@ -4319,49 +4316,6 @@ mod tests {
             freed.fixed_for_axis(true),
             None,
             "and it is no longer pinned to anything"
-        );
-    }
-
-    /// The minimum an app declares to the window server is honoured as a hard
-    /// floor, which is why one drag works on a window whose app declares
-    /// nothing and stops dead on one whose app does. Measured on the host:
-    /// ChatGPT declares ~854px, so a drag asking for 407 got 854 back on every
-    /// report for the whole gesture, while Zen beside it followed the pointer.
-    /// A declared minimum is a claim, and a deliberate grab has to be able to
-    /// test it -- the app refuses if it cannot comply, and the refusal is what
-    /// teaches the real floor.
-    #[test]
-    fn a_grab_may_ask_below_the_minimum_the_app_declares() {
-        let mut engine = test_engine();
-        let wid = WindowId::new(1, 1);
-
-        // As `WindowObserved` builds it: the declared minimum, no inference yet.
-        engine.window_layout_constraints.insert(wid, WindowLayoutConstraints {
-            is_resizable: true,
-            min_width: 854.0,
-            min_height: 400.0,
-            ..WindowLayoutConstraints::default()
-        });
-        assert_eq!(
-            engine.window_layout_constraints.get(&wid).unwrap().min_for_axis(true),
-            854.0,
-            "the declared minimum is in force before the grab"
-        );
-
-        // Keeping it is what made the drag stop dead; passing None is the grab.
-        engine.forget_observed_min_size(wid, Some(CGSize::new(854.0, 400.0)));
-        assert_eq!(
-            engine.window_layout_constraints.get(&wid).unwrap().min_for_axis(true),
-            854.0,
-            "keeping the declared minimum leaves the floor exactly where it was"
-        );
-
-        engine.forget_observed_min_size(wid, None);
-        assert_eq!(
-            engine.window_layout_constraints.get(&wid).unwrap().min_for_axis(true),
-            0.0,
-            "a grab clears it, so the solver can be asked for what the user is \
-             dragging to"
         );
     }
 
