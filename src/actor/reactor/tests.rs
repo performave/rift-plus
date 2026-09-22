@@ -9727,6 +9727,54 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A window on a desktop rift has never shown must still come home.
+    ///
+    /// The departure record was built from the layout trees, and the trees
+    /// speak only for desktops the workspace manager has initialised -- which
+    /// in practice means desktops that have been shown. A window on a desktop
+    /// that never has is in no tree, and `query windows` calls it tiled
+    /// because it is not in the floating set either, so it looked accounted
+    /// for and was not: the record simply had no entry for it, and a churn
+    /// that merged it onto the survivor had nothing to put it back with.
+    ///
+    /// Found in the guest by instrumenting the record with what it missed:
+    /// three windows recorded where the display set held five, naming the two.
+    /// From the outside it is a window that does not travel with the desktop
+    /// it shared, which is what the grouping check had been reporting.
+    #[test]
+    fn a_window_on_a_desktop_with_no_tree_is_still_recorded_at_departure() {
+        let mut f = spaces_fixture();
+        // Tracked, on the second display's spare desktop, and in no tree:
+        // `place` in the fixture assigns to a workspace, and this does not.
+        let stray = WindowId::new(1, 9);
+        let stray_wsid = WindowServerId::new(109);
+        f.reactor.add_test_window(
+            stray,
+            stray_wsid,
+            Some(space2_extra()),
+            CGRect::new(CGPoint::new(1500., 10.), CGSize::new(400., 300.)),
+        );
+        set_window_spaces(&[stray_wsid], space2_extra());
+        assert!(
+            !f.reactor.layout_manager.layout_engine.is_window_floating(stray),
+            "the case only bites for a window that is not floating either"
+        );
+
+        // A real churn takes this as the window server starts moving windows;
+        // the fixture drives it by hand because nothing here leaves a tree.
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+
+        let record = f.reactor.display_archive.record().expect("the departure is recorded");
+        assert_eq!(
+            record.desired(stray),
+            Some(space2_extra()),
+            "a window in no tree was left out of the record, so nothing could \
+             put it back on the desktop it was on"
+        );
+        spaces_cleanup(&f, &[stray_wsid]);
+    }
+
     #[test]
     fn spaces_mode_puts_a_destroyed_departed_desktop_back_on_replug() {
         let mut f = spaces_fixture();

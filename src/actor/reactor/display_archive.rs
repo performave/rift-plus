@@ -109,6 +109,17 @@ pub(super) struct PreChurn {
     pub(super) members: HashMap<SpaceId, Vec<WindowId>>,
     /// The layout mode of every space's workspaces, in order.
     pub(super) modes: HashMap<SpaceId, Vec<LayoutMode>>,
+    /// Which desktop every tracked window was on, tree or no tree.
+    ///
+    /// `members` can only speak for desktops the workspace manager has
+    /// initialised, which in practice means desktops that have been shown.
+    /// A window on a desktop rift has never shown is in no tree, is reported
+    /// as tiled because it is not in the floating set either, and was simply
+    /// absent from the departure record -- so a churn had nothing to put it
+    /// back with and it stayed wherever macOS had merged it. Seen in the
+    /// guest: a record of three windows where the display set held five,
+    /// naming the two it had missed.
+    pub(super) homes: HashMap<WindowId, SpaceId>,
     taken: Instant,
     /// Kept past the TTL: the display set went incoherent after this was
     /// taken and has not come back whole since, so the display change that
@@ -306,19 +317,32 @@ impl Reactor {
             .iter()
             .map(|space| (*space, engine.layout_modes_on_space(*space)))
             .collect();
-        match engine.snapshot_current_layout_lightly(&self.state.windows) {
-            Ok(layout) => {
-                crate::sys::trace::act("pre_churn", &members.len());
-                self.display_archive.pre_churn = Some(PreChurn {
-                    layout,
-                    members,
-                    modes,
-                    taken: crate::sys::trace::now(),
-                    pinned: false,
-                });
+        let layout = match engine.snapshot_current_layout_lightly(&self.state.windows) {
+            Ok(layout) => layout,
+            Err(error) => {
+                debug!(%error, "Could not take a pre-churn layout snapshot");
+                return;
             }
-            Err(error) => debug!(%error, "Could not take a pre-churn layout snapshot"),
-        }
+        };
+        // Taken here rather than at departure: from the moment this snapshot
+        // is taken the window server is moving windows between desktops, so
+        // anything read later describes the churn rather than what preceded
+        // it. This is the last reading of where things were.
+        let tracked: Vec<WindowId> =
+            self.state.windows.iter_windows().map(|(wid, _)| wid).collect();
+        let homes: HashMap<WindowId, SpaceId> = tracked
+            .into_iter()
+            .filter_map(|wid| Some((wid, self.best_space_for_window_id(wid)?)))
+            .collect();
+        crate::sys::trace::act("pre_churn", &members.len());
+        self.display_archive.pre_churn = Some(PreChurn {
+            layout,
+            members,
+            modes,
+            homes,
+            taken: crate::sys::trace::now(),
+            pinned: false,
+        });
     }
 
     /// The windows on `space`: those in its trees and floats now, plus any

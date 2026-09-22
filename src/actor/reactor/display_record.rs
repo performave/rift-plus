@@ -272,7 +272,7 @@ impl DisplayRecord {
 
     /// Where the record wants `wid`: where the user put it while away, else
     /// where it was at departure.
-    fn desired(&self, wid: WindowId) -> Option<SpaceId> {
+    pub(super) fn desired(&self, wid: WindowId) -> Option<SpaceId> {
         self.placed
             .get(&wid)
             .map(|(space, _)| *space)
@@ -542,6 +542,12 @@ impl Reactor {
             }
         }
 
+        let from_pre_churn = self.display_archive.fresh_pre_churn().is_some();
+        let homes = self
+            .display_archive
+            .fresh_pre_churn()
+            .map(|pre| pre.homes.clone())
+            .unwrap_or_default();
         let (layout, members, modes) = match self.display_archive.fresh_pre_churn() {
             Some(pre) => (pre.layout.clone(), pre.members.clone(), pre.modes.clone()),
             None => {
@@ -565,13 +571,60 @@ impl Reactor {
             }
         };
         let mut windows = HashMap::default();
+        let mut listed = 0usize;
         for (space, wids) in &members {
             for wid in wids {
+                listed += 1;
                 if self.state.windows.window(*wid).is_some() {
                     windows.insert(*wid, *space);
                 }
             }
         }
+        // The trees speak only for desktops the workspace manager has
+        // initialised, which in practice means desktops that have been shown.
+        // A window on a desktop rift has never shown is in no tree -- and is
+        // reported as tiled, because it is not floating either -- so it was
+        // simply missing from the record, and a churn that merged it onto the
+        // survivor's desktop had nothing to put it back with. The pre-churn
+        // snapshot's `homes` knows where it was; fill from there, and only
+        // where the trees said nothing, so a tree's answer always wins.
+        let mut from_homes = 0usize;
+        for (wid, space) in &homes {
+            if windows.contains_key(wid) || self.state.windows.window(*wid).is_none() {
+                continue;
+            }
+            windows.insert(*wid, *space);
+            from_homes += 1;
+        }
+        // Where the record's window list came from and what it cost on the
+        // way. A departure recorded with fewer windows than the display set
+        // had cannot put them back, and the count alone never said whether
+        // the shortfall was the snapshot's or the filter's -- which left
+        // "windows_moved=0" unexplainable from a dump.
+        // Which tracked windows the record does not account for, by name. A
+        // count alone says a record is short; it does not say of what, and
+        // the answer decides whether the shortfall is a desktop the snapshot
+        // never covered or a window the engine had already let go of.
+        let missing: Vec<u32> = self
+            .state
+            .windows
+            .iter_windows()
+            .filter(|(wid, _)| !windows.contains_key(wid))
+            .map(|(wid, _)| wid.idx.get())
+            .take(12)
+            .collect();
+        crate::sys::trace::act(
+            "record_members",
+            &serde_json::json!({
+                "pre_churn": from_pre_churn,
+                "spaces": members.len(),
+                "spaces_with_windows": members.values().filter(|w| !w.is_empty()).count(),
+                "listed": listed,
+                "recorded": windows.len(),
+                "from_homes": from_homes,
+                "missing": missing,
+            }),
+        );
         let seen: HashSet<SpaceId> =
             displays.iter().flat_map(|d| d.desktops.iter().copied()).collect();
         info!(
