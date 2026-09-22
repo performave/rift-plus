@@ -183,16 +183,36 @@ impl AnimationManager {
                             continue;
                         }
                         let wsid = window.info.sys_id;
-                        if let Some(wsid) = wsid {
-                            if reactor
-                                .transaction_manager
-                                .get_target_frame(wsid)
-                                .is_some_and(|pending| pending.same_as(target_frame))
-                            {
+                        if let Some(wsid) = wsid
+                            && let Some(pending) =
+                                reactor.transaction_manager.get_target_frame(wsid)
+                        {
+                            if pending.same_as(target_frame) {
                                 trace!(?wid, ?target_frame, "Skipping redundant layout request");
                                 crate::sys::trace::act(
                                     "layout_skip",
                                     &(wid.idx.get(), "redundant"),
+                                );
+                                continue;
+                            }
+                            // A different frame is already out and unanswered,
+                            // and a drag is still running. Stacking another on
+                            // top of it is how an app ends up applying a frame
+                            // from several updates ago *after* a newer one: the
+                            // drag writes every 8ms, which is 125 a second, and
+                            // an app that manages twenty builds a queue that
+                            // outlives the gesture. The window then goes on
+                            // moving after the pointer has stopped, and lands
+                            // wherever the backlog ran out.
+                            //
+                            // Nothing is lost by dropping this one. The drag
+                            // sends a fresher frame in another 8ms, and the
+                            // arrange that follows the release is not a drag
+                            // update, so the final position is always written.
+                            if reactor.modifier_drag.is_some() {
+                                crate::sys::trace::act(
+                                    "layout_skip",
+                                    &(wid.idx.get(), "write still outstanding"),
                                 );
                                 continue;
                             }
@@ -336,14 +356,22 @@ impl AnimationManager {
             if target_frame.same_as(current_frame) {
                 continue;
             }
-            if let Some(wsid) = window.info.sys_id {
-                if reactor
-                    .transaction_manager
-                    .get_target_frame(wsid)
-                    .is_some_and(|pending| pending.same_as(target_frame))
-                {
+            if let Some(wsid) = window.info.sys_id
+                && let Some(pending) = reactor.transaction_manager.get_target_frame(wsid)
+            {
+                if pending.same_as(target_frame) {
                     trace!(?wid, ?target_frame, "Skipping redundant instant layout request");
                     crate::sys::trace::act("layout_skip", &(wid.idx.get(), "redundant"));
+                    continue;
+                }
+                // The same coalescing as the animated path above: during a
+                // drag, one frame in flight per window, and the next update
+                // carries a fresher one anyway.
+                if reactor.modifier_drag.is_some() {
+                    crate::sys::trace::act(
+                        "layout_skip",
+                        &(wid.idx.get(), "write still outstanding"),
+                    );
                     continue;
                 }
             }
