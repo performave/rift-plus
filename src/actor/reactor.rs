@@ -5816,34 +5816,15 @@ impl Reactor {
     /// The app's own minimum, which comes through AX and is not in doubt, is
     /// kept for every window. A real refusal is inferred again after the drag.
     fn forget_inferred_minimums_for_resize(&mut self, wid: WindowId) {
-        // Including the one the window server reports. That number comes from
-        // the app -- Electron apps set it, Gecko ones largely do not -- and it
-        // is read once, when the window is discovered, and then honoured as a
-        // floor the layout will not go below. It is why the same drag works on
-        // Zen and stops dead on ChatGPT: ChatGPT declares a minimum width and
-        // Zen does not, so the solver is asked for 407 and returns 854, every
-        // report, for the whole gesture.
-        //
-        // A declared minimum is a claim, not a fact -- it can be stale, it can
-        // be larger than what the app will actually accept, and the app itself
-        // is the arbiter either way: ask for less and it either complies or
-        // refuses. A refusal is caught and remembered by the machinery a few
-        // lines up, which is the honest way to learn a floor. So a deliberate
-        // grab of a window's edge is allowed to ask below the claim; the next
-        // time the window is observed, the reported value comes back.
-        let spaces = self.best_space_for_window_id(wid);
-        let windows: Vec<WindowId> = match spaces {
-            Some(space) => self
-                .layout_manager
-                .layout_engine
-                .windows_on_space_in_layout_order(space)
-                .into_iter()
-                .chain(std::iter::once(wid))
-                .collect(),
-            None => vec![wid],
+        let Some(space) = self.best_space_for_window_id(wid) else {
+            let ax_min = self.state.windows.window(wid).and_then(|w| w.info.min_size);
+            self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
+            return;
         };
-        for other in windows {
-            self.layout_manager.layout_engine.forget_observed_min_size(other, None);
+        let windows = self.layout_manager.layout_engine.windows_on_space_in_layout_order(space);
+        for other in windows.into_iter().chain(std::iter::once(wid)) {
+            let ax_min = self.state.windows.window(other).and_then(|w| w.info.min_size);
+            self.layout_manager.layout_engine.forget_observed_min_size(other, ax_min);
         }
     }
 
