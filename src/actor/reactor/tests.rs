@@ -9775,6 +9775,54 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A tree's order survives its windows leaving and coming back one by one.
+    ///
+    /// This is the property, and the engine already had it: re-adding in a
+    /// different order from the one they had still lands them where they were.
+    /// Worth pinning, but read the label -- it is *not* a test of
+    /// `restore_order_after_rebuild`, and it passes with that disabled.
+    ///
+    /// The fault that motivated it is a display churn, where a desktop's tree
+    /// is rebuilt from `[]` one window at a time -- the guest trace shows it --
+    /// and the order that comes out is an accident of insertion. That path
+    /// resets more than a remove/add pair does, nothing here models it, and it
+    /// is *not fixed*: an attempt guarded on the pre-churn snapshot never
+    /// fired in the guest, because on an arrival nothing captures one, and it
+    /// was reverted rather than shipped as dead code. The reproduction is
+    /// `scripts/slot-order-test.py`; it needs a scenario run first to put the
+    /// guest in the state that provokes it. Do not read this test as cover.
+    #[test]
+    fn a_trees_order_survives_its_windows_leaving_and_returning() {
+        let mut f = spaces_fixture();
+        let order = |f: &mut Fixture| {
+            f.reactor
+                .layout_manager
+                .layout_engine
+                .windows_on_space_in_layout_order(space2())
+        };
+        let was = order(&mut f);
+        assert!(was.len() >= 3, "the fixture must have an order worth losing");
+
+        f.reactor.capture_pre_churn_layout();
+        for wid in was.iter().rev() {
+            f.reactor.send_layout_event(LayoutEvent::WindowRemoved(*wid));
+        }
+        assert!(order(&mut f).is_empty(), "the rebuild starts from an empty tree");
+        let mut rebuilt: Vec<WindowId> = was.clone();
+        rebuilt.sort_by_key(|wid| wid.idx.get());
+        assert_ne!(rebuilt, was, "re-adding in the same order would prove nothing");
+        for wid in &rebuilt {
+            f.reactor.send_layout_event(LayoutEvent::WindowAdded(space2(), *wid));
+        }
+
+        assert_eq!(
+            order(&mut f),
+            was,
+            "the tree came back in the order it was rebuilt in, not the order it had"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees
