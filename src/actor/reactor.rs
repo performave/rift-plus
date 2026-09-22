@@ -5710,12 +5710,11 @@ impl Reactor {
             return;
         };
         let frame = window.frame_monotonic;
-        let ax_min = window.info.min_size;
         // Reaching for a window's edge is a request for a size, and a minimum
         // rift merely inferred should not stand in the way of one. Anything
         // the app genuinely will not do it will refuse again, and the refusal
         // is learnt again once the drag is over.
-        self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
+        self.forget_inferred_minimums_for_resize(wid);
         self.modifier_drag = Some(ModifierDragState {
             window: wid,
             action,
@@ -5767,6 +5766,32 @@ impl Reactor {
         best.map(|(wid, _)| wid)
     }
 
+    /// Let go of every inferred minimum on the desktop a resize is starting on.
+    ///
+    /// Not just the grabbed window's. A tiled resize moves the boundary
+    /// *between* windows, so the window being dragged can only grow if its
+    /// neighbour shrinks: a minimum wrongly inferred for the neighbour limits
+    /// the grabbed window's travel just as surely as one inferred for it, and
+    /// nothing about the grabbed window explains why. Eric found this from the
+    /// outside -- ChatGPT would not resize until Zen was resized first, after
+    /// which it moved freely -- which is what letting go of the neighbour's
+    /// minimum does, by hand.
+    ///
+    /// The app's own minimum, which comes through AX and is not in doubt, is
+    /// kept for every window. A real refusal is inferred again after the drag.
+    fn forget_inferred_minimums_for_resize(&mut self, wid: WindowId) {
+        let Some(space) = self.best_space_for_window_id(wid) else {
+            let ax_min = self.state.windows.window(wid).and_then(|w| w.info.min_size);
+            self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
+            return;
+        };
+        let windows = self.layout_manager.layout_engine.windows_on_space_in_layout_order(space);
+        for other in windows.into_iter().chain(std::iter::once(wid)) {
+            let ax_min = self.state.windows.window(other).and_then(|w| w.info.min_size);
+            self.layout_manager.layout_engine.forget_observed_min_size(other, ax_min);
+        }
+    }
+
     /// Records what an edge drag started on.
     ///
     /// Same state as a modifier drag -- from here the two are the same gesture
@@ -5786,8 +5811,7 @@ impl Reactor {
             return;
         };
         let frame = window.frame_monotonic;
-        let ax_min = window.info.min_size;
-        self.layout_manager.layout_engine.forget_observed_min_size(wid, ax_min);
+        self.forget_inferred_minimums_for_resize(wid);
         self.modifier_drag = Some(ModifierDragState {
             window: wid,
             action: crate::common::config::MouseAction::Resize,

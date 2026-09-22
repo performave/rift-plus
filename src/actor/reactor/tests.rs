@@ -8854,6 +8854,94 @@ fn a_window_that_refuses_its_size_is_given_at_least_that_size() {
     assert!((l2 - r2).abs() < 1.0, "even again: {l2} vs {r2}");
 }
 
+/// A display leaves and macOS hands its desktop to the survivor, which goes
+/// on showing its own. Nothing is showing the adopted desktop, so the arrange
+/// pass — which only ever visited the desktop each display shows — never
+/// looked at it again, and its windows kept the frames the departed display's
+/// geometry gave them: off the edge of the survivor's screen, or piled on top
+/// of one another, with rift still counting them tiled.
+#[test]
+fn a_desktop_handed_over_by_a_departed_display_is_laid_out_for_its_new_screen() {
+    let laptop = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+    let external = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
+    let (own, adopted) = (SpaceId::new(1), SpaceId::new(2));
+
+    let mut reactor = test_reactor();
+    reactor.handle_event(space_state_event_with(
+        vec![laptop, external],
+        vec![Some(own), Some(adopted)],
+        |state| {
+            state.has_seen_display_set = true;
+            state.display_space_ids.insert("test-display-0".to_string(), vec![own]);
+            state.display_space_ids.insert("test-display-1".to_string(), vec![adopted]);
+        },
+    ));
+    reactor.add_test_app(1);
+
+    let mut wsids = Vec::new();
+    let visitors: Vec<WindowId> = (1..=2)
+        .map(|idx| {
+            let wid = WindowId::new(1, idx);
+            let wsid = WindowServerId::new(100 + idx);
+            crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![adopted.get()]));
+            wsids.push(wsid);
+            reactor.add_test_window(wid, wsid, Some(adopted), external);
+            let workspace = reactor.test_workspace(adopted, 0);
+            assert!(reactor.assign_test_window_to_workspace(adopted, wid, workspace));
+            reactor.send_layout_event(LayoutEvent::WindowAdded(adopted, wid));
+            wid
+        })
+        .collect();
+
+    let frames = |reactor: &Reactor| -> Vec<CGRect> {
+        visitors
+            .iter()
+            .map(|wid| reactor.state.windows.window(*wid).unwrap().frame_monotonic)
+            .collect()
+    };
+    reactor.update_layout_or_warn(false, false, None);
+
+    let on_external = frames(&reactor);
+    assert!(
+        on_external.iter().all(|frame| frame.origin.x >= external.origin.x)
+            && on_external[0] != on_external[1],
+        "the fixture must tile them side by side on the external display: {on_external:?}"
+    );
+
+    // The external display goes; macOS carries its desktop over to the
+    // laptop, which stays on its own.
+    reactor.handle_event(space_state_event_with(vec![laptop], vec![Some(own)], |state| {
+        state.has_seen_display_set = true;
+        state.display_set_changed = true;
+        state.topology_changed = true;
+        state.should_force_refresh_layout = true;
+        state.display_space_ids.insert("test-display-0".to_string(), vec![own, adopted]);
+    }));
+
+    let stranded = frames(&reactor);
+    for (wid, frame) in visitors.iter().zip(&stranded) {
+        assert!(
+            reactor.layout_manager.layout_engine.is_window_tiled(adopted, *wid),
+            "{wid:?} is still counted tiled"
+        );
+        assert!(
+            frame.origin.x >= laptop.origin.x
+                && frame.max().x <= laptop.max().x
+                && frame.max().y <= laptop.max().y,
+            "{wid:?} is laid out on the screen its desktop now lives on, not \
+             left at {frame:?} on a display that is gone (laptop {laptop:?})"
+        );
+    }
+    assert_ne!(
+        stranded[0], stranded[1],
+        "two tiled windows do not share one frame"
+    );
+
+    for wsid in wsids {
+        crate::sys::window_server::set_window_spaces_override(wsid, None);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Display archive: a display's layout survives the display going away.
 // ---------------------------------------------------------------------------
@@ -12330,72 +12418,93 @@ fn display_churn_release_still_flushes_the_deferred_inventory_refresh() {
     );
 }
 
-mod scratch_stack_attach {
-    use test_log::test;
+/// A stack lives in the shape of the tree, and the only way back into a tree
+/// is `add_window_after_selection` — beside whatever happens to be selected.
+/// So a window that leaves its tree and returns does not come back to its own
+/// place unless something remembers where that was, and across a display
+/// change several windows leave, one after another.
+///
+/// Each removal used to snapshot the tree it could see at that moment, which
+/// by the second window is a tree the first has already been cut out of. Every
+/// one of those snapshots is restored as its window comes home, so the last to
+/// arrive overwrote the rest with the most threadbare reading of all. The
+/// stack came back with its members in whatever order they returned.
+///
+/// This is the shape the VM churn harness reported for `stack-across-churn`:
+/// the same windows, the same stack, a different order — and, when the stacked
+/// container was left empty long enough to be pruned, no stack at all.
+#[test]
+fn a_stack_keeps_its_order_through_the_desktops_a_display_attach_walks_it_over() {
+    use crate::sys::window_server::{
+        set_space_window_list_for_space_override, set_window_spaces_override,
+    };
 
-    use super::*;
-
-    fn stacks(node: &rift_protocol::ContainerTreeNode) -> Vec<(Vec<u32>, String)> {
-        let mut out = Vec::new();
-        fn walk(n: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<u32>, String)>) {
-            let kind = format!("{:?}", n.layout_kind);
-            if kind.to_lowercase().contains("stack") {
-                let members: Vec<u32> =
-                    n.children.iter().filter_map(|c| c.window_id).map(|w| w.idx).collect();
+    /// Every stacked container, as its ordered members — what the harness
+    /// compares across a churn.
+    fn stacks(reactor: &mut Reactor, space: SpaceId) -> Vec<(Vec<u32>, LayoutKind)> {
+        fn walk(node: &rift_protocol::ContainerTreeNode, out: &mut Vec<(Vec<u32>, LayoutKind)>) {
+            if let Some(kind @ (LayoutKind::HorizontalStack | LayoutKind::VerticalStack)) =
+                node.layout_kind
+            {
+                let members: Vec<u32> = node
+                    .children
+                    .iter()
+                    .filter_map(|child| child.window_id)
+                    .map(|w| w.idx)
+                    .collect();
                 if !members.is_empty() {
                     out.push((members, kind));
                 }
             }
-            for c in &n.children {
-                walk(c, out);
+            for child in &node.children {
+                walk(child, out);
             }
         }
-        walk(node, &mut out);
+        let mut out = Vec::new();
+        walk(
+            &reactor
+                .query_layout_state(Some(space.get()), None)
+                .expect("the survivor's desktop has a layout")
+                .container_tree,
+            &mut out,
+        );
         out
     }
 
-    fn stacks_of(reactor: &mut Reactor, space: SpaceId) -> Vec<(Vec<u32>, String)> {
-        stacks(
-            &reactor
-                .query_layout_state(Some(space.get()), None)
-                .expect("layout state")
-                .container_tree,
-        )
-    }
+    let survivor = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+    let arriving = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
+    let (space1, space2) = (SpaceId::new(1), SpaceId::new(2));
+    let (mut apps, mut reactor) = test_context();
 
-    fn build_stack(apps: &mut Apps, reactor: &mut Reactor, screen: CGRect, space: SpaceId) {
-        build_stack_of(apps, reactor, screen, space, 4);
-    }
+    apps.make_app_and_settle_on_screen(&mut reactor, survivor, space1, 1, make_windows(4));
+    // bsp has no stacked containers and scrolling moves the window to the next
+    // column instead, so only traditional can hold one; and `toggle-stack`
+    // acts on the selected *container*, which is why the selection is walked
+    // up to the parent split first. Without the ascend this tests nothing.
+    reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
+        workspace: None,
+        mode: LayoutMode::Traditional,
+    });
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_test_layout_command(LayoutCommand::Ascend);
+    reactor.handle_test_layout_command(LayoutCommand::ToggleStack);
+    apps.simulate_until_quiet(&mut reactor);
 
-    fn build_stack_of(
-        apps: &mut Apps,
-        reactor: &mut Reactor,
-        screen: CGRect,
-        space: SpaceId,
-        count: usize,
-    ) {
-        apps.make_app_and_settle_on_screen(reactor, screen, space, 1, make_windows(count));
-        reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
-            workspace: None,
-            mode: LayoutMode::Traditional,
-        });
-        apps.simulate_until_quiet(reactor);
-        reactor.handle_test_layout_command(LayoutCommand::Ascend);
-        reactor.handle_test_layout_command(LayoutCommand::ToggleStack);
-        apps.simulate_until_quiet(reactor);
-    }
+    let before = stacks(&mut reactor, space1);
+    assert_eq!(
+        before.len(),
+        1,
+        "the setup must build exactly one stack: {before:?}"
+    );
+    assert_eq!(before[0].0.len(), 4, "with every window in it: {before:?}");
 
-    fn attach(
-        reactor: &mut Reactor,
-        screen1: CGRect,
-        screen2: CGRect,
-        space1: SpaceId,
-        space2: SpaceId,
-        wsids: &[WindowServerId],
-    ) {
-        let windows: Vec<_> = wsids.iter().map(|w| (*w, space1)).collect();
+    let wsids: Vec<_> = (1..=4)
+        .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
+        .collect();
+    let attach = |reactor: &mut Reactor, shown: SpaceId| {
+        let windows: Vec<_> = wsids.iter().map(|wsid| (*wsid, shown)).collect();
         reactor.handle_event(space_state_event_with(
-            vec![screen1, screen2],
+            vec![survivor, arriving],
             vec![Some(space1), Some(space2)],
             move |state| {
                 state.has_seen_display_set = true;
@@ -12410,236 +12519,43 @@ mod scratch_stack_attach {
                 }
             },
         ));
+    };
+
+    // The display arrives, and for a report the window server names the
+    // survivor's windows on the desktop it has just minted for it.
+    for wsid in &wsids {
+        set_window_spaces_override(*wsid, Some(vec![space2.get()]));
     }
+    set_space_window_list_for_space_override(space1.get(), Some(vec![]));
+    set_space_window_list_for_space_override(
+        space2.get(),
+        Some(wsids.iter().map(|wsid| wsid.as_u32()).collect()),
+    );
+    attach(&mut reactor, space2);
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(
+        stacks(&mut reactor, space1).is_empty(),
+        "the windows really have to leave the survivor's tree, or the return proves nothing"
+    );
 
-    /// The window server answers for both desktops, and the survivor's list is
-    /// whole: the deterministic attach.
-    #[test]
-    fn scratch_attach_with_whole_readback() {
-        use crate::sys::window_server::set_space_window_list_for_space_override;
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
-        build_stack(&mut apps, &mut reactor, screen1, space1);
-        let wsids: Vec<_> = (1..=4)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        let before = stacks_of(&mut reactor, space1);
-        println!("BEFORE {:?}", before);
-
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        set_space_window_list_for_space_override(space2.get(), Some(vec![]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AFTER  {:?}", stacks_of(&mut reactor, space1));
-        set_space_window_list_for_space_override(space1.get(), None);
-        set_space_window_list_for_space_override(space2.get(), None);
+    // It corrects itself: they never moved.
+    for wsid in &wsids {
+        set_window_spaces_override(*wsid, Some(vec![space1.get()]));
     }
+    set_space_window_list_for_space_override(
+        space1.get(),
+        Some(wsids.iter().map(|wsid| wsid.as_u32()).collect()),
+    );
+    set_space_window_list_for_space_override(space2.get(), Some(vec![]));
+    attach(&mut reactor, space1);
+    apps.simulate_until_quiet(&mut reactor);
 
-    /// The attach as macOS really reports it: for a moment after the new
-    /// display's desktop is minted the window server names it as the desktop
-    /// of windows that never left the survivor, and the next report corrects
-    /// itself.
-    #[test]
-    fn scratch_attach_with_space_flicker() {
-        use crate::sys::window_server::{
-            set_space_window_list_for_space_override, set_window_spaces_override,
-        };
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
-        build_stack(&mut apps, &mut reactor, screen1, space1);
-        let wsids: Vec<_> = (1..=4)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        println!("BEFORE {:?}", stacks_of(&mut reactor, space1));
-
-        // The second member is briefly named on the arriving desktop.
-        set_window_spaces_override(wsids[2], Some(vec![space2.get()]));
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        set_space_window_list_for_space_override(space2.get(), Some(vec![wsids[2].as_u32()]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("MID    {:?}", stacks_of(&mut reactor, space1));
-
-        set_window_spaces_override(wsids[2], Some(vec![space1.get()]));
-        set_space_window_list_for_space_override(space2.get(), Some(vec![]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AFTER  {:?}", stacks_of(&mut reactor, space1));
-        for wsid in &wsids {
-            set_window_spaces_override(*wsid, None);
-        }
-        set_space_window_list_for_space_override(space1.get(), None);
-        set_space_window_list_for_space_override(space2.get(), None);
+    let after = stacks(&mut reactor, space1);
+    for wsid in &wsids {
+        set_window_spaces_override(*wsid, None);
     }
+    set_space_window_list_for_space_override(space1.get(), None);
+    set_space_window_list_for_space_override(space2.get(), None);
 
-    #[test]
-    fn scratch_two_member_stack_flicker() {
-        use crate::sys::window_server::{
-            set_space_window_list_for_space_override, set_window_spaces_override,
-        };
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
-        build_stack_of(&mut apps, &mut reactor, screen1, space1, 2);
-        let wsids: Vec<_> = (1..=2)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        println!("BEFORE {:?}", stacks_of(&mut reactor, space1));
-
-        set_window_spaces_override(wsids[1], Some(vec![space2.get()]));
-        set_space_window_list_for_space_override(space1.get(), Some(vec![wsids[0].as_u32()]));
-        set_space_window_list_for_space_override(space2.get(), Some(vec![wsids[1].as_u32()]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("MID    {:?}", stacks_of(&mut reactor, space1));
-
-        set_window_spaces_override(wsids[1], Some(vec![space1.get()]));
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        set_space_window_list_for_space_override(space2.get(), Some(vec![]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AFTER  {:?}", stacks_of(&mut reactor, space1));
-        for wsid in &wsids {
-            set_window_spaces_override(*wsid, None);
-        }
-        set_space_window_list_for_space_override(space1.get(), None);
-        set_space_window_list_for_space_override(space2.get(), None);
-    }
-
-    /// Every member of the stack is named on the arriving desktop for one
-    /// report, then named home again.
-    #[test]
-    fn scratch_whole_stack_flicker() {
-        use crate::sys::window_server::{
-            set_space_window_list_for_space_override, set_window_spaces_override,
-        };
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
-        build_stack(&mut apps, &mut reactor, screen1, space1);
-        let wsids: Vec<_> = (1..=4)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        println!("BEFORE {:?}", stacks_of(&mut reactor, space1));
-
-        for wsid in &wsids {
-            set_window_spaces_override(*wsid, Some(vec![space2.get()]));
-        }
-        set_space_window_list_for_space_override(space1.get(), Some(vec![]));
-        set_space_window_list_for_space_override(
-            space2.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!(
-            "MID    s1={:?} s2={:?}",
-            stacks_of(&mut reactor, space1),
-            stacks_of(&mut reactor, space2)
-        );
-
-        for wsid in &wsids {
-            set_window_spaces_override(*wsid, Some(vec![space1.get()]));
-        }
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        set_space_window_list_for_space_override(space2.get(), Some(vec![]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AFTER  {:?}", stacks_of(&mut reactor, space1));
-        for wsid in &wsids {
-            set_window_spaces_override(*wsid, None);
-        }
-        set_space_window_list_for_space_override(space1.get(), None);
-        set_space_window_list_for_space_override(space2.get(), None);
-    }
-
-    /// The same attach, but the survivor's readback misses one window -- what
-    /// a display reconfiguration does to the per-space query.
-    #[test]
-    fn scratch_attach_with_partial_readback() {
-        use crate::sys::window_server::set_space_window_list_for_space_override;
-        let (mut apps, mut reactor) = test_context();
-        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let screen2 = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
-        let space1 = SpaceId::new(1);
-        let space2 = SpaceId::new(2);
-        build_stack(&mut apps, &mut reactor, screen1, space1);
-        let wsids: Vec<_> = (1..=4)
-            .map(|idx| reactor.test_window_server_id(WindowId::new(1, idx)))
-            .collect();
-        println!("BEFORE {:?}", stacks_of(&mut reactor, space1));
-
-        // One window missing from the survivor's list.
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().skip(1).map(|w| w.as_u32()).collect()),
-        );
-        set_space_window_list_for_space_override(space2.get(), Some(vec![]));
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("MID    {:?}", stacks_of(&mut reactor, space1));
-
-        // The next report is whole again.
-        set_space_window_list_for_space_override(
-            space1.get(),
-            Some(wsids.iter().map(|w| w.as_u32()).collect()),
-        );
-        attach(&mut reactor, screen1, screen2, space1, space2, &wsids);
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AFTER  {:?}", stacks_of(&mut reactor, space1));
-        set_space_window_list_for_space_override(space1.get(), None);
-        set_space_window_list_for_space_override(space2.get(), None);
-    }
-
-    #[test]
-    fn scratch_size_change_keeps_stack() {
-        let (mut apps, mut reactor) = test_context();
-        let small = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
-        let big = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 1000.));
-        let space = SpaceId::new(1);
-
-        apps.make_app_and_settle_on_screen(&mut reactor, small, space, 1, make_windows(4));
-        reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
-            workspace: None,
-            mode: LayoutMode::Traditional,
-        });
-        apps.simulate_until_quiet(&mut reactor);
-        reactor.handle_test_layout_command(LayoutCommand::Ascend);
-        reactor.handle_test_layout_command(LayoutCommand::ToggleStack);
-        apps.simulate_until_quiet(&mut reactor);
-
-        let before = stacks_of(&mut reactor, space);
-        println!("BEFORE      {:?}", before);
-        assert!(!before.is_empty(), "test setup made no stack");
-
-        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, big.size));
-        apps.simulate_until_quiet(&mut reactor);
-        println!("AT BIG      {:?}", stacks_of(&mut reactor, space));
-
-        reactor.send_layout_event(LayoutEvent::SpaceExposed(space, small.size));
-        apps.simulate_until_quiet(&mut reactor);
-        println!("BACK SMALL  {:?}", stacks_of(&mut reactor, space));
-    }
+    assert_eq!(after, before, "the attach must give the stack back as it was");
 }

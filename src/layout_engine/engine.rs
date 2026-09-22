@@ -4316,6 +4316,51 @@ mod tests {
         );
     }
 
+    /// The window you grab is not the only one that constrains the drag. A
+    /// tiled resize moves the boundary *between* two windows, so the grabbed
+    /// window can only grow if its neighbour shrinks -- and a minimum wrongly
+    /// inferred for the neighbour limits the grab just as surely as one
+    /// inferred for the grabbed window, while explaining nothing about it.
+    #[test]
+    fn a_neighbours_inferred_minimum_is_what_limits_the_window_you_grabbed() {
+        let mut engine = test_engine();
+        let grabbed = WindowId::new(1, 1);
+        let neighbour = WindowId::new(1, 2);
+
+        // Nothing wrong with the window being dragged.
+        engine.window_layout_constraints.insert(grabbed, WindowLayoutConstraints {
+            is_resizable: true,
+            ..WindowLayoutConstraints::default()
+        });
+        // The neighbour, though, refused a size once and had a large minimum
+        // inferred from it.
+        assert!(engine.note_observed_min_size(
+            neighbour,
+            CGSize::new(400.0, 300.0),
+            CGSize::new(1400.0, 900.0)
+        ));
+        assert_eq!(
+            engine.window_layout_constraints.get(&neighbour).unwrap().min_width,
+            1400.0,
+        );
+
+        // Letting go of the grabbed window's own minimum changes nothing,
+        // because the grabbed window was never the constraint.
+        engine.forget_observed_min_size(grabbed, None);
+        assert_eq!(
+            engine.window_layout_constraints.get(&neighbour).unwrap().min_width,
+            1400.0,
+            "the neighbour still holds the boundary where it was"
+        );
+
+        // Letting go of the neighbour's is what frees the drag.
+        engine.forget_observed_min_size(neighbour, None);
+        assert_eq!(
+            engine.window_layout_constraints.get(&neighbour).unwrap().min_width,
+            0.0,
+        );
+    }
+
     /// A learnt minimum is self-reinforcing. The layout stops asking for less
     /// than it, so the window is never seen smaller, so `relax_observed_min_size`
     /// -- which only fires on seeing one smaller -- can never bring it down.

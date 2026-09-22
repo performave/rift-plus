@@ -117,12 +117,27 @@ impl Reactor {
             return;
         }
         let anchor = engine.slot_of(space, window);
-        let snapshot = match engine.snapshot_current_layout_lightly(&self.state.windows) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                debug!(?window, %error, "Could not snapshot the layout for a fullscreen slot");
-                return;
-            }
+        // While a display change is settling, the tree this removal can see is
+        // already the wrong one. The window server moves windows between
+        // desktops one at a time, so by the second removal the snapshot no
+        // longer has the first window in it, by the third it has neither, and
+        // every one of them is restored on the way back — last one wins, over a
+        // tree its predecessors had already been cut out of. A stack came back
+        // with its members in the order they happened to return, and one whose
+        // container emptied did not come back at all. The pre-churn snapshot is
+        // the same tree for all of them: taken once, before the first window
+        // left, which is the arrangement the user is owed.
+        let pre_churn = self.display_archive.fresh_pre_churn().map(|pre| pre.layout.clone());
+        let engine = &mut self.layout_manager.layout_engine;
+        let snapshot = match pre_churn {
+            Some(layout) => layout,
+            None => match engine.snapshot_current_layout_lightly(&self.state.windows) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    debug!(?window, %error, "Could not snapshot the layout for a fullscreen slot");
+                    return;
+                }
+            },
         };
         crate::sys::trace::act(
             "fullscreen_slot",

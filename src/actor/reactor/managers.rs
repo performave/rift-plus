@@ -527,10 +527,7 @@ impl LayoutManager {
             // space*; the display it belongs to is what says where to put it.
             // `calculate_layout` has already recorded that display, so asking
             // the engine finds the screen the frames were computed for.
-            let screen = reactor.space_state.screen_by_space(space).or_else(|| {
-                let uuid = reactor.layout_manager.layout_engine.display_uuid_for_space(space)?;
-                reactor.space_state.screens.iter().find(|screen| screen.display_uuid == uuid)
-            });
+            let screen = reactor.space_state.screen_by_space(space);
             if screen.is_none() {
                 crate::sys::trace::act(
                     "arrange_apply",
