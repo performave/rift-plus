@@ -581,12 +581,17 @@ impl WorkspaceStore {
     /// layout state can go with them. Layout state keyed on a workspace id
     /// that no longer resolves fails the validation every save runs, and the
     /// layout is then never persisted again.
+    /// The workspace entries themselves are deliberately left in the slotmap.
+    /// Removing them invalidates their keys, and a key held anywhere else --
+    /// the engine indexes `workspaces[ws_id]` directly in a dozen places and
+    /// panics on a stale one -- takes the reactor down with it. That is not
+    /// hypothetical: removing them here panicked rift with "invalid SlotMap
+    /// key used" on the first churn that destroyed a desktop. Detaching the
+    /// space from them is enough to make them unreachable, which is what this
+    /// is for; the entries are small and the alternative is a crash.
     #[must_use]
     pub(crate) fn take_workspaces_of(&mut self, space: SpaceId) -> Vec<VirtualWorkspaceId> {
         let dropped = self.workspaces_by_space.remove(&space).unwrap_or_default();
-        for workspace in &dropped {
-            self.workspaces.remove(*workspace);
-        }
         self.active_workspace_per_space.remove(&space);
         dropped
     }

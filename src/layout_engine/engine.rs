@@ -1411,8 +1411,11 @@ impl LayoutEngine {
     pub fn forget_space(&mut self, space: SpaceId) {
         self.floating.forget_space(space);
         self.floating_positions.forget_space(space);
-        let dropped = self.virtual_workspace_manager.take_workspaces_of(space);
-        self.workspace_layouts.remove_workspaces(dropped);
+        // Note the layout side-index is *not* dropped along with them. It is
+        // keyed by workspace id, and those ids stay valid because the entries
+        // stay in the slotmap; dropping the index while a tree can still be
+        // reached through a stale key is how this crashed the first time.
+        let _dropped = self.virtual_workspace_manager.take_workspaces_of(space);
         self.space_display_map.remove(&space);
         self.display_last_space.retain(|_, held| *held != space);
     }
