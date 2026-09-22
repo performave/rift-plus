@@ -471,6 +471,33 @@ Treat the *column comparison* as the result and a single scenario's verdict as
 noisy: these same fifteen have swapped individual scenarios between runs of the
 same binary, while the totals stayed put.
 
+### The noise band, measured (2026-09-22)
+
+Six runs of the sixteen, and the number moves without the code moving:
+
+| build | session | passed | `transient-glitch` |
+| --- | --- | --- | --- |
+| A | earlier | 6 | pass |
+| A | earlier | 6 | pass |
+| **A** | **later, same night** | **5** | **fail** |
+| B | later | 4 | fail |
+| B | later | 4 | fail |
+| B, one commit reverted | later | 4 | fail |
+
+Build A scoring 6 twice and then 5 is the whole lesson: two agreeing runs in
+one sitting are not a baseline you can compare against a different sitting.
+Three scenarios pass every time (`fullscreen-roundtrip`, `stack-swallow`,
+`orientation-portrait`); the fourth rotates between `short-unplug`,
+`churn-during-space-switch` and `resolution-churn`; and `transient-glitch`
+flips on its own, which it would, being a continuous sampler that fails if any
+one sample catches the known mid-churn overlap.
+
+So the band is roughly plus or minus two, and a difference of one or two
+scenarios between builds means nothing. On this evidence the apparent 6 -> 4
+"regression" was not one, and a commit was bisected out and rebuilt before
+anyone thought to re-run the *old* build as a control -- which took one run and
+answered it.
+
 ### What a number from this battery is worth
 
 Judge a count against the other column, never on its own. On the merged build
