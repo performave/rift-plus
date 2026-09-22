@@ -263,8 +263,25 @@ def make_main(display_id: int) -> None:
     sh(f"{DTOOL} setmain {display_id}")
 
 
-def settle(seconds: float = 4.0) -> None:
+def settle(seconds: float = 4.0, converge: float = 10.0) -> None:
+    """Wait out a display change: the fixed pause, then until rift agrees.
+
+    The pause alone was a guess. A replug sometimes needs longer than four
+    seconds for rift to see the display the window server already has, and a
+    snapshot taken in between reported "rift lists 1 display(s), window server
+    has 2" -- a reading of the moment, not a fault -- and every other check in
+    that snapshot was then judging a one-display layout on a two-display
+    machine. So after the pause, keep waiting (up to `converge` seconds) until
+    the two counts agree. If they never do, the snapshot that follows says so,
+    which is the honest outcome.
+    """
     time.sleep(seconds)
+    deadline = time.time() + converge
+    while time.time() < deadline:
+        want = display_count()
+        if want < 0 or len(rift("displays") or []) == want:
+            return
+        time.sleep(0.5)
 
 
 # --------------------------------------------------------- restoration modes
@@ -903,11 +920,19 @@ def empty_shells(snap: dict) -> list:
 
 
 def check_no_desktop_leak(base: dict, now: dict, phase: str) -> None:
+    """Empty shell desktops must not *accumulate*.
+
+    Compared by count, not by id. A churn legitimately destroys a desktop rift
+    made and mints another, so the ids of the empty ones turn over even when
+    nothing is leaking; comparing ids reported "leaked 5 empty desktop(s)
+    [295, 298, 301, 304, 307] -- was 249, now 249" on a run where the count had
+    not moved at all. Growth is the thing this exists to catch.
+    """
     was, is_ = empty_shells(base), empty_shells(now)
-    leaked = [sid for sid in is_ if sid not in was]
-    if leaked:
-        raise Violation(f"{phase}: leaked {len(leaked)} empty desktop(s) {leaked} "
-                        f"-- was {len(was)}, now {len(is_)}")
+    if len(is_) > len(was):
+        new = [sid for sid in is_ if sid not in was]
+        raise Violation(f"{phase}: empty desktops grew {len(was)} -> {len(is_)} "
+                        f"(new: {new})")
 
 
 def check_no_workspace_leak(base: dict, now: dict, phase: str) -> None:
@@ -916,8 +941,49 @@ def check_no_workspace_leak(base: dict, now: dict, phase: str) -> None:
                         f"{now['workspace_total']} (a missed remap orphans the old one)")
 
 
+def check_no_limbo(phase: str) -> None:
+    """No window on a shown desktop may be neither tiled nor floating.
+
+    That is the state `window-limbo` describes: in no tree, not in the floating
+    set, so nothing lays it out and the tile key does nothing for it. It sits
+    at whatever size it last had -- in the churn runs, TextEdit's default
+    673x439, which is how it kept turning up in overlap reports. Before rift
+    reported `is_tiled`, the overlap check counted such a window as tiled and
+    flagged it as an overlap; now that the overlap check correctly skips it,
+    this is what keeps it from vanishing from view instead.
+
+    A window in native fullscreen is legitimately in neither -- it has a whole
+    display of its own -- so one that covers a display is left alone.
+    """
+    displays = rift("displays") or []
+    frames = [(round(d["frame"]["origin"]["x"]), round(d["frame"]["origin"]["y"]),
+               round(d["frame"]["size"]["width"]), round(d["frame"]["size"]["height"]))
+              for d in displays]
+    for d in displays:
+        sid = d.get("space")
+        if sid is None:
+            continue
+        for w in (rift("windows", "--space-id", str(sid)) or []):
+            if "is_tiled" not in w:
+                return      # an older rift: it cannot say, so neither can we
+            if w.get("is_tiled") or w.get("is_floating"):
+                continue
+            f = w.get("frame") or {}
+            o, sz = f.get("origin", {}), f.get("size", {})
+            x, y = round(o.get("x", 0)), round(o.get("y", 0))
+            wd, h = round(sz.get("width", 0)), round(sz.get("height", 0))
+            covers = any(abs(x - fx) <= 60 and abs(wd - fw) <= 120 and h >= fh - 120
+                         for fx, fy, fw, fh in frames)
+            if covers:
+                continue
+            raise Violation(f"{phase}: desktop {sid}: {w.get('app_name')} "
+                            f"#{(w.get('id') or {}).get('idx')} at ({x},{y},{wd},{h}) "
+                            f"is neither tiled nor floating")
+
+
 def check_full(base: dict, now: dict, phase: str) -> None:
     check_display_count(now, phase)
+    check_no_limbo(phase)
     check_frames(now, phase)
     check_frames_within_display(now, phase)
     check_windows(base["windows"], now["windows"], phase)
