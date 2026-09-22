@@ -1486,6 +1486,80 @@ mod tests {
         );
     }
 
+    /// Holding still must hold still. The fallback anchored to the window's
+    /// own rect, which its own output moves, so every step measured from a
+    /// shifted anchor and pushed further: on the host the window ran from
+    /// 707px to 982px while the drag asked for a width that changed by less
+    /// than a pixel a step. Anchoring to the container, which the resize
+    /// cannot move, is what makes repeating the same request a no-op.
+    #[test]
+    fn asking_for_the_same_width_again_does_not_move_the_window() {
+        let mut system = BspLayoutSystem::default();
+        let layout = system.create_layout();
+        let w1 = w(101);
+        let w2 = w(102);
+        system.add_window_after_selection(layout, w1);
+        system.add_window_after_selection(layout, w2);
+
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1600.0, 900.0));
+        let gaps = crate::common::config::GapSettings::default();
+        // The neighbour has a minimum, as Zen did at 500px. That is what makes
+        // the tree's geometry and the frames actually applied diverge -- the
+        // tree keeps handing the dragged window more, the constraint keeps
+        // taking it back -- and the divergence is what the anchor drifts on.
+        // Without it the two agree and the runaway cannot appear.
+        let mut constraints = HashMap::default();
+        constraints.insert(
+            w1,
+            WindowLayoutConstraints {
+                is_resizable: true,
+                min_width: 700.0,
+                ..WindowLayoutConstraints::default()
+            }
+            .normalized(),
+        );
+        let width_of = |system: &mut BspLayoutSystem, wid: WindowId| -> f64 {
+            system
+                .calculate_layout(
+                    layout,
+                    screen,
+                    0.0,
+                    &constraints,
+                    &Default::default(),
+                    0.0,
+                    Default::default(),
+                    Default::default(),
+                )
+                .into_iter()
+                .find(|(w, _)| *w == wid)
+                .expect("frame missing")
+                .1
+                .size
+                .width
+        };
+
+        let start = width_of(&mut system, w2);
+        let origin = CGPoint::new(screen.max().x - start, 0.0);
+        // One step to a new width, then the same width asked for over and
+        // over -- a pointer held still while the app keeps reporting.
+        let want = start - 150.0;
+        let mut previous = CGRect::new(origin, CGSize::new(start, 900.0));
+        let asked = CGRect::new(origin, CGSize::new(want, 900.0));
+        system.on_window_resized(layout, w2, previous, asked, screen, &gaps);
+        previous = asked;
+        let settled = width_of(&mut system, w2);
+
+        for _ in 0..8 {
+            system.on_window_resized(layout, w2, previous, asked, screen, &gaps);
+        }
+        let after = width_of(&mut system, w2);
+        assert!(
+            (after - settled).abs() < 2.0,
+            "repeating the same request must not walk the window: settled at \
+             {settled}, ended at {after}"
+        );
+    }
+
     #[test]
     fn non_binding_window_minimum_keeps_half_split_centered() {
         let mut system = BspLayoutSystem::default();
