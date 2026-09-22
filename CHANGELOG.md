@@ -25,6 +25,46 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A destroyed desktop is matched against its replacement on whichever
+  display macOS put it.** The pairing ran display by display: a desktop the
+  window server destroyed could only be matched against fresh desktops on the
+  display that lost it. macOS makes no such promise -- a recorded clamshell
+  trace has a space change display twenty times in one session, and the abuse
+  trace fifteen -- so whenever the replacement was minted on the other display
+  it was unfindable, the destroyed desktop got nothing to stand in for it, and
+  its windows had nowhere to go. From the outside: windows on the wrong
+  desktop, and a desktop missing. Matching is now global and scored on what is
+  actually on each desktop, since the windows are the only thing a churn does
+  not renumber; display and position remain as tie-breaks, worth less than a
+  single shared window.
+
+- **A reordering nobody asked for is put back.** A desktop whose windows came
+  back in a different order was taken to have been rearranged by the user, and
+  its recorded tree was left alone. But after the fact the user's reordering
+  and the window server's are the same thing -- the same windows, a different
+  order -- so a churn that rebuilt a tree had its rebuild preserved as though
+  it had been asked for. The record now notes the layout commands rift runs
+  rather than inferring them afterwards; the window server issues none.
+
+- **A stack survives a display attach.** Windows leave a tree one at a time
+  during a churn, and rift snapshotted each one's slot as it went -- so the
+  second window's snapshot was a tree the first had already been cut out of,
+  and the third's was missing both. Restoring them in arrival order let the
+  last to arrive overwrite the rest with the most threadbare reading: the same
+  windows, the same stack, a different order, and no stack at all once the
+  container had been left empty long enough to be pruned. The snapshot taken
+  once before the first window left was already correct for all of them, and is
+  now what they come home to.
+
+- **Dragging the outer edge of a window at the screen's edge resizes it.** No
+  split owns that edge -- the rightmost window's right edge is the screen's,
+  not a boundary between two windows -- so the walk up the tree found nothing
+  to move and returned silently, in both directions, for the whole gesture.
+  Whether a drag did anything came down to which half of the window the press
+  landed in, which is what made it look intermittent and app-specific. The size
+  being asked for is still reachable through the boundary the window does have,
+  which is what it now moves.
+
 - **A churn stops leaving one desktop behind.** When a display leaves, rift
   makes a desktop to hold the windows of the one macOS destroyed, and destroys
   it again when the display comes back and its windows have somewhere better to
@@ -68,6 +108,14 @@ Entries describe this fork's changes relative to
   (`scripts/handson.py`). Restoring the subscription also made modifier-drag
   *resize* work, which it had not before.
 
+- **A floating layout no longer loses a stack, or a window's frame, to an app
+  rule.** `LayoutMode::Floating` is a layout whose tree *is* the arrangement:
+  every window in it floats already, and the tree holds their frames. A rule
+  matching `floating = true` was still taking the window out of that tree the
+  way it does for a tiling layout, which dropped the frame and dissolved any
+  stack the window had been joined into -- to grant the rule something it
+  already had. It is now a no-op there.
+
 ### Declined from upstream
 
 - `bff0dfdf` (allow duplicate `app_name` when a rule has another matcher).
@@ -91,16 +139,6 @@ Entries describe this fork's changes relative to
   `tests/` depend on being able to answer it offline.
 - Upstream's duplicated `rift-cli` command tree, which this fork replaced with
   a thin shim over `rift_wm::cli`.
-
-### Fixed
-
-- **A floating layout no longer loses a stack, or a window's frame, to an app
-  rule.** `LayoutMode::Floating` is a layout whose tree *is* the arrangement:
-  every window in it floats already, and the tree holds their frames. A rule
-  matching `floating = true` was still taking the window out of that tree the
-  way it does for a tiling layout, which dropped the frame and dissolved any
-  stack the window had been joined into -- to grant the rule something it
-  already had. It is now a no-op there.
 
 ## [0.5.5-plus.4] - 2026-09-21
 
