@@ -5698,11 +5698,11 @@ impl Reactor {
     ) {
         self.modifier_drag = None;
         let Some(wid) = self.window_for_press(window_server_id, at) else {
-            debug!(
+            info!(
                 ?window_server_id,
                 ?at,
-                "Modifier drag pressed on a window rift does not track and could \
-                 not attribute to one; ignoring"
+                "Modifier drag: pressed on a window rift does not track, and no \
+                 tracked window contains the point; the gesture is swallowed"
             );
             return;
         };
@@ -5756,11 +5756,11 @@ impl Reactor {
             }
         }
         if let Some((wid, _)) = best {
-            debug!(
+            info!(
                 ?window_server_id,
                 ?wid,
-                "Press landed on an untracked surface; attributing it to the \
-                 tracked window it is inside"
+                "Modifier drag: press landed on an untracked surface; attributed \
+                 to the tracked window it is inside"
             );
         }
         best.map(|(wid, _)| wid)

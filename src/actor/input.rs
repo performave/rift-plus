@@ -10,7 +10,7 @@ use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID,
     CGEventTapLocation as CGTapLoc, CGEventTapOptions as CGTapOpt, CGEventTapProxy, CGEventType,
 };
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::reactor::{self, Event};
 use super::stack_line;
@@ -993,14 +993,33 @@ impl Input {
         let (modifier, action) = state.mouse.action_for(button)?;
         let held = modifiers_from_flags(CGEvent::flags(Some(event)));
         if held != modifier {
+            // Logged, and at info, because this is the first of three ways a
+            // press can produce no drag at all, and from the outside they are
+            // one symptom: the gesture does nothing, sometimes. A press is a
+            // rare enough event to say something about each time.
+            if held != Modifiers::empty() {
+                info!(
+                    ?held,
+                    want = ?modifier,
+                    "Modifier drag: held modifiers do not match the configured set"
+                );
+            }
             return None;
         }
         // The under-pointer field is populated for left-button events but comes
         // back empty for right-button ones, which is why a right-drag looked
         // like it was never captured at all. Fall back to asking the window
         // server what is under the cursor.
-        let window =
-            mouse_window_hint(event).or_else(crate::sys::window_server::window_under_cursor)?;
+        let Some(window) =
+            mouse_window_hint(event).or_else(crate::sys::window_server::window_under_cursor)
+        else {
+            info!(
+                ?button,
+                "Modifier drag: nothing under the pointer that the window server \
+                 will name; no drag started"
+            );
+            return None;
+        };
         debug!(?button, ?action, ?window, "Beginning modifier drag");
         _ = self.events_tx.send(Event::MouseModifierDragBegin { window, at: loc, action });
         Some(ModifierDrag {
