@@ -1312,6 +1312,50 @@ fn a_refusal_to_a_real_arrange_is_learnt() {
     );
 }
 
+/// A window aftercare sends home must be taken to have arrived there.
+///
+/// Aftercare runs after the return pass, for a window the window server put on
+/// the wrong desktop. The pass registers every window it sends, so the report
+/// of the window arriving wins over a frame write still pending for the tree
+/// it left; aftercare did not register its sends. So the arrival was overruled,
+/// rift kept the window in the tree it had left, the next departure recorded
+/// that tree as its home, and the next aftercare moved it onto it -- one
+/// desktop further per plug and unplug, measured in the guest across six
+/// cycles, ending with the window in no tree on a stand-in nobody shows.
+#[test]
+fn a_window_aftercare_sends_home_is_taken_to_have_arrived_there() {
+    use crate::sys::scripting_addition::test_hooks as sa;
+    let (mut reactor, wid, wsid, space1, space2, frame) = reactor_with_window_on_space1();
+    sa::set_available(true);
+    crate::sys::display_churn::set_since_windows_last_moved(Some(
+        std::time::Duration::from_millis(50),
+    ));
+    reactor.display_archive.aftercare =
+        Some(crate::actor::reactor::display_record::Aftercare::for_test(
+            std::iter::once((wid, space2)).collect(),
+        ));
+
+    // The window server has it on space1 after the return; its home is space2.
+    reactor.correct_straggler_after_return(wid, space1);
+    assert!(
+        sa::window_moves().contains(&(wsid.as_u32(), space2.get())),
+        "aftercare must send the window home"
+    );
+
+    // A frame write for the tree it left is still on the books when the
+    // report of it arriving comes in.
+    let txid = reactor.transaction_manager.generate_next_txid(wsid);
+    reactor.transaction_manager.store_txid(wsid, txid, frame);
+    assert_eq!(
+        reactor.resolve_native_space(wsid, Some(space2)),
+        Some(space2),
+        "the arrival rift itself caused was overruled by a write for the tree the window left"
+    );
+
+    crate::sys::display_churn::set_since_windows_last_moved(None);
+    sa::set_available(false);
+}
+
 #[test]
 fn frame_acknowledgements_and_unchanged_frames_do_not_invalidate_layout() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();

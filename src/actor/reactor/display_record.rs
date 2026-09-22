@@ -257,7 +257,37 @@ pub(super) struct Aftercare {
     /// taken home at most once -- the entry goes with the move -- so a
     /// correction can never turn into a tug of war with the window server.
     homes: HashMap<WindowId, SpaceId>,
+    /// Windows aftercare has sent home and not yet seen arrive, with where.
+    ///
+    /// The Back pass registers every window it sends, so that the report of
+    /// the window arriving is accepted as the window's new desktop even while
+    /// a frame write for the tree it left is still pending. Aftercare runs
+    /// after the pass has ended and did not: it moved the window, the arrival
+    /// was overruled by that pending write, and rift went on holding the
+    /// window in the tree it had left. The next departure then recorded that
+    /// stale tree as the window's home, and the next aftercare "corrected" the
+    /// window onto it -- a ratchet, one desktop per plug and unplug, ending
+    /// with the window in no tree on a stand-in desktop nobody shows.
+    pub(super) sent: HashMap<WindowId, SpaceId>,
     ended: Instant,
+}
+
+impl Aftercare {
+    #[cfg(test)]
+    pub(super) fn for_test(homes: HashMap<WindowId, SpaceId>) -> Self {
+        Aftercare {
+            homes,
+            sent: HashMap::default(),
+            ended: crate::sys::trace::now(),
+        }
+    }
+
+    /// Where aftercare sent `wid`, while that send can still be in flight.
+    pub(super) fn destination(&self, wid: WindowId) -> Option<SpaceId> {
+        (self.ended.elapsed() <= AFTERCARE * 2)
+            .then(|| self.sent.get(&wid).copied())
+            .flatten()
+    }
 }
 
 impl DisplayRecord {
@@ -1871,6 +1901,9 @@ impl Reactor {
             .homes
             .remove(&wid);
         if scripting_addition::move_window_to_space(wsid.as_u32(), home.get()) {
+            if let Some(aftercare) = self.display_archive.aftercare.as_mut() {
+                aftercare.sent.insert(wid, home);
+            }
             self.note_window_sent_to_space(wsid);
             info!(
                 ?wid,
@@ -1966,6 +1999,7 @@ impl Reactor {
                 .collect();
             self.display_archive.aftercare = (!homes.is_empty()).then(|| Aftercare {
                 homes,
+                sent: HashMap::default(),
                 ended: crate::sys::trace::now(),
             });
             let record = self.display_archive.record.take().expect("taken above");

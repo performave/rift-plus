@@ -192,6 +192,7 @@ impl DisplayArchive {
             .filter_map(|entry| entry.homing.as_ref())
             .find_map(|homing| homing.waiting.get(&wid).copied())
             .or_else(|| self.record.as_ref().and_then(|record| record.destination(wid)))
+            .or_else(|| self.aftercare.as_ref().and_then(|aftercare| aftercare.destination(wid)))
     }
 
     /// A stay-behind archive is only actionable once the display it waits
