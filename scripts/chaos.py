@@ -1463,6 +1463,18 @@ def s_stack_churn(base):
         settle(2)
         a = snapshot("stacked")
     if not any(len(m) >= 2 for sh in a["shapes"].values() for m, _ in stacks(sh)):
+        # Last resort: undo whatever stack of one there is, climb to the root
+        # -- which holds every window -- and stack that.
+        if any(stacks(sh) for sh in a["shapes"].values()):
+            rift_exec("layout toggle-stack")
+            settle(1)
+        for _ in range(3):
+            rift_exec("layout ascend")
+            settle(0.5)
+        rift_exec("layout toggle-stack")
+        settle(2)
+        a = snapshot("stacked")
+    if not any(len(m) >= 2 for sh in a["shapes"].values() for m, _ in stacks(sh)):
         raise Violation("no stack of two or more windows was created -- toggle-stack is "
                         "a no-op in this layout mode "
                         f"({[sh.get('mode') for sh in a['shapes'].values()]})")
