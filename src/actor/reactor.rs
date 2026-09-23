@@ -1277,14 +1277,38 @@ impl Reactor {
         }
     }
 
-    fn clear_pending_target_if_confirmed_space(
+    /// A write that moves a window to another desktop is done when the window
+    /// server confirms it there. A write on the window's own desktop is not:
+    /// every visibility refresh "confirms" the desktop it was always on, and
+    /// clearing then took a resize still in flight off the books -- its reply,
+    /// when it came, had nothing to be checked against, so a window answering
+    /// with its minimum instead of the size asked (Safari, 574 against 460)
+    /// was accepted as it was and left across the edge of its display.
+    pub(super) fn clear_pending_target_if_confirmed_space(
         &self,
         wsid: WindowServerId,
         confirmed_space: SpaceId,
     ) {
-        if self.pending_target_space_for_window_server_id(wsid) == Some(confirmed_space) {
-            self.transaction_manager.clear_target_for_window(wsid);
+        if self.pending_target_space_for_window_server_id(wsid) != Some(confirmed_space) {
+            return;
         }
+        // Still in flight: the window is on that desktop already and has not
+        // reached the frame asked for. A write whose frame has landed is done
+        // whichever desktop it was for.
+        let in_flight_here = self
+            .state
+            .windows
+            .tracked_window_id(wsid)
+            .and_then(|wid| self.state.windows.window(wid))
+            .zip(self.transaction_manager.get_target_frame(wsid))
+            .is_some_and(|(window, target)| {
+                !window.frame_monotonic.same_as(target)
+                    && self.best_space_for_frame(&window.frame_monotonic) == Some(confirmed_space)
+            });
+        if in_flight_here {
+            return;
+        }
+        self.transaction_manager.clear_target_for_window(wsid);
     }
 
     /// Rift has sent the window to another space itself (scripting

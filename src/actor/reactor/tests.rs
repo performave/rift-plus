@@ -1203,6 +1203,28 @@ fn an_appearance_outside_a_churn_is_still_a_move() {
     assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space2));
 }
 
+/// A resize in flight on the window's own desktop is not completed by the
+/// window server confirming the window is on that desktop. Every visibility
+/// refresh does, and wiping the write then took the refusal with it: Safari,
+/// asked for a 460-wide slot beside the seam, answered its 574 minimum, and
+/// with nothing on the books the answer was simply accepted -- the window
+/// stayed 574 wide, across the edge of its display (`plain-replug`).
+#[test]
+fn confirming_a_windows_own_desktop_keeps_a_resize_in_flight() {
+    let (mut reactor, _wid, wsid, space1, _space2, frame) = reactor_with_window_on_space1();
+    let target = CGRect::new(frame.origin, CGSize::new(460.0, 256.0));
+    let txid = reactor.transaction_manager.generate_next_txid(wsid);
+    reactor.transaction_manager.store_txid(wsid, txid, target);
+
+    reactor.clear_pending_target_if_confirmed_space(wsid, space1);
+
+    assert_eq!(
+        reactor.transaction_manager.get_target_frame(wsid),
+        Some(target),
+        "a resize still in flight was taken as completed by its window being where it was"
+    );
+}
+
 #[test]
 fn matching_rift_frame_clears_pending_target() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
