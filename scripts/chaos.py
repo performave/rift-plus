@@ -1367,9 +1367,18 @@ def s_become_main(base):
     if not ext:
         raise Violation("external display not visible to rift")
     make_main(int(ext["screen_id"])); settle()
-    check_full(a, snapshot("external is main"), "become-main")
-    unplug(); settle(6)
-    check_full(base, snapshot("main display left"), "become-main unplugged")
+    try:
+        check_full(a, snapshot("external is main"), "become-main")
+        unplug(); settle(6)
+        check_full(base, snapshot("main display left"), "become-main unplugged")
+    finally:
+        # Hand the menu bar back while the probe is attached. setmain is
+        # permanent and macOS remembers the arrangement for this display set,
+        # so left alone every later plug brought the probe up as main and
+        # every later scenario ran as an attach-as-main.
+        plug(); settle(4)
+        make_main(1); settle(3)
+        unplug(); settle(4)
 
 
 @scenario("clamshell", doc="the main display leaves and comes back, as a lid close does")
