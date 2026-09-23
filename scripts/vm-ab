@@ -67,6 +67,7 @@ cp ~/rift-harness/builds/$BIN ~/rift-harness/bin/rift || exit 1
 cp ~/rift-harness/builds/$BIN-cli ~/rift-harness/bin/rift-cli || exit 1
 codesign --force --sign - ~/rift-harness/bin/rift ~/rift-harness/bin/rift-cli >/dev/null 2>&1
 rm -f ~/.rift/layout.ron
+rm -rf ~/rift-harness/traces
 : > /tmp/rift.err
 launchctl bootstrap gui/\$U ~/Library/LaunchAgents/rift-harness.plist
 sleep 10

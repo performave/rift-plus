@@ -32,6 +32,8 @@ DTOOL = f"{BIN}/dtool"
 UID = os.getuid()
 LAYOUT = f"{HOME}/.rift/layout.ron"
 VDISP_PLIST = f"{HOME}/Library/LaunchAgents/vdisp.plist"
+# Kept across reboots, unlike /tmp; one flight-recorder dump per failed scenario.
+TRACES = f"{HOME}/rift-harness/traces"
 
 # Four windows, all of which resize freely. Calculator and Chess are
 # effectively fixed-size: they refuse their slot and the overflow reads as rift
@@ -424,6 +426,16 @@ def reset_between_scenarios() -> str:
             notes.append(f"main display was {parts[0]}, put back to 1")
             settle(2)
             break
+    # Back to the baseline's layout mode. A scenario that switches mode and
+    # fails before switching back hands every later one a different layout
+    # system -- stack-across-churn's traditional, with its stack, failed the
+    # three after it on stacked frames.
+    for sid in shown_desktops(snapshot("reset")):
+        mode = (tree_shape(sid) or {}).get("mode")
+        if mode and mode != "bsp":
+            rift_exec("workspace set-layout bsp")
+            notes.append(f"desktop {sid} was {mode}, set back to bsp")
+            settle(1.5)
     rift_exec("layout balance")
     settle(1.5)
     retiled = tile_all()
@@ -874,10 +886,24 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
             if w <= 1 or h <= 1:
                 raise Violation(f"{phase}: desktop {sid}: {app} has a degenerate frame {w}x{h}")
 
+        # Windows the tree holds in one stack share a frame by design. Not
+        # exempting them made `stack-across-churn` fail exactly when the stack
+        # came through the churn intact -- its only passes were runs where the
+        # stack's desktop happened not to be the one shown.
+        # The tree names windows `pid:idx`, the frame map by window-server
+        # id; rift's idx is the window-server id, so both meet on the number.
+        stacked = {}
+        for n, (members, _) in enumerate(stacks((snap.get("shapes") or {}).get(sid) or {})):
+            for m in members:
+                stacked[str(m).split(":")[-1]] = n
+
         for i in range(len(rects)):
             ia, aa, ax, ay, aw, ah, amn = rects[i]
             for j in range(i + 1, len(rects)):
                 ib, ab, bx, by, bw, bh, bmn = rects[j]
+                ka, kb = str(ia).split(":")[-1], str(ib).split(":")[-1]
+                if ka in stacked and stacked.get(kb) == stacked[ka]:
+                    continue
                 ox = min(ax + aw, bx + bw) - max(ax, bx)
                 oy = min(ay + ah, by + bh) - max(ay, by)
                 if ox <= tolerance or oy <= tolerance:
@@ -1288,14 +1314,30 @@ def s_stack_churn(base):
     if not any(stacks(sh) for sh in a["shapes"].values()):
         raise Violation("no stack was created -- toggle-stack is a no-op in this "
                         f"layout mode ({[sh.get('mode') for sh in a['shapes'].values()]})")
-    plug(); settle()
-    check_stacks(a["shapes"], snapshot("stack + display")["shapes"], "stack-across-churn attach")
-    unplug(); settle()
-    after = snapshot("stack after churn")
-    check_stacks(a["shapes"], after["shapes"], "stack-across-churn detach")
-    check_full(a, after, "stack-across-churn")
-    rift_exec("layout toggle-stack")
-    settle(2)
+    try:
+        plug(); settle()
+        check_stacks(a["shapes"], snapshot("stack + display")["shapes"], "stack-across-churn attach")
+        unplug(); settle()
+        after = snapshot("stack after churn")
+        check_stacks(a["shapes"], after["shapes"], "stack-across-churn detach")
+        check_full(a, after, "stack-across-churn")
+    finally:
+        # Unstacked whatever the verdict. Left behind by a failure, the stack
+        # failed every scenario after this one on its frames -- stacked
+        # windows are drawn 36px apart, and read as tiles they overlap.
+        unplug(quiet=True); settle(2)
+        # toggle-stack acts on the selected container, and after a churn the
+        # selection may be a window inside the stack rather than the stack.
+        for step in ("layout ascend", None):
+            if not any(stacks(sh) for sh in snapshot("unstack")["shapes"].values()):
+                break
+            if step:
+                rift_exec(step)
+                settle(1)
+            rift_exec("layout toggle-stack")
+            settle(2)
+        rift_exec("workspace set-layout bsp")
+        settle(2)
 
 
 @scenario("stack-swallow", doc="displaced windows must not be absorbed into an existing stack")
@@ -1893,6 +1935,14 @@ def main() -> int:
         except Exception as exc:
             res = (name, "ERROR", f"{time.time()-started:.0f}s", f"{type(exc).__name__}: {exc}")
         finally:
+            # The flight recorder, taken before the cleanup unplug adds its own
+            # churn. Every failure's cause used to be unreadable after the
+            # fact: the ring is overwritten by the next scenario and /tmp by
+            # the next reboot, so this goes where neither reaches.
+            if res[1] != "PASS":
+                os.makedirs(TRACES, exist_ok=True)
+                sh(f"{CLI} execute trace dump {TRACES}/{name}.trace", timeout=60)
+                res = res[:3] + (res[3] + f"\n    trace: {TRACES}/{name}.trace",)
             unplug(quiet=True); settle(2)
         results.append(res)
         print(f"    {res[1]} ({res[2]})" + (f"\n    {res[3]}" if res[3] else ""), flush=True)
