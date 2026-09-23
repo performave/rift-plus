@@ -105,6 +105,24 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return e == kCGErrorSuccess ? 0 : 3;
     }
 
+    if (!strcmp(cmd, "frames")) {
+        // frames: every on-screen, layer-0 window as "<number> <x> <y> <w> <h>",
+        // straight from the window server. What is actually on screen, as
+        // against rift's own record of it, which keeps a window's last
+        // reported frame until the app answers rift's next write.
+        CFArrayRef list = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+        for (NSDictionary *w in (__bridge NSArray *)list) {
+            if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+            CGRect b;
+            if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)w[(id)kCGWindowBounds], &b)) continue;
+            printf("%u %.0f %.0f %.0f %.0f\n", [w[(id)kCGWindowNumber] unsignedIntValue],
+                   b.origin.x, b.origin.y, b.size.width, b.size.height);
+        }
+        if (list) CFRelease(list);
+        return 0;
+    }
+
     if (!strcmp(cmd, "key") && argc > 2) {
         // key <keycode>: one key press, posted to the event stream. Escape
         // (53) closes Mission Control when it is open and does nothing when it

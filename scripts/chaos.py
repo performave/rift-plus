@@ -1167,16 +1167,26 @@ class Sampler:
         while not self._stop:
             try:
                 ws = rift("windows") or []
+                # Where the windows are, from the window server -- not rift's
+                # `frame`, which is rift's record and keeps a window's last
+                # reported frame until the app answers rift's next write. A
+                # window macOS moved and rift put back in the same millisecond
+                # read as overlapping for as long as the app took to answer,
+                # which is the app's latency, not something on screen.
+                live = {}
+                for line in sh(f"{DTOOL} frames").splitlines():
+                    parts = line.split()
+                    if len(parts) == 5:
+                        live[parts[0]] = tuple(int(float(v)) for v in parts[1:])
                 self.samples += 1
                 rects = []
                 for w in ws:
                     if not is_tiled(w):
                         continue
-                    fr = w.get("frame") or {}
-                    o, sz = fr.get("origin", {}), fr.get("size", {})
-                    rects.append((w.get("app_name") or "?",
-                                  round(o.get("x", 0)), round(o.get("y", 0)),
-                                  round(sz.get("width", 0)), round(sz.get("height", 0))))
+                    frame = live.get(str(w.get("window_server_id")))
+                    if frame is None:
+                        continue
+                    rects.append((w.get("app_name") or "?", *frame))
                 for i in range(len(rects)):
                     an, ax, ay, aw, ah = rects[i]
                     if aw <= 1 or ah <= 1:
