@@ -1331,6 +1331,17 @@ def s_stack_churn(base):
     # instead. Only traditional (and the `stack` mode itself) can hold one.
     rift_exec("workspace set-layout traditional")
     settle(2)
+    # Start from a TextEdit: the three of them share a container, where the
+    # window focused last -- after a fresh start, often Safari, which tile_all
+    # puts in a container of its own -- can make a stack of one.
+    shown = [d.get("space") for d in rift("displays") or [] if d.get("space") is not None]
+    for sid in shown:
+        te = next((w for w in rift("windows", "--space-id", str(sid)) or []
+                   if w.get("app_name") == "TextEdit" and is_tiled(w)), None)
+        if te:
+            focus(te)
+            settle(1)
+            break
     # toggle-stack acts on the selected *container*, not on a window, so the
     # selection has to be walked up to the parent split first -- without the
     # ascend the command is a no-op and the scenario silently tests nothing.
