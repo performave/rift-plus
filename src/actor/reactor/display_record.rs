@@ -313,6 +313,9 @@ impl DisplayRecord {
     pub(super) fn mark_arrival_for_test(&mut self) { self.arrival = true; }
 
     #[cfg(test)]
+    pub(super) fn stand_in_for(&self, lost: SpaceId) -> Option<SpaceId> { self.stopgap_for(lost) }
+
+    #[cfg(test)]
     pub(super) fn recorded_display(&self, uuid: &str) -> Option<(Vec<SpaceId>, Option<SpaceId>)> {
         self.displays
             .iter()
@@ -1020,7 +1023,17 @@ impl Reactor {
         // visitors first; the new one goes after the last of them, and the
         // walk below puts it first.
         let mut stopgap: Option<(SpaceId, SpaceId, SpaceId)> = None;
-        if let Some((gone, lost)) = destroyed.first().copied() {
+        // Only for a desktop that had windows. The survivor's own desktop can
+        // be an empty one macOS minted it when an arrival took the desktop it
+        // was showing; macOS reaps it at the next departure, and a stand-in
+        // for its windows -- of which it had none -- was made every time, and
+        // one was left standing after the last unplug: a desktop more than
+        // before the display was ever plugged in.
+        let with_windows = destroyed
+            .iter()
+            .copied()
+            .find(|(_, lost)| !record.windows_desired_on(*lost).is_empty());
+        if let Some((gone, lost)) = with_windows {
             if destroyed.len() > 1 {
                 warn!(
                     ?destroyed,

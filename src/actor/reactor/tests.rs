@@ -10816,6 +10816,37 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// No stand-in for a desktop that had no windows. The laptop's own
+    /// desktop can be an empty one macOS minted when an arrival took the one
+    /// it was showing; macOS reaps it at the next unplug, and rift made a
+    /// stand-in "for the windows of" it every time -- one of which was left
+    /// after the last unplug, a desktop more than before the display was
+    /// ever plugged in (`plain-replug` workspace leak).
+    #[test]
+    fn an_empty_desktop_macos_reaps_at_a_departure_gets_no_stand_in() {
+        let mut f = spaces_fixture();
+        let empty = SpaceId::new(77);
+        let mut whole = f.reactor.display_archive.whole_displays.clone().expect("a whole set");
+        let survivor = whole
+            .iter()
+            .position(|d| d.desktops.contains(&space1()))
+            .expect("the survivor is in the whole set");
+        whole[survivor].desktops.push(empty);
+        f.reactor.display_archive.whole_displays = Some(whole);
+        sa::set_next_created_space(Some(99));
+
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+
+        let record = f.reactor.display_archive.record.as_ref().expect("the departure is recorded");
+        assert_eq!(
+            record.stand_in_for(empty),
+            None,
+            "a stand-in was made for a desktop that had no windows"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees

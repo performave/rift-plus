@@ -92,6 +92,10 @@ Entries describe this fork's changes relative to
   acted on the report: the window left its tree and was marked hidden while it
   stayed on screen, neither tiled nor floating, and the tile key did nothing
   for it. Such a report is now ignored.
+- **No stand-in desktop for a desktop that had no windows.** When macOS
+  reaps an empty desktop at an unplug -- one it minted the laptop when an
+  arrival took the desktop it was showing -- rift made a stand-in "for its
+  windows" anyway, every cycle, and the last one was left behind.
 - **Replugging no longer leaves an extra desktop behind each time.** When an
   arriving display takes the desktop the laptop was showing, macOS mints the
   laptop a fresh one, and rift retires it -- but it cannot go while shown, and
