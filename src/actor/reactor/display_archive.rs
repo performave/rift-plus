@@ -214,10 +214,20 @@ impl DisplayArchive {
             .is_none_or(|waited| screens.iter().any(|screen| screen.display_uuid == waited))
     }
 
+    /// The snapshot from before the churn under way, if one is. A churn is a
+    /// burst: a snapshot three quiet seconds past its last window leaving
+    /// belongs to one that is over, whoever asks. A departure seconds after a
+    /// plug moves the display's desktop whole -- no window leaves a tree, so
+    /// nothing retakes the snapshot -- and it recorded the order from before
+    /// the plug's own window moves: Safari back in the slot it had left. A
+    /// pinned snapshot is kept regardless; it is waiting for the display
+    /// change that consumes it.
     pub(super) fn fresh_pre_churn(&self) -> Option<&PreChurn> {
-        self.pre_churn
-            .as_ref()
-            .filter(|pre| pre.pinned || pre.taken.elapsed() < PRE_CHURN_TTL)
+        self.pre_churn.as_ref().filter(|pre| {
+            pre.pinned
+                || (pre.taken.elapsed() < PRE_CHURN_TTL
+                    && pre.last_leave.elapsed() < CHURN_BURST_GAP)
+        })
     }
 
     /// When the window server was last seen starting to move windows between
@@ -321,18 +331,14 @@ impl Reactor {
             return;
         }
         // Within a burst the first snapshot stands -- the leaves after it are
-        // the churn. After a quiet spell this leave starts another churn: an
-        // unplug seconds after a plug otherwise recorded the trees the plug's
-        // own stragglers had left behind. A pinned snapshot is kept whatever
-        // the gap; it is waiting for the display change that consumes it.
+        // the churn -- and each leave extends it. After a quiet spell the old
+        // one is no longer fresh (see `fresh_pre_churn`), and this leave
+        // starts another churn with a snapshot of its own.
         if self.display_archive.fresh_pre_churn().is_some()
             && let Some(pre) = self.display_archive.pre_churn.as_mut()
         {
-            if pre.pinned || pre.last_leave.elapsed() < CHURN_BURST_GAP {
-                pre.last_leave = crate::sys::trace::now();
-                return;
-            }
-            crate::sys::trace::act("pre_churn_retaken", &pre.taken.elapsed().as_millis());
+            pre.last_leave = crate::sys::trace::now();
+            return;
         }
         let engine = &mut self.layout_manager.layout_engine;
         let spaces = engine.virtual_workspace_manager().initialized_spaces();

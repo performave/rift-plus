@@ -10505,11 +10505,13 @@ mod display_archive {
         f.reactor.capture_pre_churn_layout();
         let first = f.reactor.display_archive.churn_began().expect("a snapshot was taken");
 
-        // A few seconds of nothing, within the snapshot's lifetime.
+        // A few seconds of nothing, within the snapshot's lifetime but past
+        // the end of its burst: no longer fresh for anyone who asks -- a
+        // departure that moves a desktop whole never takes a new one.
         f.reactor.display_archive.backdate_pre_churn(std::time::Duration::from_secs(4));
         assert!(
-            f.reactor.display_archive.fresh_pre_churn().is_some(),
-            "still inside its lifetime, or this tests nothing"
+            f.reactor.display_archive.fresh_pre_churn().is_none(),
+            "a snapshot from a burst that is over still counted as fresh"
         );
         f.reactor.capture_pre_churn_layout();
 
