@@ -806,6 +806,36 @@ def stacks(shape: dict) -> list:
     return sorted(found)
 
 
+def stacked_groups(shape: dict) -> list:
+    """Every window under each stacked container, nested ones included.
+
+    `stacks` lists a stack's own windows, which is what its order is about.
+    For overlap every window beneath the stack counts: a stack's children are
+    each drawn at the stack's full size, and a split nested in one divides that
+    same area -- so its windows sit over the other members by design. Stacking
+    the root of a tree with a split in it makes exactly that.
+    """
+    groups = []
+
+    def windows_under(n):
+        out = [n["window"]] if n.get("window") else []
+        for c in n.get("children") or []:
+            out += windows_under(c)
+        return out
+
+    def walk(n):
+        if not n:
+            return
+        if (n.get("layout") or "").endswith("_stack"):
+            groups.append(windows_under(n))
+            return
+        for c in n.get("children") or []:
+            walk(c)
+
+    walk(shape.get("tree"))
+    return groups
+
+
 def check_stacks(before: dict, after: dict, phase: str) -> None:
     for sid, shape in before.items():
         if shape.get("absent") or sid not in after or after[sid].get("absent"):
@@ -1018,7 +1048,7 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
         # The tree names windows `pid:idx`, the frame map by window-server
         # id; rift's idx is the window-server id, so both meet on the number.
         stacked = {}
-        for n, (members, _) in enumerate(stacks((snap.get("shapes") or {}).get(sid) or {})):
+        for n, members in enumerate(stacked_groups((snap.get("shapes") or {}).get(sid) or {})):
             for m in members:
                 stacked[str(m).split(":")[-1]] = n
 
