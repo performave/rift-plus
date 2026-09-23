@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Making another display main no longer sends a window over to the old
+  one.** When the arrangement changes, macOS moves a window whose position now
+  falls in the other display's part of it to that display's desktop. rift knew
+  where the window belonged but could not put it back because it was not
+  there; it now sends it back when that happens during a display change.
 - **A fullscreen window stays fullscreen when another window joins the
   layout.** Splitting a new window in rebuilt the fullscreen window's place as
   an ordinary one, so any window arriving while another was fullscreen --

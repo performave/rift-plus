@@ -9324,6 +9324,48 @@ mod fullscreen_slots {
         assert_eq!(frame, Some(screen), "the fullscreen window lost its fullscreen");
     }
 
+    /// A window macOS carried to another display's desktop during a display
+    /// change is sent back to its slot's desktop. As the external became main,
+    /// a TextEdit whose frame now lay in the other display's half of the
+    /// arrangement was moved to that display's desktop; its slot waited on the
+    /// old one and every restore failed to place it, because it was not there.
+    #[test]
+    fn a_window_macos_moved_across_displays_mid_change_is_sent_back_to_its_slot() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let (w, wsid) = (wids[1], wsids[1]);
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        let workspace = reactor.test_workspace(elsewhere, 0);
+        assert!(reactor.assign_test_window_to_workspace(elsewhere, w, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(elsewhere, w));
+        crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![elsewhere.get()]));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(500),
+        ));
+        sa::set_available(true);
+        let moves_before = sa::window_moves().len();
+
+        let _ = reactor.reinstate_fullscreen_slot(w, space);
+
+        let moves = sa::window_moves()[moves_before..].to_vec();
+        sa::set_available(false);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_window_spaces_override(wsid, None);
+        assert!(
+            moves.contains(&(wsid.as_u32(), space.get())),
+            "the window was left on the other display: {moves:?}"
+        );
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
+    }
+
     /// A slot is used up only by a restore that put the window back. The
     /// "ordered in" report can come while the window is still in another
     /// desktop's tree -- aftercare has sent it home and it has not arrived --

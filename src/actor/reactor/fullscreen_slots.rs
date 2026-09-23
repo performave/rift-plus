@@ -23,7 +23,12 @@
 //! path notices it next. Hanging the slot off the addition means every one of
 //! those paths puts the window back where it was.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long after the window server last moved windows for a display change a
+/// window found on another display's desktop than its slot's was carried
+/// there by that change, rather than moved by the user.
+const SLOT_SEND_BACK_AFTER_CHURN: Duration = Duration::from_secs(10);
 
 use tracing::{debug, info, warn};
 
@@ -193,6 +198,74 @@ impl Reactor {
         });
     }
 
+    /// The display a desktop is on: the screen showing it, else the display
+    /// the window server lists it under.
+    fn display_of_space(&self, space: SpaceId) -> Option<String> {
+        self.space_state
+            .screens
+            .iter()
+            .find(|screen| screen.space == Some(space))
+            .map(|screen| screen.display_uuid.clone())
+            .or_else(|| {
+                self.space_state
+                    .display_space_ids
+                    .iter()
+                    .find(|(_, spaces)| spaces.contains(&space))
+                    .map(|(uuid, _)| uuid.clone())
+            })
+    }
+
+    /// A window whose slot waits on `space` that the window server has put on
+    /// another display's desktop while moving windows for a display change.
+    /// As the external became main, a TextEdit whose frame now lay in the
+    /// other display's part of the arrangement was moved to that display's
+    /// desktop; the slot waited on its own, and every restore failed to place
+    /// it because it was not there. Send it back, as aftercare does after a
+    /// return, and count it as on its way home so its leaving the other
+    /// desktop does not replace the slot.
+    fn send_back_to_slot_display(&mut self, window: WindowId, space: SpaceId) {
+        if !crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < SLOT_SEND_BACK_AFTER_CHURN)
+        {
+            return;
+        }
+        let Some(wsid) = self.state.windows.window(window).and_then(|w| w.info.sys_id) else {
+            return;
+        };
+        let Some(now) = crate::sys::window_server::window_space(wsid) else {
+            return;
+        };
+        if now == space {
+            return;
+        }
+        let (here, there) = (self.display_of_space(space), self.display_of_space(now));
+        if here.is_none() || there.is_none() || here == there {
+            return;
+        }
+        if !crate::sys::scripting_addition::is_available() {
+            return;
+        }
+        if crate::sys::scripting_addition::move_window_to_space(wsid.as_u32(), space.get()) {
+            self.note_window_sent_to_space(wsid);
+            self.display_archive.kept_off.insert(window, (space, crate::sys::trace::now()));
+            info!(
+                ?window,
+                from = now.get(),
+                home = space.get(),
+                "A display change carried a window to another display; sent it back to its slot"
+            );
+            crate::sys::trace::act(
+                "fullscreen_slot",
+                &(
+                    window.idx.get(),
+                    "carried across; sent back",
+                    now.get(),
+                    space.get(),
+                ),
+            );
+        }
+    }
+
     /// Which space's tree is holding `window` right now.
     ///
     /// Not the workspace assignment: a native fullscreen transition clears that
@@ -346,6 +419,7 @@ impl Reactor {
                     ),
                 );
                 self.fullscreen_slots.slots.insert(window, slot);
+                self.send_back_to_slot_display(window, space);
                 return false;
             }
             Ok(report) if report.matched > 0 => {
