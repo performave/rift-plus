@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window sent home after a display returns stays tiled.** The window
+  server can report a window leaving the desktop it has just arrived on while
+  answering, in the same breath, that it is on that desktop and drawn. rift
+  acted on the report: the window left its tree and was marked hidden while it
+  stayed on screen, neither tiled nor floating, and the tile key did nothing
+  for it. Such a report is now ignored.
 - **Replugging no longer leaves an extra desktop behind each time.** When an
   arriving display takes the desktop the laptop was showing, macOS mints the
   laptop a fresh one, and rift retires it -- but it cannot go while shown, and

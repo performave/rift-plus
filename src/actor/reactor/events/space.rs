@@ -183,6 +183,22 @@ pub fn handle_window_server_destroyed(
             return Ok(outcome);
         }
 
+        // The window server answers, as this is handled, that the window is
+        // on the very desktop it is reported leaving and is drawn: then it did
+        // not leave, or has already come back. After a return, aftercare
+        // sending a window home drew exactly this report for the desktop it
+        // had just arrived on, and acting on it took the window out of its
+        // tree and parked it as hidden while it stayed on screen -- in no tree
+        // and not floating, so the tile key did nothing for it.
+        if resolved_space == Some(sid) && matches!(ordered_in, Some(true)) {
+            debug!(
+                ?wsid,
+                space = ?sid,
+                "Disappearance report for a window still drawn on that desktop; ignoring"
+            );
+            return Ok(outcome);
+        }
+
         if let Some(wid) = state.windows.tracked_window_id(wsid) {
             // Not being ordered in means the window is not drawn on the space it
             // just left. That is true of a dead window, and equally true of one

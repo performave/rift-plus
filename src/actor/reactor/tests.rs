@@ -5967,6 +5967,37 @@ fn window_server_destroy_after_ax_invalidation_removes_logical_window() {
     assert_eq!(reactor.test_workspace_for_window(space, wid), None);
 }
 
+/// A disappearance report for a window the window server still has on that
+/// desktop, drawn, is not a disappearance. Found in the VM after a return:
+/// aftercare sent a window home, the window server reported it leaving the
+/// desktop it had just arrived on while answering, in the same instant, that
+/// it was on that desktop and ordered in -- and the report took it out of the
+/// tree and parked it as hidden. It stayed on screen, in no tree and not
+/// floating: the tile key did nothing for it.
+#[test]
+fn a_window_still_on_the_desktop_it_was_reported_leaving_stays_tiled() {
+    use crate::sys::window_server::set_window_spaces_override;
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let wid = WindowId::new(1, 1);
+
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let wsid = reactor.test_window_server_id(wid);
+    assert!(has_window_in_layout(&mut reactor, space, screen, wid));
+
+    set_window_spaces_override(wsid, Some(vec![space.get()]));
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(true));
+    reactor.handle_event(Event::WindowServerDestroyed(wsid, space, SpaceEventKind::User));
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+    set_window_spaces_override(wsid, None);
+
+    assert!(
+        has_window_in_layout(&mut reactor, space, screen, wid),
+        "a window still on the desktop, drawn, was taken out of its tree"
+    );
+}
+
 #[test]
 fn window_closed_removes_logical_window_without_inventory_refresh() {
     let (mut apps, mut reactor) = test_context();
