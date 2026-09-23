@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A slow app is no longer taken to refuse its size.** rift learns an app's
+  minimum size from a window answering a resize with a larger size -- and an
+  app that simply had not applied the resize yet answers exactly the same way.
+  Learnt from one reply, a TextEdit's old full height became its minimum and
+  its neighbours were laid out 80px tall. rift now asks a second time and
+  learns the size only if that is refused too.
 - **A window macOS drops on the wrong desktop during a replug comes home to
   its own slot.** rift sends such a window back, and on the way it leaves the
   desktop it was dropped on; that removal was recorded as the window's new

@@ -226,6 +226,15 @@ const MIN_MODIFIER_DRAG_SIZE: f64 = 100.0;
 /// its app refusing the size.
 const REFUSAL_AFTER_CHURN: Duration = Duration::from_secs(5);
 
+/// What became of a window answering a write with a larger size.
+enum Refusal {
+    /// Confirmed by a second write: its size is now a minimum.
+    Learnt,
+    /// The first refusal: asked again before anything is learnt.
+    Pending,
+    Nothing,
+}
+
 /// The half of `frame` a window dropped on that side would occupy.
 fn half_of(frame: CGRect, direction: Direction) -> CGRect {
     let half_w = frame.size.width / 2.0;
@@ -634,6 +643,9 @@ pub struct Reactor {
     /// actor cannot tell the two apart from what it sees; rift knows which
     /// desktops it destroyed itself.
     destroyed_on_command: Option<(SpaceId, std::time::Instant)>,
+    /// A window's first refusal of a size, by the transaction it answered,
+    /// waiting for a second write to confirm it. See `confirm_refusal`.
+    refusal_candidates: HashMap<WindowId, TransactionId>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -809,6 +821,7 @@ impl Reactor {
             modifier_drag_final: false,
             modifier_drag_at_x: 0.0,
             destroyed_on_command: None,
+            refusal_candidates: HashMap::default(),
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -2285,18 +2298,30 @@ impl Reactor {
                         // display, and that became its minimum.
                         && !crate::sys::display_churn::since_windows_last_moved()
                             .is_some_and(|since| since < REFUSAL_AFTER_CHURN)
-                        && self
-                            .layout_manager
-                            .layout_engine
-                            .note_observed_min_size(wid, requested, observed)
                     {
-                        debug!(
-                            ?wid,
-                            ?requested,
-                            ?observed,
-                            "window refused its size; treating it as a minimum"
-                        );
-                        outcome = outcome.with_arrange_passes(1);
+                        match self.confirm_refusal(wid, requested, observed, last_seen) {
+                            Refusal::Learnt => {
+                                debug!(
+                                    ?wid,
+                                    ?requested,
+                                    ?observed,
+                                    "window refused its size twice; treating it as a minimum"
+                                );
+                                outcome = outcome.with_arrange_passes(1);
+                            }
+                            // Ask again: the next arrange's write is the
+                            // second asking the candidate waits for.
+                            Refusal::Pending => outcome = outcome.with_arrange_passes(1),
+                            Refusal::Nothing => {}
+                        }
+                    } else if matches!(
+                        disposition,
+                        window_workflow::FrameChangeDisposition::Handled
+                    ) && requested.0
+                    {
+                        // The app did what it was asked: whatever it answered
+                        // last time was it catching up.
+                        self.refusal_candidates.remove(&wid);
                     }
                     outcome.dispatch_mouse_up = effective_mouse_state
                         == Some(crate::sys::event::MouseState::Up)
@@ -5647,6 +5672,65 @@ impl Reactor {
     }
 
     fn screens_for_current_spaces(&self) -> Vec<ScreenInfo> { self.space_state.screens.clone() }
+
+    /// Whether a reply larger than asked is the app's minimum, or the app not
+    /// having got round to the resize yet. Both answer the write with the old
+    /// size, and learnt from a single reply the second became a minimum: a
+    /// TextEdit asked for 651 tall answered the 1306 it still had, and its
+    /// neighbours were laid out 80px tall. So the first refusal only makes a
+    /// candidate and asks again -- clearing the write's target, or the next
+    /// arrange skips the same write as already requested -- and a refusal of
+    /// a later write confirms it. The same transaction reported twice is one
+    /// asking, not two.
+    fn confirm_refusal(
+        &mut self,
+        wid: WindowId,
+        requested: CGSize,
+        observed: CGSize,
+        txid: Option<TransactionId>,
+    ) -> Refusal {
+        let Some(txid) = txid else {
+            return if self
+                .layout_manager
+                .layout_engine
+                .note_observed_min_size(wid, requested, observed)
+            {
+                Refusal::Learnt
+            } else {
+                Refusal::Nothing
+            };
+        };
+        match self.refusal_candidates.get(&wid).copied() {
+            Some(first) if first != txid => {
+                self.refusal_candidates.remove(&wid);
+                if self
+                    .layout_manager
+                    .layout_engine
+                    .note_observed_min_size(wid, requested, observed)
+                {
+                    Refusal::Learnt
+                } else {
+                    Refusal::Nothing
+                }
+            }
+            Some(_) => Refusal::Nothing,
+            None => {
+                self.refusal_candidates.insert(wid, txid);
+                if let Some(wsid) = self.state.windows.window(wid).and_then(|w| w.info.sys_id) {
+                    self.transaction_manager.clear_target_for_window(wsid);
+                }
+                crate::sys::trace::act(
+                    "refusal_pending",
+                    &serde_json::json!({
+                        "wid": wid.idx.get(),
+                        "asked": [requested.width, requested.height],
+                        "got": [observed.width, observed.height],
+                    }),
+                );
+                Refusal::Pending
+            }
+        }
+    }
 
     fn best_space_for_window_id(&self, wid: WindowId) -> Option<SpaceId> {
         self.authoritative_space_for_window_id(wid).or_else(|| {

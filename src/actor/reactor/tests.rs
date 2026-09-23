@@ -1240,34 +1240,89 @@ fn matching_rift_frame_clears_pending_target() {
 /// once flagged as the requested frame with no button state and once with the
 /// button up. The layout went on asking for 486 on every arrange after it, so
 /// Safari sat 88px wider than its slot, over the edge of the display.
+///
+/// Reported twice under one transaction is still one asking, and one asking is
+/// not enough: an app that has not applied a resize yet answers exactly like
+/// this. Refused again when asked again, it is learnt.
 #[test]
 fn a_refusal_reported_twice_under_one_transaction_is_learnt() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
     let asked = CGRect::new(frame.origin, CGSize::new(486.0, 777.0));
     let got = CGRect::new(frame.origin, CGSize::new(574.0, 777.0));
+    let refuse = |reactor: &mut Reactor| {
+        let txid = reactor.transaction_manager.generate_next_txid(wsid);
+        reactor.transaction_manager.store_txid(wsid, txid, asked);
+        reactor.handle_event(Event::WindowFrameChanged(
+            wid,
+            got,
+            Some(txid),
+            Requested(true),
+            None,
+        ));
+        reactor.handle_event(Event::WindowFrameChanged(
+            wid,
+            got,
+            Some(txid),
+            Requested(false),
+            Some(MouseState::Up),
+        ));
+    };
+
+    refuse(&mut reactor);
+    assert_eq!(
+        reactor.layout_manager.layout_engine.observed_min_size(wid),
+        None,
+        "one asking is not enough to tell a refusal from an app catching up"
+    );
+
+    refuse(&mut reactor);
+    let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
+    assert!(
+        learnt.is_some_and(|size| size.width >= 574.0),
+        "a window that answered 574 to two requests for 486 was not taken to need 574: {learnt:?}"
+    );
+}
+
+/// An app that answers one write with the size it still had, and the next
+/// with the size it was asked for, was catching up, not refusing. Learnt from
+/// the first reply, the old size became a minimum: a TextEdit asked for 651
+/// tall answered the 1306 it still had, and its neighbours were laid out 80px
+/// tall.
+#[test]
+fn an_app_catching_up_on_a_resize_is_not_given_a_minimum() {
+    let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();
+    let asked = CGRect::new(frame.origin, CGSize::new(1268.0, 651.0));
+    let still = CGRect::new(frame.origin, CGSize::new(1268.0, 1306.0));
     let txid = reactor.transaction_manager.generate_next_txid(wsid);
     reactor.transaction_manager.store_txid(wsid, txid, asked);
-
     reactor.handle_event(Event::WindowFrameChanged(
         wid,
-        got,
+        still,
         Some(txid),
         Requested(true),
         None,
     ));
+    let txid = reactor.transaction_manager.generate_next_txid(wsid);
+    reactor.transaction_manager.store_txid(wsid, txid, asked);
     reactor.handle_event(Event::WindowFrameChanged(
         wid,
-        got,
+        asked,
         Some(txid),
-        Requested(false),
-        Some(MouseState::Up),
+        Requested(true),
+        None,
+    ));
+    // And a later, unrelated one-off must not find the old candidate waiting.
+    let txid = reactor.transaction_manager.generate_next_txid(wsid);
+    reactor.transaction_manager.store_txid(wsid, txid, asked);
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        still,
+        Some(txid),
+        Requested(true),
+        None,
     ));
 
-    let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
-    assert!(
-        learnt.is_some_and(|size| size.width >= 574.0),
-        "a window that answered 574 to a request for 486 was not taken to need 574: {learnt:?}"
-    );
+    assert_eq!(reactor.layout_manager.layout_engine.observed_min_size(wid), None);
 }
 
 /// The same refusal through a real arrange: the frame and transaction are
@@ -1334,6 +1389,36 @@ fn a_refusal_to_a_real_arrange_is_learnt() {
         Some(txid),
         Requested(false),
         Some(MouseState::Up),
+    ));
+    assert_eq!(
+        reactor.layout_manager.layout_engine.observed_min_size(wid),
+        None,
+        "learnt from a single asking"
+    );
+
+    // Asked again -- the first refusal cleared the write's target, so the
+    // arrange writes rather than skipping it as already requested -- and
+    // refused again.
+    let _ = LayoutManager::update_layout(&mut reactor, false, false, Some(space1));
+    let again: Vec<(CGRect, TransactionId)> = std::iter::from_fn(|| app_rx.try_recv().ok())
+        .filter_map(|(_, request)| match request {
+            Request::SetWindowFrame(w, frame, txid, _) if w == wid => Some((frame, txid)),
+            Request::SetBatchWindowFrame(frames, txid, _) => {
+                frames.into_iter().find(|(w, _)| *w == wid).map(|(_, frame)| (frame, txid))
+            }
+            _ => None,
+        })
+        .collect();
+    let Some(&(_, second)) = again.last() else {
+        panic!("the refusal did not lead to the window being asked again");
+    };
+    assert_ne!(second, txid);
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(second),
+        Requested(true),
+        None,
     ));
 
     let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
