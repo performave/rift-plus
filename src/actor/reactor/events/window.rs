@@ -560,16 +560,14 @@ pub fn handle_window_frame_changed(
                     "resize_ignored_relocation",
                     &(wid.idx.get(), new_frame.origin.x, new_frame.origin.y),
                 );
-                // And put the tile back. Every change nobody dragged marks its
-                // window to be left where it is by the arrange it causes --
-                // right for a resize, where the window is already the size the
-                // tree now gives it, and wrong here: this is the window that
-                // has to move. Left marked, it sat over its neighbours for as
-                // long as the churn held the next arrange back.
-                if drag.skip_layout_for_window == Some(wid) {
-                    drag.skip_layout_for_window = None;
-                }
-                outcome = outcome.with_arrange_passes(1);
+                // Not put back here, though it sits over its neighbours until
+                // the display change settles. macOS moves these windows as a
+                // display arrives or the arrangement changes, in the same
+                // millisecond as the reconfiguration, and a write then uses
+                // geometry that is about to be wrong: putting the tile back as
+                // the external became main wrote a window to coordinates that
+                // were the other display's a moment later, and macOS moved it
+                // there. The arrange that follows the change puts it back.
             } else {
                 outcome.arrange.is_resize = true;
                 outcome = outcome.with_layout_event(LayoutEvent::WindowResized {

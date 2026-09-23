@@ -51,9 +51,11 @@ Entries describe this fork's changes relative to
   display change reaches rift, which read those frames as the user dragging
   tile edges and moved the splits past the edge of the screen. The next
   arrange gave a window a 115px slot. A frame moved as a whole, or off the
-  window's screens, is no longer taken for a resize, and the window is put
-  straight back into its tile rather than left over its neighbours until the
-  display change settles.
+  window's screens, is no longer taken for a resize; the window is laid back
+  into its tile once the display change has settled. (Putting it back at once
+  was tried: the moves come in the same instant as the display change, and a
+  write then used geometry about to be wrong, moving the window onto the other
+  display.)
 - **A display that takes over as main no longer strands a window on it.**
   rift repairs what macOS scrambles when a display arrives from a snapshot
   taken as the first window leaves its tree. On a plug where macOS had only
