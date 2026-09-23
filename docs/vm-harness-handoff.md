@@ -745,15 +745,21 @@ roughly half the time.
 
 ## Two reports from real use (2026-09-22)
 
-**Deleting a desktop swapped the tiles on the one landed on -- fixed.** A
-destroy looks like a replacement from a snapshot (the shown desktop listed
-nowhere, the display showing another), and `compute_space_remaps` answered it by
-carrying the destroyed desktop's layout onto the one landed on. A replacement's
-desktop is always new; a destroy's landing desktop never is. Remaps now require
-a target no display listed before
-(`destroying_a_desktop_does_not_remap_it_onto_the_one_landed_on`). In the guest
-(`scripts/destroy-landing-test.py`): the build before left the arranged desktop
-with no tree; the build after kept its order exactly.
+**Deleting a desktop swapped the tiles on the one landed on -- fixed, on the
+second try.** A destroy looks like a replacement from a snapshot (the shown
+desktop listed nowhere, the display showing another), and the spaces actor
+answers that with a remap onto the desktop now shown -- which after a destroy is
+the one landed on, with a tree of its own.
+
+The first fix refused a remap onto any desktop listed before the snapshot. Its
+unit test passed; the full battery then scored 5 of 17 against 10, with a
+workspace leak climbing one per scenario, because during a churn macOS lists a
+real replacement a snapshot before it shows it. Reverted. The fix that stands
+uses the one thing that cannot happen mid-churn: rift knows which desktops it
+destroyed itself, and skips a remap from one of those for ten seconds
+(`a_desktop_destroyed_on_command_is_not_remapped_onto_the_one_landed_on`, which
+empties the landing desktop's tree without the guard). A destroy through Mission
+Control is not covered.
 
 **Windows left over the seam after moving desktops to the LG -- not reproduced.**
 The closest drivable equivalent (`scripts/desktop-move-seam-test.py`: an SA
