@@ -770,6 +770,100 @@ during it, so that is macOS under an SA move and not necessarily a real drag.
 Next step is a flight-recorder dump from the real machine taken right after it
 happens (`rift execute trace dump <path>`).
 
+## The battery was measuring residue; the fixes once it stopped (2026-09-23)
+
+### What was wrong with the measurements
+
+Four harness faults, each of which had been deciding results:
+
+- **The scripting addition died mid-run and stayed dead.** rift reloads it
+  after a Dock restart by replaying `run_on_start`, which in the guest said
+  bare `rift` -- not on launchd's PATH -- so every reload failed while the
+  vm-ab header still read "loaded and healthy". The guest config now names the
+  binary by path; vm-ab re-checks the addition after the prune and prints
+  restarts / loads / failed reloads per side. Read that line first.
+- **Stacks were counted as overlaps**, and a failed `stack-across-churn` left
+  its stack and `traditional` mode behind, failing the next three scenarios
+  on stacked frames. Stacked windows are now exempt, the scenario cleans up in
+  `finally`, and the reset puts the layout mode back to bsp.
+- **Every scenario inherited the last one's display record and windows.** The
+  reset now restarts rift on a fresh layout file and gathers the test windows
+  onto one desktop (`restart_rift`, `gather_test_windows`). macOS's own memory
+  of which display a window was on is not cleared -- that is real input.
+- **The glitch sampler read rift's record of frames, not the screen.** rift's
+  `frame` keeps a window's last reported frame until the app answers the next
+  write; the sampler now reads the window server's frames (`dtool frames`).
+
+Each failure leaves its flight recorder in `~/rift-harness/traces/`
+(vm-ab copies them out). Every fix below was read from one of those.
+
+### The fixes -- each from a trace, each with a test that fails without it
+
+| Commit | Fix | Seen as |
+|---|---|---|
+| `33dd2b3` | saves drop the workspaces of a desktop rift forgot | autosave failing every minute after the first stand-in was destroyed |
+| `106d6a9` | a departure leaves out desktops rift is retiring | one extra desktop per replug |
+| `2c24607` | a stand-in only for a lost desktop that had windows | a stand-in for an empty minted desktop left after the last unplug |
+| `668249f` | a disappearance report for a window still drawn there is ignored | a window sent home left in no tree (`short-unplug`) |
+| `599e154`, `57abf9a` | a pre-churn snapshot lapses 3 quiet seconds after its last leave | an unplug soon after a plug recorded a half-moved layout (reorders) |
+| `599e154` | no minimum size learnt within 5 s of a display change | macOS's resize taught a TextEdit a 673px minimum |
+| `fc80272` | a minimum is learnt only when a second write is refused too | a slow app's old 1306px height became a minimum; neighbours 80px tall |
+| `9596f32`, `a778aa8` | a frame moved as a whole is not a resize (fullscreen checked first) | splits moved to x=2930 on a 2494 screen; 115px slots |
+| `aadfbb5` | a moved frame does not change a window's desktop against the window server | Safari taken out of its tree for good (`fast-churn`: "came back floating") |
+| `832193c`, `810a52e` | fullscreen slots follow a renumbered desktop, and survive a window being sent home | windows returned without their slot, appended at the end |
+| `9952b71` | an arrival seen before any window left a tree is still recorded | `become-main`: nothing undid macOS's scramble |
+| `c76ff68`, `ea5fa7c`, `ea2b064` | a record window macOS carries onto an unknown display is sent back (departure records only) | `different-monitor`: a window tiled alone on the new monitor |
+
+`f0641aa` put a relocated window straight back into its tile; `d4ee368` takes
+that back. The relocations come in the same instant as the display change, and
+a write then used geometry about to be wrong: as the external became main it
+wrote a window to coordinates that were the other display's a moment later,
+and macOS moved it there. The window is laid back once the change settles.
+
+### Measured
+
+Same harness, same guest, each side rebooted, addition healthy throughout:
+
+| Build | Runs |
+|---|---|
+| baseline (`a47039c`) | 10/17 on the final harness; 7-12/17 across the day |
+| v13 .. v23 (fixes landing) | 13-16/17 |
+| v24 (all) | 12/17, 14/17 |
+
+The baseline's spread between identical runs is two to three scenarios.
+
+### What is still intermittent
+
+- `transient-glitch`: macOS moves windows to their remembered spots on an
+  arriving display a beat before the display change reaches rift, and they sit
+  over their neighbours until rift lays them out once it has settled (a few
+  hundred ms). Putting them back at once is exactly what `d4ee368` reverted.
+- `fast-churn`: a display that leaves 0.3 s after arriving, while the arrival's
+  repair is still moving windows, is recorded from the half-moved trees. A fix
+  (record the repair's targets) was written and dropped: the unit fixture could
+  not reproduce the in-flight pass, so it could not be shown to be needed.
+- The `stack-across-churn` setup still occasionally fails to build a stack of
+  two on a freshly restarted rift -- a harness precondition, reported as such.
+
+### The seam report
+
+The relocation bug is the likeliest cause of "windows way over the seam after
+plugging the laptop in": as a display arrives, macOS moves windows to where
+they last were on it -- resized, partly across the seam -- before rift hears of
+the display, and rift read those frames as tile edges being dragged.
+`scripts/mc-seam-test.py plug hidpi left` reproduces the conditions (a 2x panel
+left of the main display, bottom-aligned, windows remembered on it) and samples
+for tiled windows off their display. Both the baseline and v24 pass it, so
+it does not reproduce the report even on the old build: the fix is the likeliest
+cause, not a confirmed one. A flight-recorder dump taken on the real machine
+right after it happens (`rift execute trace dump <path>`) would settle it.
+
+### Aftercare
+
+`scripts/aftercare-drift-test.py`, run straight after `straggler-after-return`:
+six plug/unplug cycles, zero aftercare sends, every window in a tree (v24). The
+one-window-per-replug resend is gone.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
