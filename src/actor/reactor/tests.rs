@@ -1170,6 +1170,39 @@ fn a_frame_move_the_window_server_does_not_confirm_keeps_the_desktop() {
     );
 }
 
+/// A notice that a window appeared on a desktop, while the window server says
+/// straight after that it is still on its old one, is a flicker when the
+/// window server is moving windows for a display change. Taken at its word as
+/// the external became main, it moved Safari into another desktop's tree
+/// while every direct answer said it had not moved, and Safari stayed filed
+/// there, apart from the rest (`become-main`).
+#[test]
+fn an_appearance_the_window_server_denies_mid_churn_is_not_a_move() {
+    let (mut reactor, wid, wsid, space1, space2, _initial_frame, _screen2) =
+        reactor_with_window_on_space1_two_displays();
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![space1.get()]));
+    crate::sys::display_churn::set_since_windows_last_moved(Some(
+        std::time::Duration::from_millis(200),
+    ));
+
+    reactor.handle_event(Event::WindowServerAppeared(wsid, space2, SpaceEventKind::User));
+
+    crate::sys::display_churn::set_since_windows_last_moved(None);
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+    assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space1));
+}
+
+/// Outside a display change the notice stands, as before.
+#[test]
+fn an_appearance_outside_a_churn_is_still_a_move() {
+    let (mut reactor, wid, wsid, _space1, space2, _initial_frame, _screen2) =
+        reactor_with_window_on_space1_two_displays();
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![space2.get()]));
+    reactor.handle_event(Event::WindowServerAppeared(wsid, space2, SpaceEventKind::User));
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+    assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space2));
+}
+
 #[test]
 fn matching_rift_frame_clears_pending_target() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();

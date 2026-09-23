@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window stays with the others when a display takes over as main.** While
+  macOS moves windows for a display change, its notices of which desktop a
+  window is on flicker; one said Safari had moved to another desktop while the
+  window server itself said it had not, and rift filed Safari there, apart
+  from the rest. During a display change the window server's own answer now
+  wins over the notice.
 - **Windows keep their order when one is sent home after a replug.** The
   report that a window is back could come while it was still on the desktop
   macOS had dropped it on; rift restored the layout then, could not place that

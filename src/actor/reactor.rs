@@ -5642,6 +5642,22 @@ impl Reactor {
                 };
                 (resolved, Some(live))
             }
+            // While the window server moves windows for a display change its
+            // notices flicker: as the external became main, one said Safari
+            // had appeared on the old main's new desktop while every direct
+            // answer before and after said it had not moved, and taken at its
+            // word it filed Safari there for good. Then the direct answer
+            // stands.
+            (Some(observed), _)
+                if crate::sys::display_churn::since_windows_last_moved()
+                    .is_some_and(|since| since < REFUSAL_AFTER_CHURN) =>
+            {
+                let live = window_server::window_space(wsid);
+                (
+                    live.filter(|live| *live != observed).or(Some(observed)),
+                    Some(live),
+                )
+            }
             (Some(observed), _) => (Some(observed), None),
             (None, _) => {
                 let live = window_server::window_space(wsid);
