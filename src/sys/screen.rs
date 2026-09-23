@@ -282,6 +282,8 @@ fn dock_orientation() -> i32 {
 }
 
 fn dock_rect() -> CGRect {
+    // Written by the call below, which a test build returns before.
+    #[cfg_attr(test, allow(unused_mut))]
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
     #[cfg(test)]
     return rect;
@@ -292,6 +294,8 @@ fn dock_rect() -> CGRect {
 }
 
 fn dock_rect_with_reason() -> (CGRect, i32) {
+    // Written by the call below, which a test build returns before.
+    #[cfg_attr(test, allow(unused_mut))]
     let mut rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
     #[cfg(test)]
     return (rect, 0);

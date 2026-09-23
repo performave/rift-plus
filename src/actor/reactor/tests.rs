@@ -1259,7 +1259,7 @@ fn an_unanswered_write_is_sent_again() {
 /// stayed 574 wide, across the edge of its display (`plain-replug`).
 #[test]
 fn confirming_a_windows_own_desktop_keeps_a_resize_in_flight() {
-    let (mut reactor, _wid, wsid, space1, _space2, frame) = reactor_with_window_on_space1();
+    let (reactor, _wid, wsid, space1, _space2, frame) = reactor_with_window_on_space1();
     let target = CGRect::new(frame.origin, CGSize::new(460.0, 256.0));
     let txid = reactor.transaction_manager.generate_next_txid(wsid);
     reactor.transaction_manager.store_txid(wsid, txid, target);
