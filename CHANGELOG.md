@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window macOS moves before a display change no longer drops out of the
+  layout.** macOS relocates windows a moment ahead of telling anyone a display
+  has changed, sometimes past the edge of every display rift knows of. rift
+  worked out the window's desktop from that frame, took it out of its tree
+  for another desktop, and never put it back -- it read as floating. A moved
+  frame no longer changes a window's desktop while the window server still
+  has it on the old one, unless you are dragging it.
 - **Plugging a different monitor into the same port keeps your windows
   put.** While the display that left is away, macOS can carry a window it
   remembers on the newcomer onto it the moment it attaches, and rift tiled it

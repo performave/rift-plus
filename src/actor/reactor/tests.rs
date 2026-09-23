@@ -1137,6 +1137,39 @@ fn geometry_cross_display_frame_change_updates_authoritative_space() {
     );
 }
 
+/// The same move with the window server saying the window has not left its
+/// desktop is not a move of desktop. macOS relocates windows ahead of a
+/// display change -- here Safari to x=2600, past the edge of the display rift
+/// still knew -- while the window server keeps them on their desktop; read by
+/// geometry, that took Safari out of its tree for good (`fast-churn`: "came
+/// back floating").
+#[test]
+fn a_frame_move_the_window_server_does_not_confirm_keeps_the_desktop() {
+    let (mut reactor, wid, wsid, space1, _space2, _initial_frame, screen2) =
+        reactor_with_window_on_space1_two_displays();
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![space1.get()]));
+    let moved_frame = CGRect::new(
+        CGPoint::new(screen2.origin.x + 100., 100.),
+        CGSize::new(800., 600.),
+    );
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        moved_frame,
+        None,
+        Requested(false),
+        Some(MouseState::Up),
+    ));
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+
+    assert_eq!(
+        reactor.assigned_space_for_window_id(wid),
+        Some(space1),
+        "a frame moved onto the other display took the window off the desktop \
+         the window server still has it on"
+    );
+}
+
 #[test]
 fn matching_rift_frame_clears_pending_target() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();

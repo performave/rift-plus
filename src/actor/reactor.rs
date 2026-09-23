@@ -2369,6 +2369,21 @@ impl Reactor {
                     old_space = Some(space);
                     new_space = Some(space);
                 }
+                // Nor has one the window server still has on the desktop it was
+                // on, unless the user is dragging it. macOS relocates windows
+                // ahead of a display change -- Safari to x=2600, past the edge
+                // of the display rift still knew, the report that the display
+                // had changed arriving twenty milliseconds later -- and the
+                // guard above could not help: which desktops were shown was
+                // still the answer from before. Read by geometry, the move took
+                // Safari out of its tree, and nothing ever put it back.
+                if effective_mouse_state != Some(crate::sys::event::MouseState::Down)
+                    && new_space != old_space
+                    && old_space.is_some()
+                    && server_id.and_then(window_server::window_space) == old_space
+                {
+                    new_space = old_space;
+                }
                 let old_space_active = old_space.is_some_and(|space| self.is_space_active(space));
                 let new_space_active = new_space.is_some_and(|space| self.is_space_active(space));
                 let best_resize_space = self.best_space_for_window(&new_frame, server_id);
