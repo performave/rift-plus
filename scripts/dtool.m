@@ -105,6 +105,27 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return e == kCGErrorSuccess ? 0 : 3;
     }
 
+    if (!strcmp(cmd, "place") && argc > 4) {
+        // place <display> <x> <y>: put one display at an origin in the global
+        // space, the rest where they are. A probe always attaches to the
+        // right, top-aligned; the report this exists for came from a laptop
+        // to the LEFT of its monitor and bottom-aligned with it, which puts
+        // the seam and the corners windows are parked in somewhere else.
+        // Session-only, so a reboot puts the arrangement back.
+        CGDirectDisplayID target = (CGDirectDisplayID)strtoul(argv[2], NULL, 0);
+        CGDisplayConfigRef cfg;
+        if (CGBeginDisplayConfiguration(&cfg) != kCGErrorSuccess) {
+            fprintf(stderr, "CGBeginDisplayConfiguration failed\n"); return 2;
+        }
+        CGConfigureDisplayOrigin(cfg, target, atoi(argv[3]), atoi(argv[4]));
+        CGError e = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+        CGRect b = CGDisplayBounds(target);
+        printf("place %u -> %s, now at %.0f,%.0f %.0fx%.0f\n", target,
+               e == kCGErrorSuccess ? "ok" : "failed",
+               b.origin.x, b.origin.y, b.size.width, b.size.height);
+        return e == kCGErrorSuccess ? 0 : 3;
+    }
+
     if (!strcmp(cmd, "fullscreen")) {
         // Ctrl-Cmd-F, posted straight to the event stream. Apple Events are
         // the obvious way to do this and hang indefinitely inside a LaunchAgent

@@ -29,6 +29,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
     // A distinct serial gives a distinct display identity -- used by the
     // "different monitor, same port" scenario. Default stays fixed.
     uint32_t serial = (argc > 3) ? (uint32_t)strtoul(argv[3], NULL, 0) : 0x0001;
+    // `hidpi` makes w x h the size in points on a 2x backing store, like a
+    // laptop's Retina panel beside a 1x monitor. Real setups mix the two, and
+    // a display of each scale is what a desktop moved between them crosses.
+    int hidpi = (argc > 4) && strcmp(argv[4], "hidpi") == 0;
+    uint32_t scale = hidpi ? 2 : 1;
 
     Class Desc = NSClassFromString(@"CGVirtualDisplayDescriptor");
     Class Sett = NSClassFromString(@"CGVirtualDisplaySettings");
@@ -39,8 +44,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     id desc = [[Desc alloc] init];
     SET(desc, "setQueue:", dispatch_queue_t, dispatch_get_main_queue());
     SET(desc, "setName:", id, @"rift-vm-probe");
-    SET(desc, "setMaxPixelsWide:", uint32_t, w);
-    SET(desc, "setMaxPixelsHigh:", uint32_t, h);
+    SET(desc, "setMaxPixelsWide:", uint32_t, w * scale);
+    SET(desc, "setMaxPixelsHigh:", uint32_t, h * scale);
     SET(desc, "setSizeInMillimeters:", CGSize, CGSizeMake(600, 340));
     SET(desc, "setProductID:", uint32_t, 0x1234);
     SET(desc, "setVendorID:",  uint32_t, 0x3456);
@@ -55,7 +60,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         [Mode alloc], NSSelectorFromString(@"initWithWidth:height:refreshRate:"), w, h, 60.0);
     id settings = [[Sett alloc] init];
     SET(settings, "setModes:", id, @[mode]);
-    SET(settings, "setHiDPI:", uint32_t, 0);
+    SET(settings, "setHiDPI:", uint32_t, hidpi ? 1 : 0);
     if (!((BOOL(*)(id,SEL,id))objc_msgSend)(vd, NSSelectorFromString(@"applySettings:"), settings)) {
         fprintf(stderr, "applySettings: refused\n"); return 4;
     }
@@ -67,7 +72,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     uint32_t did = 0;
     if ([vd respondsToSelector:NSSelectorFromString(@"displayID")])
         did = ((uint32_t(*)(id,SEL))objc_msgSend)(vd, NSSelectorFromString(@"displayID"));
-    printf("ATTACHED display_id=%u size=%ux%u serial=0x%x online=%u\n", did, w, h, serial, after);
+    printf("ATTACHED display_id=%u size=%ux%u scale=%u serial=0x%x online=%u\n", did, w, h, scale, serial, after);
     fflush(stdout);
 
     // Hold the strong reference. Dying is the detach.

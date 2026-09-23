@@ -90,6 +90,21 @@ fi
 # and the same build's score drifted as the pile grew. Destroy the empty ones so
 # every side starts from the same few.
 GX_TIMEOUT=600 "$SC/vm-run1" "/usr/bin/python3 /Users/vm/rift-harness/prune.py" 2>&1 | grep '^prune' || true
+# Destroying desktops can take Dock down with it, and so can a churn. rift
+# reloads the addition by replaying `run_on_start` -- which in this guest once
+# said bare `rift`, not on launchd's PATH, so every reload failed and whole
+# batteries ran without the addition while still printing "loaded and healthy"
+# at the top. Check again here, after the prune, and refuse rather than measure
+# a build without the thing most of the scenarios depend on.
+SA="$("$SC/vm-ssh" "sudo ~/rift-harness/bin/rift sa status 2>&1 | head -1")"
+if [[ "$SA" != *"loaded and healthy"* ]]; then
+    "$SC/vm-ssh" "sudo ~/rift-harness/bin/rift sa load >/dev/null 2>&1; sleep 3"
+    SA="$("$SC/vm-ssh" "sudo ~/rift-harness/bin/rift sa status 2>&1 | head -1")"
+    if [[ "$SA" != *"loaded and healthy"* ]]; then
+        echo "  refusing to compare: the scripting addition is down after the prune ($SA)"
+        exit 2
+    fi
+fi
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 "$SC/vm-ssh" "killall Safari TextEdit 2>/dev/null; sleep 4"
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
@@ -114,3 +129,10 @@ fi
 # lines, and truncating them is how a run came back with its last five reasons
 # missing -- which reads exactly like five scenarios that failed silently.
 CHAOS_TIMEOUT=3600 "$SC/vm-run" "$CMD" "$@" 2>&1 | sed -n '/=== matrix ===/,$p;/=== summary ===/,$p'
+
+# And say how the addition fared during the run. A Dock crash the supervisor
+# recovered from is harmless; one it could not recover from turns every result
+# after it into a measurement of rift without the addition.
+"$SC/vm-ssh" "L=/tmp/rift.err
+echo \"scripting addition during the run: \$(grep -c 'stopped answering' \$L) Dock restart(s), \$(grep -c 'is live' \$L) load(s), \$(grep -c 'could not reload' \$L) failed reload(s)\"
+sudo ~/rift-harness/bin/rift sa status 2>&1 | head -1"

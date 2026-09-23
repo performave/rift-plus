@@ -68,7 +68,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         post(kCGEventMouseMoved, a, 0, flags);
         usleep(80000);
         post(downType, a, button, flags);
-        usleep(80000);
+        // Mission Control picks a desktop thumbnail up only after the button
+        // has been held a moment; a drag that starts moving at once is read
+        // as a click.
+        const char *hold = getenv("MTOOL_HOLD_MS");
+        usleep(hold ? (useconds_t)atoi(hold) * 1000 : 80000);
         for (int i = 1; i <= steps; i++) {
             double t = (double)i / steps;
             CGPoint p = CGPointMake(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
