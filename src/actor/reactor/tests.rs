@@ -9977,6 +9977,96 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A display arriving with no record must not leave the display that was
+    /// already here reshuffled.
+    ///
+    /// The situation traced in the guest and present in the clamshell trace
+    /// from Eric's machine: the laptop alone, the LG arrives, and macOS
+    /// switches the laptop to a fresh desktop and moves a window onto it.
+    /// With no departure behind it there was no record, so nothing put either
+    /// back, and the next departure recorded the damage as the arrangement.
+    #[test]
+    fn an_arrival_with_no_record_puts_the_display_that_was_here_back() {
+        let mut reactor = test_reactor();
+        reactor.config.settings.displaced_windows = crate::common::config::DisplacedWindows::Spaces;
+        sa::set_available(true);
+        let home = space1();
+        managed(vec![("test-display-0", vec![home])]);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(home)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home]);
+                state.last_user_space_by_display.insert("test-display-0".to_string(), home);
+            },
+        ));
+        reactor.add_test_app(1);
+        let mut wsids = Vec::new();
+        for idx in 1..=3u32 {
+            let wid = WindowId::new(1, idx);
+            let wsid = WindowServerId::new(100 + idx);
+            reactor.add_test_window(
+                wid,
+                wsid,
+                Some(home),
+                CGRect::new(CGPoint::new(10., 10.), CGSize::new(400., 400.)),
+            );
+            let workspace = reactor.test_workspace(home, 0);
+            assert!(reactor.assign_test_window_to_workspace(home, wid, workspace));
+            reactor.send_layout_event(LayoutEvent::WindowAdded(home, wid));
+            wsids.push(wsid);
+        }
+        set_window_spaces(&wsids, home);
+        assert!(
+            reactor.display_archive.whole_displays.is_some(),
+            "the one-display set must be whole"
+        );
+
+        // The churn begins: the snapshot a first window leaving its tree takes.
+        reactor.capture_pre_churn_layout();
+
+        // The LG arrives. macOS switches the laptop to a fresh desktop and
+        // moves the third window onto it.
+        let fresh = SpaceId::new(50);
+        let lg = SpaceId::new(60);
+        managed(vec![("test-display-0", vec![home, fresh]), (DISPLAY2, vec![lg])]);
+        set_window_spaces(&wsids[2..], fresh);
+        let moves_before = sa::window_moves().len();
+        let focuses_before = sa::space_focuses().len();
+        reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(fresh), Some(lg)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.should_force_refresh_layout = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home, fresh]);
+                state.display_space_ids.insert(DISPLAY2.to_string(), vec![lg]);
+            },
+        ));
+
+        assert!(
+            sa::window_moves()[moves_before..].contains(&(wsids[2].as_u32(), home.get())),
+            "the window macOS moved on the arrival was not sent back: {:?}",
+            &sa::window_moves()[moves_before..]
+        );
+        assert!(
+            sa::space_focuses()[focuses_before..].contains(&home.get()),
+            "the laptop was not switched back to the desktop it was showing"
+        );
+        assert!(
+            !sa::window_moves()[moves_before..].iter().any(|(_, to)| *to == lg.get()),
+            "nothing is sent to the arriving display"
+        );
+        for wsid in &wsids {
+            set_window_spaces_override(*wsid, None);
+        }
+        crate::sys::screen::set_managed_display_spaces_override(None);
+        sa::set_available(false);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees

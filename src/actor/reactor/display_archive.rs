@@ -243,7 +243,9 @@ impl DisplayArchive {
 fn is_stable_display_uuid(uuid: &str) -> bool { !uuid.starts_with("cgdisplay-") }
 
 impl Reactor {
-    fn display_archive_enabled(&self) -> bool { self.config.settings.restore_display_layouts }
+    pub(super) fn display_archive_enabled(&self) -> bool {
+        self.config.settings.restore_display_layouts
+    }
 
     /// An explicit command or drop on a displaced window while its display is
     /// away is a claim on it for the display it is on: it is no longer sent

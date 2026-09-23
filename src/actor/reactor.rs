@@ -4133,6 +4133,17 @@ impl Reactor {
         if display_set_changed {
             let active_displays: Vec<String> =
                 screens.iter().map(|screen| screen.display_uuid.clone()).collect();
+            // An arrival is recorded against the display set from before it,
+            // and from the pre-churn snapshot -- which the departure handling
+            // below consumes on every change of display set, whether or not
+            // anything departed. So first. It only acts when nothing departed,
+            // so it never competes with a departure's record.
+            if self.display_archive_enabled()
+                && self.config.settings.displaced_windows
+                    == crate::common::config::DisplacedWindows::Spaces
+            {
+                self.record_arrival(&active_displays);
+            }
             outcome.absorb(self.archive_departed_displays(
                 &active_displays,
                 &screens,

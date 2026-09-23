@@ -690,6 +690,145 @@ impl Reactor {
         });
     }
 
+    /// A display arriving with no record standing: record the display that
+    /// was already here, as it was, so its return pass can put it back.
+    ///
+    /// A departure leaves a record, and the display's return is what that
+    /// record is for. An *arrival* nobody departed for has none -- after rift
+    /// restarts or is redeployed while undocked, or around the pseudo display
+    /// a lid reports -- and macOS reshuffles on an arrival too. In the recorded
+    /// clamshell trace from Eric's machine, the LG arrived with no record open
+    /// and two windows changed desktop. In the guest, one attach with a stack
+    /// on the desktop switched the display to a fresh empty desktop, moved
+    /// three of five windows to another new one where rift built them a fresh
+    /// tree (the stack gone), and left the other two in no tree at all. Nothing
+    /// put any of it back, and the next departure then recorded the damage as
+    /// though it were the arrangement.
+    ///
+    /// The record taken here describes the display that was already present
+    /// and nothing else, so its return pass -- which `begin_display_homing`
+    /// runs straight away, because every display it names is on screen --
+    /// brings that display's desktops, windows, trees and shown desktop back,
+    /// and leaves the arriving display with whatever macOS gave it.
+    ///
+    /// Deliberately narrow:
+    ///
+    /// - only from a fresh pre-churn snapshot. Taken at the first window to
+    ///   leave its tree, it is the last reading of the arrangement before the
+    ///   reshuffle; a live reading now would record the reshuffle itself.
+    /// - only when exactly one display was here before. The return pass hands
+    ///   desktops it does not recognise to "the display that stayed", which
+    ///   with several displays already present could move one of them to
+    ///   another. The laptop alone, then the LG, is the case this is for.
+    /// - only in `spaces` mode, which is the only mode with a record.
+    pub(super) fn record_arrival(&mut self, active_displays: &[String]) {
+        if self.display_archive.record.is_some() {
+            return;
+        }
+        let Some(whole) = self.display_archive.whole_displays.clone() else {
+            return;
+        };
+        let arrived: Vec<String> = active_displays
+            .iter()
+            .filter(|uuid| !whole.iter().any(|d| &d.uuid == *uuid))
+            .cloned()
+            .collect();
+        if arrived.is_empty() || !whole.iter().all(|d| active_displays.contains(&d.uuid)) {
+            return;
+        }
+        let skip = |why: &str| {
+            debug!(
+                ?arrived,
+                why, "A display arrived with no record; not recording one"
+            );
+            crate::sys::trace::act("record_arrival", &serde_json::json!({ "skipped": why }));
+        };
+        if whole.len() != 1 {
+            skip("more than one display was already here");
+            return;
+        }
+        let Some(pre) = self.display_archive.fresh_pre_churn() else {
+            skip("no fresh pre-churn snapshot");
+            return;
+        };
+        let (layout, members, modes, homes) = (
+            pre.layout.clone(),
+            pre.members.clone(),
+            pre.modes.clone(),
+            pre.homes.clone(),
+        );
+
+        let recorded: HashSet<SpaceId> =
+            whole.iter().flat_map(|d| d.desktops.iter().copied()).collect();
+        let mut windows: HashMap<WindowId, SpaceId> = HashMap::default();
+        for (space, wids) in &members {
+            for wid in wids {
+                if self.state.windows.window(*wid).is_some() {
+                    windows.insert(*wid, *space);
+                }
+            }
+        }
+        for (wid, space) in &homes {
+            if !windows.contains_key(wid) && self.state.windows.window(*wid).is_some() {
+                windows.insert(*wid, *space);
+            }
+        }
+        // Only what was on the display that was here. Anything else in the
+        // snapshot is somewhere this record makes no claim about.
+        windows.retain(|_, space| recorded.contains(space));
+
+        // Desktops now listed on the display that was here which it did not
+        // have before the arrival: macOS made them for the arrival -- nobody
+        // makes a desktop in the second a reconfiguration takes -- and one left
+        // empty is litter the pass may retire rather than keep.
+        let now = self.display_space_ids_now();
+        let minted: HashSet<SpaceId> = whole
+            .iter()
+            .flat_map(|d| now.get(&d.uuid).cloned().unwrap_or_default())
+            .filter(|space| !recorded.contains(space))
+            .collect();
+
+        let survivor = whole[0].uuid.clone();
+        crate::sys::trace::act(
+            "record_arrival",
+            &serde_json::json!({
+                "arrived": arrived.len(),
+                "windows": windows.len(),
+                "desktops": recorded.len(),
+                "shown": whole[0].shown.map(|s| s.get()),
+                "minted": minted.iter().map(|s| s.get()).collect::<Vec<_>>(),
+            }),
+        );
+        info!(
+            ?arrived,
+            %survivor,
+            windows = windows.len(),
+            shown = ?whole[0].shown,
+            "A display arrived with no record; recorded the one already here, to put it back"
+        );
+        let now_instant = crate::sys::trace::now();
+        self.display_archive.aftercare = None;
+        self.display_archive.record = Some(DisplayRecord {
+            layout,
+            members,
+            modes,
+            windows,
+            placed: HashMap::default(),
+            user_commanded: HashSet::default(),
+            met: recorded.clone(),
+            seen: recorded,
+            displays: whole,
+            survivor,
+            absent: HashMap::default(),
+            minted,
+            churn_seen: now_instant,
+            settled: false,
+            stopgaps: Vec::new(),
+            own_moves: HashSet::default(),
+            pass: None,
+        });
+    }
+
     /// Right after a departure: the survivor gets its own state back as far
     /// as it can while a display is away. The windows of the desktop macOS
     /// destroyed get a desktop made for them, with their tree; the
