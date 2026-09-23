@@ -310,6 +310,9 @@ impl DisplayRecord {
     pub(super) fn is_arrival(&self) -> bool { self.arrival }
 
     #[cfg(test)]
+    pub(super) fn mark_arrival_for_test(&mut self) { self.arrival = true; }
+
+    #[cfg(test)]
     pub(super) fn recorded_display(&self, uuid: &str) -> Option<(Vec<SpaceId>, Option<SpaceId>)> {
         self.displays
             .iter()
@@ -2151,7 +2154,11 @@ impl Reactor {
         let Some(record) = self.display_archive.record.as_ref() else {
             return;
         };
-        if record.pass.is_some()
+        // A departure's record only. An arrival's record is itself the repair
+        // of what the arrival scrambled, with its own rule for the desktop the
+        // new display shows; this taking windows off that desktop overruled it.
+        if record.arrival
+            || record.pass.is_some()
             || !crate::sys::display_churn::since_windows_last_moved()
                 .is_some_and(|since| since < PLACEMENT_AFTER_CHURN)
         {
@@ -2181,7 +2188,7 @@ impl Reactor {
         let Some(record) = self.display_archive.record.as_ref() else {
             return;
         };
-        if record.pass.is_some() {
+        if record.arrival || record.pass.is_some() {
             return;
         }
         if !crate::sys::display_churn::since_windows_last_moved()

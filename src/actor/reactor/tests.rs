@@ -10764,6 +10764,38 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// An arrival's record is left to its own pass. Its "unknown" display is
+    /// the one arriving, and macOS handing it the desktop the laptop was
+    /// showing is exactly what that pass has its own rule for; taking the
+    /// windows off it here overruled that rule.
+    #[test]
+    fn an_arrivals_record_does_not_pull_windows_off_the_arriving_display() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        f.reactor
+            .display_archive
+            .record
+            .as_mut()
+            .expect("recorded")
+            .mark_arrival_for_test();
+        let newcomer = SpaceId::new(90);
+        managed(vec![
+            ("test-display-0", vec![space1(), space2(), space2_extra()]),
+            ("test-display-other", vec![newcomer]),
+        ]);
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], newcomer);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let moves_before = sa::window_moves().len();
+        f.reactor.keep_record_windows_off_unknown_displays();
+        f.reactor.keep_record_window_off_an_unknown_display(f.survivor, newcomer);
+        assert!(sa::window_moves()[moves_before..].is_empty());
+        spaces_cleanup(&f, &[]);
+    }
+
     /// The same window moved by the user once the change has settled is theirs.
     #[test]
     fn a_window_moved_onto_an_unknown_display_after_the_change_stays() {
