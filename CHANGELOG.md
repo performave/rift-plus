@@ -34,6 +34,15 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **The layout is saved again after rift destroys a desktop.** Destroying a
+  desktop rift made for a display change -- a stand-in, or one macOS minted
+  for a return -- detaches its workspaces but leaves them in place, because a
+  stale workspace key elsewhere crashes rift. The save rejected exactly that
+  state ("workspace ... is not indexed"), so from the first such desktop until
+  rift restarted nothing was saved: the autosave failed every minute,
+  `layout.ron` froze, and the next start found it too old to restore. The
+  same check backs the snapshot a departing display's record is taken from.
+  Saves now leave detached workspaces out of the file.
 - **`next_window` / `prev_window` step through a stack again.** The upstream
   merge re-applied upstream's version of the cycle list on top of this fork's,
   shadowing it: the fork asks the layout for *every* window, upstream for the

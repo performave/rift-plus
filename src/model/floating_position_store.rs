@@ -78,6 +78,11 @@ impl FloatingPositionStore {
         locations
     }
 
+    /// Drop every position held for any of `workspaces`.
+    pub(crate) fn remove_workspaces(&mut self, workspaces: &[VirtualWorkspaceId]) {
+        self.positions.retain(|(_, workspace, _), _| !workspaces.contains(workspace));
+    }
+
     /// Drop every position held for a desktop that no longer exists.
     pub fn forget_space(&mut self, space: SpaceId) {
         self.positions.retain(|(held, _, _), _| *held != space);

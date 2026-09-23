@@ -596,6 +596,25 @@ impl WorkspaceStore {
         dropped
     }
 
+    /// Remove the workspaces no desktop indexes any more -- the ones
+    /// `take_workspaces_of` detached -- and return their ids. Only for an
+    /// owned copy on its way to disk: the live store keeps them because a
+    /// stale key held elsewhere crashes the engine, but a file has no such
+    /// keys to protect, and the loader rejects a workspace no desktop indexes.
+    pub(crate) fn drop_unindexed_workspaces(&mut self) -> Vec<VirtualWorkspaceId> {
+        let indexed: HashSet<VirtualWorkspaceId> =
+            self.workspaces_by_space.values().flatten().copied().collect();
+        let detached: Vec<VirtualWorkspaceId> = self
+            .workspaces
+            .keys()
+            .filter(|workspace| !indexed.contains(workspace))
+            .collect();
+        for workspace in &detached {
+            self.workspaces.remove(*workspace);
+        }
+        detached
+    }
+
     pub(crate) fn forget_space(&mut self, space: SpaceId) {
         for workspace in self.workspaces_by_space.remove(&space).unwrap_or_default() {
             self.workspaces.remove(workspace);

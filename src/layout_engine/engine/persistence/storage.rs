@@ -304,11 +304,12 @@ impl LayoutEngine {
         Ok(self.loadable_snapshot()?.serialize())
     }
 
-    /// The engine as the loader wants it, with the desktops that have no
-    /// layout state pruned. Taken through the owned form so the live engine
+    /// The engine as the loader wants it, with the workspaces of forgotten
+    /// desktops and the desktops that have no layout state pruned. Taken through the owned form so the live engine
     /// is left alone.
     fn loadable_snapshot(&self) -> anyhow::Result<PersistedLayout> {
         let mut persisted = PersistedLayout::deserialize(&self.serialize_to_string())?;
+        persisted.prune_detached_workspaces();
         persisted.prune_spaces_without_layout_state();
         Ok(persisted)
     }

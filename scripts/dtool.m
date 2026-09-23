@@ -105,6 +105,39 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return e == kCGErrorSuccess ? 0 : 3;
     }
 
+    if (!strcmp(cmd, "key") && argc > 2) {
+        // key <keycode>: one key press, posted to the event stream. Escape
+        // (53) closes Mission Control when it is open and does nothing when it
+        // is not, which is the only way to put it in a known state: opening
+        // it again toggles it, and nothing reports whether it is open.
+        CGKeyCode code = (CGKeyCode)atoi(argv[2]);
+        CGEventRef down = CGEventCreateKeyboardEvent(NULL, code, true);
+        CGEventRef up = CGEventCreateKeyboardEvent(NULL, code, false);
+        CGEventPost(kCGHIDEventTap, down);
+        usleep(30000);
+        CGEventPost(kCGHIDEventTap, up);
+        CFRelease(down); CFRelease(up);
+        printf("key %d\n", code);
+        return 0;
+    }
+
+    if (!strcmp(cmd, "spaces")) {
+        // spaces: each display's desktops in the window server's own order,
+        // which is Mission Control's left to right. rift's space_ids is not
+        // guaranteed to be in that order right after a move, and a test that
+        // clicks thumbnails by position needs the one on screen.
+        extern int CGSMainConnectionID(void);
+        extern CFArrayRef CGSCopyManagedDisplaySpaces(int cid);
+        CFArrayRef displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID());
+        for (NSDictionary *d in (__bridge NSArray *)displays) {
+            printf("%s", [d[@"Display Identifier"] UTF8String]);
+            for (NSDictionary *sp in d[@"Spaces"]) printf(" %lld", [sp[@"ManagedSpaceID"] longLongValue]);
+            printf("\n");
+        }
+        if (displays) CFRelease(displays);
+        return 0;
+    }
+
     if (!strcmp(cmd, "place") && argc > 4) {
         // place <display> <x> <y>: put one display at an origin in the global
         // space, the rest where they are. A probe always attaches to the

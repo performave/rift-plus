@@ -50,6 +50,36 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     }
 
     // drag x1 y1 x2 y2 [modifiers] [steps] [left|right]
+    // dragpath x0 y0 x1 y1 [x2 y2 ...]: press at the first point, travel
+    // through the rest in order, pause, release. Mission Control only expands
+    // a display's Spaces bar while the pointer is over it, and a straight
+    // line from one display's bar to another's arrives from below it, at
+    // speed, and drops on nothing; a hand goes up to the bar and waits.
+    if (!strcmp(cmd, "dragpath") && argc > 5 && (argc - 2) % 2 == 0) {
+        int n = (argc - 2) / 2;
+        CGPoint pts[32];
+        if (n > 32) n = 32;
+        for (int i = 0; i < n; i++)
+            pts[i] = CGPointMake(atof(argv[2 + 2 * i]), atof(argv[3 + 2 * i]));
+        post(kCGEventMouseMoved, pts[0], 0, 0);
+        usleep(80000);
+        post(kCGEventLeftMouseDown, pts[0], kCGMouseButtonLeft, 0);
+        usleep(400000);
+        for (int i = 1; i < n; i++) {
+            for (int k = 1; k <= 30; k++) {
+                double t = (double)k / 30;
+                CGPoint p = CGPointMake(pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t,
+                                        pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t);
+                post(kCGEventLeftMouseDragged, p, kCGMouseButtonLeft, 0);
+                usleep(16000);
+            }
+            usleep(500000);
+        }
+        post(kCGEventLeftMouseUp, pts[n - 1], kCGMouseButtonLeft, 0);
+        printf("dragpath through %d points, released at %.0f,%.0f\n", n, pts[n - 1].x, pts[n - 1].y);
+        return 0;
+    }
+
     if (!strcmp(cmd, "drag") && argc > 5) {
         CGPoint a = CGPointMake(atof(argv[2]), atof(argv[3]));
         CGPoint b = CGPointMake(atof(argv[4]), atof(argv[5]));

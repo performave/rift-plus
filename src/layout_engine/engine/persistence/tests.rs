@@ -245,6 +245,53 @@ fn save_prunes_desktops_never_shown_and_the_file_loads() {
     );
 }
 
+/// `forget_space` detaches a destroyed desktop's workspaces but leaves them in
+/// the slotmap, because a stale key held anywhere else crashes the engine.
+/// The save rejected exactly that state -- "workspace ... is not indexed" --
+/// so the first desktop rift destroyed after a return (a stand-in, or one
+/// macOS minted for the return) stopped every save for the rest of the
+/// uptime. Found in the VM: autosave failing once a minute from the moment
+/// rift retired desktop 174.
+#[test]
+fn a_forgotten_desktop_does_not_stop_the_layout_being_saved() {
+    let mut engine = test_engine();
+    let mut window_store = WindowStore::default();
+    let kept = SpaceId::new(31);
+    let gone = SpaceId::new(174);
+    let window = WindowId::new(42, 8);
+    let stray = WindowId::new(42, 9);
+    let size = CGSize::new(1200.0, 800.0);
+    let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(kept, size));
+    let _ = engine.handle_event(&mut window_store, LayoutEvent::WindowAdded(kept, window));
+    let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(gone, size));
+    let _ = engine.handle_event(&mut window_store, LayoutEvent::WindowAdded(gone, stray));
+    let gone_workspace = engine.virtual_workspace_manager.existing_workspaces(gone)[0].0;
+    assert!(engine.workspace_layouts.has_state(gone_workspace));
+
+    engine.forget_space(gone);
+
+    let path = std::env::temp_dir().join(format!(
+        "rift-layout-forgotten-desktop-{}-{}.ron",
+        std::process::id(),
+        window.idx.get()
+    ));
+    engine
+        .save_current_layout(path.clone(), &window_store, Some(kept))
+        .expect("a desktop rift forgot must not make the save fail");
+    let loaded = LayoutEngine::load(path.clone()).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(
+        !loaded.virtual_workspace_manager.workspaces.contains_key(gone_workspace),
+        "the forgotten desktop's workspace is left out of the file"
+    );
+    assert!(loaded.virtual_workspace_manager.initialized_spaces().contains(&kept));
+    assert!(
+        engine.virtual_workspace_manager.workspaces.contains_key(gone_workspace),
+        "saving leaves the live engine's detached workspace where it is"
+    );
+}
+
 /// The remap deletes the workspaces that were on the target desktop to make
 /// room for the migrated ones. Their layout state is keyed by the workspace id
 /// alone, so nothing drops it by space any more: it was left under an id that

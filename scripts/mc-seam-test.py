@@ -36,9 +36,19 @@ SHOTS = "/Users/vm/rift-harness/mc"
 
 def plug(hidpi: bool, width=1512, height=982):
     """chaos.plug with a scale. The probe stands in for the laptop's panel
-    when `hidpi`, sized like a 14-inch MacBook's default in points."""
+    when `hidpi`, sized like a 14-inch MacBook's default in points.
+
+    A virtual display offered a HiDPI mode still comes up in its largest 1x
+    one, so the 2x mode is chosen after it attaches. That choice is stored
+    against the display's identity, which is why the probe here has serials
+    of its own: the 1x probe every other scenario plugs must not inherit it."""
     unplug(quiet=True)
-    args = [f"{BIN}/vdisp", str(width), str(height), "1"] + (["hidpi"] if hidpi else [])
+    # A fresh identity per run as well: macOS and rift's display record both
+    # remember a display that has been here before, and plugging the last
+    # run's probe back in rightly sends its windows back to it -- which then
+    # leaves this run nothing to drag.
+    serial = hex(0x5100 + int(time.time()) % 0xff) if hidpi else hex(0x5200 + int(time.time()) % 0xff)
+    args = [f"{BIN}/vdisp", str(width), str(height), serial] + (["hidpi"] if hidpi else [])
     with open(VDISP_PLIST, "w") as fh:
         fh.write('<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>\n'
                  '<key>Label</key><string>vdisp</string>\n<key>ProgramArguments</key><array>'
@@ -49,6 +59,22 @@ def plug(hidpi: bool, width=1512, height=982):
     sh(f"launchctl bootstrap gui/{UID} {VDISP_PLIST} 2>/dev/null; true")
     if not wait_for_displays(2):
         raise Violation(f"virtual display never attached ({sh('cat /tmp/vdisp.err')})")
+    if hidpi:
+        # A display that has just attached has no modes to offer for a moment.
+        for _ in range(20):
+            out = sh(f"{DTOOL} setmode {width} {height} {probe_id()} 2>&1").strip()
+            if out.endswith("-> ok"):
+                break
+            time.sleep(0.5)
+        print(f"  {out}")
+        time.sleep(3)
+
+
+def probe_id():
+    """The probe's CoreGraphics id: the last attach vdisp reported. The file
+    is appended to, never truncated, so the first line is some long-gone
+    probe's."""
+    return sh("sed -n 's/.*display_id=\\([0-9]*\\).*/\\1/p' /tmp/vdisp.out | tail -1").strip()
 
 
 def displays():
@@ -91,43 +117,121 @@ def report(tag, space):
 
 
 def mission_control(on: bool):
-    # Opening it again closes it.
-    sh("open -a 'Mission Control'")
-    time.sleep(1.8)
+    """Open or close Mission Control. `open -a` toggles it and nothing says
+    whether it is open, so Escape comes first -- it closes Mission Control if
+    open and does nothing otherwise -- which makes the state known."""
+    sh(f"{DTOOL} key 53")
+    time.sleep(1.2)
+    if on:
+        sh("open -a 'Mission Control'")
+        time.sleep(1.8)
 
 
 def screenshot(name):
     os.makedirs(SHOTS, exist_ok=True)
+    # One file per display, main first.
     path = f"{SHOTS}/{name}.png"
-    sh(f"screencapture -x {path}")
+    sh(f"screencapture -x {path} {SHOTS}/{name}-2.png")
     return path
 
 
-def thumb_point(d, index, count):
-    """Where desktop `index` of `count` sits in `d`'s Spaces bar, once the bar
-    is expanded by hovering it. Thumbnails are centred as a row; the x pitch
-    and the y were read off calibration screenshots (see `calibrate`)."""
+def order(d):
+    """`d`'s desktops as Mission Control shows them, left to right, from the
+    window server. rift's `space_ids` has been seen a move behind, and a
+    thumbnail picked by a stale index is some other desktop."""
+    def read():
+        for line in sh(f"{DTOOL} spaces").splitlines():
+            parts = line.split()
+            if parts and parts[0] == d["uuid"]:
+                return [int(x) for x in parts[1:]]
+        return []
+    # Right after a drop the window server reorders once more; wait for two
+    # readings a second apart to agree.
+    last = read()
+    for _ in range(8):
+        time.sleep(1)
+        now = read()
+        if now == last:
+            break
+        last = now
+    print(f"  order on {d['uuid'][:8]}: {last}")
+    return last
+
+
+def whiteness(x, y, size=24):
+    """The share of near-white pixels in a small square around a global
+    point. A desktop holding the test's TextEdit windows has a mostly white
+    thumbnail; an empty one shows the wallpaper."""
+    path = "/tmp/mc-px.bmp"
+    sh(f"screencapture -x -t bmp -R{x - size / 2:.0f},{y - size / 2:.0f},{size},{size} {path}")
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return 0.0
+    import struct
+    off = struct.unpack_from("<I", data, 10)[0]
+    w, h = struct.unpack_from("<ii", data, 18)
+    bpp = struct.unpack_from("<H", data, 28)[0] // 8
+    row = (w * bpp + 3) & ~3
+    white = total = 0
+    for j in range(abs(h)):
+        for i in range(w):
+            b, g, r = data[off + j * row + i * bpp: off + j * row + i * bpp + 3]
+            total += 1
+            white += (r > 235 and g > 235 and b > 235)
+    return white / total if total else 0.0
+
+
+def thumb_with_windows(rect, count):
+    """Which of `count` thumbnails in the bar at `rect` shows the windows.
+    The desktop order both rift and the window server report does match the
+    bar -- once it settles; right after a drop both lag it, and a thumbnail
+    picked by index then was some other desktop. Looking cannot lag. Hovers
+    the bar first so it is expanded."""
+    x, y, w, h = rect
+    sh(f"{MTOOL} move {x + w / 2:.0f} {y + 8:.0f}")
+    time.sleep(1.2)
+    scores = [whiteness(*thumb_point(rect, i, count)) for i in range(count)]
+    print(f"  thumbnails' whiteness: {[round(v, 2) for v in scores]}")
+    best = max(range(count), key=lambda i: scores[i])
+    return best if scores[best] > 0.3 else None
+
+
+def cg_rect(d):
+    """`d`'s full CoreGraphics bounds -- Mission Control lays its bar out on
+    the whole display, not rift's visible frame -- found by overlap."""
     x, y, w, h = span(d)
-    pitch = float(os.environ.get("MC_PITCH", "0")) or min(w / (count + 1), w * 0.11)
-    row = count * pitch
-    cx = x + (w - row) / 2 + pitch * (index + 0.5)
-    cy = y + float(os.environ.get("MC_THUMB_Y", "70"))
-    return cx, cy
+    return max(cg_display_bounds(),
+               key=lambda b: max(0, min(x + w, b[0] + b[2]) - max(x, b[0]))
+               * max(0, min(y + h, b[1] + b[3]) - max(y, b[1])))
 
 
-def drag_desktop(src_display, src_index, src_count, dst_display, dst_count):
+def thumb_point(rect, index, count):
+    """The centre of desktop `index` of `count` in the Spaces bar of the
+    display at `rect`, once the bar is expanded. Read off screenshots of this
+    guest's Mission Control on a 2550x1347 1x display and a 1512x982 2x one:
+    thumbnails are 90pt tall, as wide as the display's aspect makes them, 30pt
+    apart, centred as a row, with their centres 96pt below the display's top."""
+    x, y, w, h = rect
+    tw = 90 * w / h
+    pitch = tw + 30
+    row = count * pitch - 30
+    return x + (w - row) / 2 + index * pitch + tw / 2, y + 96
+
+
+def drag_desktop(src, src_index, src_count, dst, dst_count):
     """Hover the source bar to expand it, press on the thumbnail, carry it to
     the end of the destination bar, release."""
-    sx, sy = thumb_point(src_display, src_index, src_count)
-    x, y, w, h = span(dst_display)
-    sh(f"{MTOOL} move {sx:.0f} {span(src_display)[1] + 8:.0f}")
+    sx, sy = thumb_point(src, src_index, src_count)
+    sh(f"{MTOOL} move {sx:.0f} {src[1] + 8:.0f}")
     time.sleep(1.0)
     sh(f"{MTOOL} move {sx:.0f} {sy:.0f}")
     time.sleep(0.6)
-    # Past the last thumbnail, where Mission Control shows its "+" -- a drop
-    # there appends the desktop to that display.
-    dx, dy = thumb_point(dst_display, dst_count, dst_count + 1)
-    sh(f"MTOOL_HOLD_MS=400 {MTOOL} drag {sx:.0f} {sy:.0f} {dx:.0f} {dy:.0f} 0 60", timeout=30)
+    # One slot past the last thumbnail: a drop there appends the desktop to
+    # that display.
+    dx, dy = thumb_point(dst, dst_count, dst_count + 1)
+    out = sh(f"MTOOL_HOLD_MS=400 {MTOOL} drag {sx:.0f} {sy:.0f} {dx:.0f} {dy:.0f} 0 60", timeout=30)
+    print(f"  {out.strip()}")
     time.sleep(1.5)
 
 
@@ -144,7 +248,7 @@ def main():
         # The reporter's arrangement: the laptop to the left of the monitor,
         # bottom edges aligned. The probe's CoreGraphics id is what vdisp
         # printed when it attached.
-        did = sh("sed -n 's/.*display_id=\\([0-9]*\\).*/\\1/p' /tmp/vdisp.out").strip()
+        did = probe_id()
         main_h = max(b[3] for b in cg_display_bounds() if b[0] == 0 and b[1] == 0)
         pw, ph = 1512, 982
         print("  " + sh(f"{DTOOL} place {did} {-pw} {int(main_h - ph)}").strip())
@@ -172,6 +276,16 @@ def main():
 
     # The windows: all of them tiled on the main display's shown desktop,
     # one floated, which rift restores by position rather than lays out.
+    # Earlier runs leave desktops behind, and the windows are not always on
+    # the one shown; go to whichever holds most of them.
+    mids = main_d.get("space_ids") or []
+    most = max(mids, key=lambda sp: len(rift("windows", "--space-id", str(sp)) or []))
+    if most != main_d.get("space"):
+        mx, my, mw, mh = span(main_d)
+        sh(f"{MTOOL} move {mx + mw / 2:.0f} {my + mh / 2:.0f}")
+        rift_exec("space", "switch-to", str(mids.index(most) + 1))
+        time.sleep(2)
+        main_d = next(d for d in displays() if d["uuid"] == main_d["uuid"])
     tile_all()
     time.sleep(1)
     home = main_d["space"]
@@ -190,9 +304,10 @@ def main():
         # Show some other desktop on the main display, so the one with the
         # windows is dragged while hidden.
         others = [s for s in ids if s != home]
+        # Desktop commands act on the display under the pointer.
+        mx, my, mw, mh = span(main_d)
+        sh(f"{MTOOL} move {mx + mw / 2:.0f} {my + mh / 2:.0f}")
         if not others:
-            mx, my, mw, mh = span(main_d)
-            sh(f"{MTOOL} move {mx + mw / 2:.0f} {my + mh / 2:.0f}")
             rift_exec("space", "create")
             time.sleep(1.5)
             ids = (next(d for d in displays() if d["uuid"] == main_d["uuid"]).get("space_ids") or [])
@@ -200,34 +315,60 @@ def main():
         rift_exec("space", "switch-to", str(ids.index(others[0]) + 1))
         time.sleep(1.5)
 
-    ds = displays()
-    main_d = next(d for d in ds if d["uuid"] == main_d["uuid"])
-    probe = next(d for d in ds if d["uuid"] == probe["uuid"])
-    ids = main_d.get("space_ids") or []
-    pids = probe.get("space_ids") or []
-
-    mission_control(True)
-    screenshot("before-drag")
-    drag_desktop(main_d, ids.index(home), len(ids), probe, len(pids))
-    screenshot("after-drag")
-    mission_control(False)
-    time.sleep(3)
-
-    ds = displays()
-    probe = next(d for d in ds if d["uuid"] == probe["uuid"])
-    if home not in (probe.get("space_ids") or []):
-        print(f"FAIL setup: the drag did not move desktop {home} to the probe "
-              f"(probe has {probe.get('space_ids')}); see {SHOTS}")
-        return 2
-    bad = report("dragged", home)
-
-    if probe.get("space") != home:
-        px, py, pw, ph = span(probe)
-        sh(f"{MTOOL} move {px + pw / 2:.0f} {py + ph / 2:.0f}")
-        pids = probe.get("space_ids") or []
-        rift_exec("space", "switch-to", str(pids.index(home) + 1))
+    def move_and_show(src, dst, tag):
+        """In Mission Control: drag the desktop holding the windows from
+        `src`'s bar to the end of `dst`'s, then click it there to show it --
+        which closes Mission Control, as it does for a user. None on success,
+        else why the setup failed."""
+        mission_control(True)
+        sr = cg_rect(src)
+        n = len(order(src))
+        i = thumb_with_windows(sr, n)
+        screenshot(f"before-{tag}")
+        if i is None:
+            mission_control(False)
+            return f"no thumbnail on {src['uuid'][:8]} shows the windows"
+        drag_desktop(sr, i, n, cg_rect(dst), len(order(dst)))
+        screenshot(f"after-{tag}")
+        ids = order(dst)
+        if home not in ids:
+            mission_control(False)
+            return f"the drag did not move desktop {home} (the display has {ids})"
+        dr = cg_rect(dst)
+        j = thumb_with_windows(dr, len(ids))
+        if j is None:
+            mission_control(False)
+            return f"desktop {home} moved, but no thumbnail on {dst['uuid'][:8]} shows the windows"
+        tx, ty = thumb_point(dr, j, len(ids))
+        print("  " + sh(f"{MTOOL} click {tx:.0f} {ty:.0f}").strip())
         time.sleep(3)
-        bad += report("shown on the probe", home)
+        now = next(d for d in displays() if d["uuid"] == dst["uuid"])
+        if now.get("space") != home:
+            return f"clicking its thumbnail did not show desktop {home} (shows {now.get('space')})"
+        return None
+
+    # LG to laptop first: the windows' desktop dragged (hidden) onto the 2x
+    # panel and shown there.
+    why = move_and_show(main_d, probe, "drag")
+    if why:
+        print(f"FAIL setup: {why}; see {SHOTS}")
+        return 2
+    bad = report("shown on the probe", home)
+    # And again a few seconds on, for anything that writes a frame late.
+    time.sleep(4)
+    bad += report("a few seconds later", home)
+
+    # Then the direction the report was about: from the laptop's panel to
+    # the monitor, with the windows laid out for the panel, dragged while
+    # shown.
+    why = move_and_show(probe, main_d, "drag-back")
+    if why:
+        print(f"FAIL setup: {why}; see {SHOTS}")
+        return 2
+    bad += report("dragged back and shown on the main display", home)
+    time.sleep(4)
+    bad += report("a few seconds later", home)
+    screenshot("end-back")
     screenshot("end")
     sh(f"{CLI} execute trace dump /Users/vm/rift-harness/mc-seam.json", timeout=90)
 

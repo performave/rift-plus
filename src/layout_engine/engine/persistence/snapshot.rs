@@ -72,6 +72,20 @@ impl PersistedLayout {
         .expect("persisted layout serialization must support all engine layout state")
     }
 
+    /// Drop the workspaces of desktops rift has forgotten. `forget_space`
+    /// detaches them without removing them, so the live engine never meets a
+    /// stale key; a file carrying them fails the loader's topology check, and
+    /// since the save runs the same check, the first desktop rift destroyed
+    /// after a return used to stop every save for the rest of the uptime.
+    pub(super) fn prune_detached_workspaces(&mut self) {
+        let detached = self.virtual_workspace_manager.drop_unindexed_workspaces();
+        if detached.is_empty() {
+            return;
+        }
+        self.floating_positions.remove_workspaces(&detached);
+        self.workspace_layouts.remove_workspaces(detached);
+    }
+
     /// Drop spaces that have workspaces but no layout state. A space rift has
     /// listed but never shown (an inactive desktop on some display) is in
     /// that state, and the loader rejects a file that contains one — which
