@@ -4,3 +4,6 @@ rift.toml
 src/bin/dev.rs
 .idea
 .claude/worktrees/
+
+# Python bytecode from the VM harness scripts.
+__pycache__/
