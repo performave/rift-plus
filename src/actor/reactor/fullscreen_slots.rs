@@ -196,6 +196,11 @@ impl Reactor {
             anchor,
             taken: crate::sys::trace::now(),
         });
+        // Taken as a display change carries the window to another display's
+        // desktop, the slot's own desktop is where it belongs; nothing later
+        // may ask for it to be put back, since a window that stays visible
+        // is never "ordered in" again.
+        self.send_back_to_slot_display(window, space);
     }
 
     /// The display a desktop is on: the screen showing it, else the display
@@ -224,8 +229,22 @@ impl Reactor {
     /// return, and count it as on its way home so its leaving the other
     /// desktop does not replace the slot.
     fn send_back_to_slot_display(&mut self, window: WindowId, space: SpaceId) {
-        if !crate::sys::display_churn::since_windows_last_moved()
-            .is_some_and(|since| since < SLOT_SEND_BACK_AFTER_CHURN)
+        let Some(since_churn) = crate::sys::display_churn::since_windows_last_moved()
+            .filter(|since| *since < SLOT_SEND_BACK_AFTER_CHURN)
+        else {
+            return;
+        };
+        // A drop or a command since the change may have put the window there
+        // on purpose; only a move the display change made is undone.
+        if self.last_user_input.is_some_and(|input| input.elapsed() < since_churn) {
+            return;
+        }
+        // Not while a display record stands, nor for a window rift itself is
+        // moving: a plug or an unplug moves windows between displays on
+        // purpose, and the record's passes own those. What is left is a change
+        // of arrangement -- a display made main -- which no record covers.
+        if self.display_archive.record.is_some()
+            || self.display_archive.homing_destination(window).is_some()
         {
             return;
         }

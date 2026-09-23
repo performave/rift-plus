@@ -9414,6 +9414,80 @@ mod fullscreen_slots {
         assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
     }
 
+    /// A window a display change carries to another display is sent back as
+    /// its slot is taken, not only when something later asks for a restore.
+    /// A display made main moved a window to the other display's desktop,
+    /// rift tiled it there, and since it stayed visible nothing ever reported
+    /// it "ordered in" -- the send-back waiting on that never ran
+    /// (`become-main`).
+    #[test]
+    fn a_window_carried_across_displays_is_sent_back_as_its_slot_is_taken() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let (w, wsid) = (wids[1], wsids[1]);
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![elsewhere.get()]));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(500),
+        ));
+        sa::set_available(true);
+        let moves_before = sa::window_moves().len();
+
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+
+        let moves = sa::window_moves()[moves_before..].to_vec();
+        sa::set_available(false);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_window_spaces_override(wsid, None);
+        assert!(
+            moves.contains(&(wsid.as_u32(), space.get())),
+            "the window was left on the other display: {moves:?}"
+        );
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
+    }
+
+    /// But not a window the user moved after the change: a drop or a command
+    /// since then may have put it on the other display on purpose.
+    #[test]
+    fn a_window_the_user_moved_after_a_display_change_is_not_sent_back() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let (w, wsid) = (wids[1], wsids[1]);
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![elsewhere.get()]));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(3),
+        ));
+        reactor.handle_event(Event::MouseUp);
+        sa::set_available(true);
+        let moves_before = sa::window_moves().len();
+
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+
+        let moves = sa::window_moves()[moves_before..].to_vec();
+        sa::set_available(false);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_window_spaces_override(wsid, None);
+        assert!(
+            !moves.iter().any(|(id, _)| *id == wsid.as_u32()),
+            "a window the user moved was sent back: {moves:?}"
+        );
+    }
+
     /// A slot is used up only by a restore that put the window back. The
     /// "ordered in" report can come while the window is still in another
     /// desktop's tree -- aftercare has sent it home and it has not arrived --

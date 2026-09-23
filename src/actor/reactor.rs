@@ -649,6 +649,10 @@ pub struct Reactor {
     /// When the user last gave a layout command. A fullscreen slot's snapshot
     /// from before it would undo it; see `reinstate_fullscreen_slot`.
     pub(super) last_layout_command: Option<std::time::Instant>,
+    /// When the user last clicked or gave rift a command. A window a display
+    /// change carried to another display is sent back to its slot, but not
+    /// one the user may have moved since.
+    pub(super) last_user_input: Option<std::time::Instant>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -826,6 +830,7 @@ impl Reactor {
             destroyed_on_command: None,
             refusal_candidates: HashMap::default(),
             last_layout_command: None,
+            last_user_input: None,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -1811,6 +1816,9 @@ impl Reactor {
         // different virtual workspace.
         if matches!(event, Event::MouseUp | Event::MouseMoved(_) | Event::Command(_)) {
             self.refresh_quarantine_manager.suppress_auto_workspace_switch_until_input = false;
+        }
+        if matches!(event, Event::MouseUp | Event::Command(_)) {
+            self.last_user_input = Some(crate::sys::trace::now());
         }
 
         match event {
