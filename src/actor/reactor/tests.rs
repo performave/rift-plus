@@ -1691,6 +1691,12 @@ fn a_window_moved_as_a_whole_is_not_taken_for_a_resize() {
             .any(|e| matches!(e, LayoutEvent::WindowResized { .. })),
         "a window macOS moved as a whole was folded into the split ratios"
     );
+    assert_ne!(
+        reactor.drag_manager.skip_layout_for_window,
+        Some(wid),
+        "the window macOS moved is the one the arrange has to put back"
+    );
+    assert!(outcome.arrange.passes > 0);
 }
 
 /// The same window dragged by one edge is still a resize.

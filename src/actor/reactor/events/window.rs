@@ -554,6 +554,16 @@ pub fn handle_window_frame_changed(
                     "resize_ignored_relocation",
                     &(wid.idx.get(), new_frame.origin.x, new_frame.origin.y),
                 );
+                // And put the tile back. Every change nobody dragged marks its
+                // window to be left where it is by the arrange it causes --
+                // right for a resize, where the window is already the size the
+                // tree now gives it, and wrong here: this is the window that
+                // has to move. Left marked, it sat over its neighbours for as
+                // long as the churn held the next arrange back.
+                if drag.skip_layout_for_window == Some(wid) {
+                    drag.skip_layout_for_window = None;
+                }
+                outcome = outcome.with_arrange_passes(1);
             } else if entering {
                 // Keep layout state pristine while it covers the screen.
             } else if leaving {
