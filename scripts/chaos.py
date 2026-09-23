@@ -1955,6 +1955,16 @@ def main() -> int:
             print(f"  {n:28} {fn.doc}")
         return 0
 
+    if cmd == "normalize":
+        # The probe comes up wherever macOS last had it for this display set;
+        # one attached as main makes every scenario an attach-as-main. Put the
+        # menu bar back on the main display with the probe attached.
+        plug(); settle(4)
+        make_main(1); settle(3)
+        unplug(); settle(4)
+        print(sh(f"{DTOOL} list"))
+        return 0
+
     if cmd == "setup":
         spawn_windows()
         # Before anything is measured. An app restores its own saved window

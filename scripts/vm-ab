@@ -106,6 +106,7 @@ if [[ "$SA" != *"loaded and healthy"* ]]; then
         exit 2
     fi
 fi
+CHAOS_TIMEOUT=200 "$SC/vm-run" normalize >/dev/null 2>&1
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 "$SC/vm-ssh" "killall Safari TextEdit 2>/dev/null; sleep 4"
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
