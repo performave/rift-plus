@@ -10665,6 +10665,34 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// With no notice of the move at all: rift can learn that macOS carried a
+    /// window onto the arriving display only from the display change's own
+    /// refresh, so a report of the display set looks for such windows too.
+    #[test]
+    fn a_window_found_on_a_display_the_record_does_not_know_is_sent_back() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        let newcomer = SpaceId::new(90);
+        managed(vec![
+            ("test-display-0", vec![space1(), space2(), space2_extra()]),
+            ("test-display-other", vec![newcomer]),
+        ]);
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], newcomer);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let moves_before = sa::window_moves().len();
+        f.reactor.keep_record_windows_off_unknown_displays();
+        assert!(
+            sa::window_moves()[moves_before..].contains(&(survivor_wsid.as_u32(), space1().get())),
+            "a record window the window server has on the newcomer was left there: {:?}",
+            &sa::window_moves()[moves_before..]
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// The same window moved by the user once the change has settled is theirs.
     #[test]
     fn a_window_moved_onto_an_unknown_display_after_the_change_stays() {

@@ -2142,6 +2142,37 @@ impl Reactor {
     /// placement. Only while the window server is moving windows for the
     /// change, and only onto a desktop still listed; a window the user moves
     /// later fails the first test and stays where they put it.
+    /// The same, for every window of the record, asked of the window server.
+    /// A window macOS carries onto an arriving display does not always get a
+    /// notice of its own -- rift can learn of the move from the display
+    /// change's refresh alone -- so each report of a coherent display set
+    /// looks for them too.
+    pub(super) fn keep_record_windows_off_unknown_displays(&mut self) {
+        let Some(record) = self.display_archive.record.as_ref() else {
+            return;
+        };
+        if record.pass.is_some()
+            || !crate::sys::display_churn::since_windows_last_moved()
+                .is_some_and(|since| since < PLACEMENT_AFTER_CHURN)
+        {
+            return;
+        }
+        let wids: Vec<WindowId> =
+            record.windows.keys().chain(record.placed.keys()).copied().collect();
+        for wid in wids {
+            let Some(space) = self
+                .state
+                .windows
+                .window(wid)
+                .and_then(|state| state.info.sys_id)
+                .and_then(crate::sys::window_server::window_space)
+            else {
+                continue;
+            };
+            self.keep_record_window_off_an_unknown_display(wid, space);
+        }
+    }
+
     pub(super) fn keep_record_window_off_an_unknown_display(
         &mut self,
         wid: WindowId,

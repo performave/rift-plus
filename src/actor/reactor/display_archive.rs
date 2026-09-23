@@ -491,6 +491,7 @@ impl Reactor {
             if let Some(pre) = self.display_archive.pre_churn.as_mut() {
                 pre.pinned = false;
             }
+            self.keep_record_windows_off_unknown_displays();
             if self.display_archive.recheck_after_wake
                 && self
                     .display_archive
