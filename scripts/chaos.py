@@ -415,6 +415,9 @@ def reset_between_scenarios() -> str:
     # and handling it is part of what is being measured.
     restart_rift()
     notes.append("rift restarted")
+    fetched = fetch_windows_left_on_the_probe()
+    if fetched:
+        notes.append(f"fetched {fetched} window(s) back from the probe's desktops")
     gathered = gather_test_windows()
     if gathered:
         notes.append(f"gathered {gathered} window(s) onto one desktop")
@@ -455,6 +458,47 @@ def reset_between_scenarios() -> str:
     if retiled:
         notes.append(f"re-tiled {retiled}")
     return "; ".join(notes)
+
+
+def listed_test_windows() -> int:
+    return sum(1 for sid in all_space_ids(rift("displays") or [])
+               for w in rift("windows", "--space-id", str(sid)) or []
+               if w.get("app_name") in ("Safari", "TextEdit"))
+
+
+def fetch_windows_left_on_the_probe(expected: int = 5) -> int:
+    """Bring back windows macOS is holding on the unplugged probe's desktops.
+
+    A scenario that ends with a window on the external -- `straggler-after-
+    return` does, on purpose -- leaves it on a desktop macOS keeps for the
+    display while it is away and lists under no display. A running rift's
+    record knows where it is; the rift the reset has just restarted does not,
+    so the next scenario started one window short ("5 window(s) -> 4") and
+    failed on the window turning up when the probe was plugged. Plug the probe,
+    move its windows to the main display, unplug.
+    """
+    if listed_test_windows() >= expected:
+        return 0
+    plug(); settle(4)
+    ds = rift("displays") or []
+    main = next((d for d in ds if (d.get("frame") or {}).get("origin", {}).get("x") in (0, 0.0, 56, 56.0)), None)
+    if main is None:
+        unplug(quiet=True); settle(2)
+        return 0
+    moved = 0
+    for d in ds:
+        if d["uuid"] == main["uuid"]:
+            continue
+        for sid in (d.get("space_ids") or []):
+            for w in rift("windows", "--space-id", str(sid)) or []:
+                if w.get("app_name") not in ("Safari", "TextEdit"):
+                    continue
+                sh(f"{CLI} execute display move-window --uuid {main['uuid']} "
+                   f"--window-id {w['id']['idx']}")
+                time.sleep(1)
+                moved += 1
+    unplug(); settle(4)
+    return moved
 
 
 def gather_test_windows() -> int:
