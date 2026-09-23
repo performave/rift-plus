@@ -1145,12 +1145,20 @@ class Sampler:
     user watches happen. This samples throughout instead, so a transient
     overlap or a window thrown off-screen is caught even when the final state
     is clean.
+
+    Each overlapping pair is followed as an episode, from the first sample
+    that shows it to the first that does not, so a run reports how long every
+    overlap lasted and not only that one was seen.
     """
+
+    INTERVAL = 0.1
 
     def __init__(self, label: str):
         self.label = label
         self.worst: list = []
         self.samples = 0
+        self.episodes: list = []   # (description, seconds)
+        self._open: dict = {}      # pair -> (first seen, description)
         self._stop = False
         self._thread = None
 
@@ -1169,15 +1177,13 @@ class Sampler:
                 ws = rift("windows") or []
                 # Where the windows are, from the window server -- not rift's
                 # `frame`, which is rift's record and keeps a window's last
-                # reported frame until the app answers rift's next write. A
-                # window macOS moved and rift put back in the same millisecond
-                # read as overlapping for as long as the app took to answer,
-                # which is the app's latency, not something on screen.
+                # reported frame until the app answers rift's next write.
                 live = {}
                 for line in sh(f"{DTOOL} frames").splitlines():
                     parts = line.split()
                     if len(parts) == 5:
                         live[parts[0]] = tuple(int(float(v)) for v in parts[1:])
+                now = time.time()
                 self.samples += 1
                 rects = []
                 for w in ws:
@@ -1186,24 +1192,47 @@ class Sampler:
                     frame = live.get(str(w.get("window_server_id")))
                     if frame is None:
                         continue
-                    rects.append((w.get("app_name") or "?", *frame))
+                    rects.append((str(w.get("window_server_id")), w.get("app_name") or "?", *frame))
+                seen = {}
                 for i in range(len(rects)):
-                    an, ax, ay, aw, ah = rects[i]
+                    ia, an, ax, ay, aw, ah = rects[i]
                     if aw <= 1 or ah <= 1:
-                        self._note(f"{an} degenerate {aw}x{ah}")
+                        seen[(ia,)] = f"{an} degenerate {aw}x{ah}"
                     for j in range(i + 1, len(rects)):
-                        bn, bx, by, bw, bh = rects[j]
+                        ib, bn, bx, by, bw, bh = rects[j]
                         ox = min(ax + aw, bx + bw) - max(ax, bx)
                         oy = min(ay + ah, by + bh) - max(ay, by)
                         if ox > 2 and oy > 2:
-                            self._note(f"{an} and {bn} overlap by {ox}x{oy}px")
+                            seen[tuple(sorted((ia, ib)))] = f"{an} and {bn} overlap by {ox}x{oy}px"
+                for key, text in seen.items():
+                    self._note(text)
+                    if key not in self._open:
+                        self._open[key] = (now, text)
+                for key in [k for k in self._open if k not in seen]:
+                    first, text = self._open.pop(key)
+                    self.episodes.append((text, now - first))
             except Exception:
                 pass
-            time.sleep(0.5)
+            time.sleep(self.INTERVAL)
 
     def _note(self, text: str) -> None:
         if text not in self.worst:
             self.worst.append(text)
+
+    def longest(self) -> float:
+        return max((d for _, d in self.episodes), default=0.0)
+
+    # How long an overlap may last before it is rift's. Measured on v25 over
+    # five runs of `transient-glitch`, every episode was over within 0.64s:
+    # macOS moving windows to where they last were on an arriving display, a
+    # beat before rift hears of it, and apps taking a couple of hundred ms to
+    # apply a new layout. Neither is anything rift can shorten safely (writing
+    # during the display change moved a window onto the wrong display), and
+    # any overlap still there after a second is rift leaving a layout wrong.
+    PERSIST = 1.0
+
+    def persisted(self) -> list:
+        return [(t, d) for t, d in self.episodes if d >= self.PERSIST]
 
     def __enter__(self):
         import threading
@@ -1215,6 +1244,10 @@ class Sampler:
         self._stop = True
         if self._thread:
             self._thread.join(timeout=5)
+        now = time.time()
+        for first, text in self._open.values():
+            self.episodes.append((text + " (still at the end)", now - first))
+        self._open.clear()
         return False
 
 
@@ -1508,10 +1541,15 @@ def s_transient(base):
         unplug(); settle()
         plug(); settle()
         unplug(); settle()
-    if sampler.worst:
-        raise Violation(f"transient glitch(es) seen in {sampler.samples} samples "
-                        f"mid-churn, even though the settled state may be fine:\n      "
-                        + "\n      ".join(sampler.worst[:3]))
+    for text, secs in sampler.episodes:
+        print(f"      overlap for {secs:.2f}s: {text}", flush=True)
+    stuck = sampler.persisted()
+    if stuck:
+        raise Violation(f"overlap(s) lasting {Sampler.PERSIST:.0f}s or more in "
+                        f"{sampler.samples} samples mid-churn:\n      "
+                        + "\n      ".join(f"{t} for {d:.2f}s" for t, d in stuck[:3]))
+    print(f"      {len(sampler.episodes)} overlap episode(s), longest "
+          f"{sampler.longest():.2f}s, none past {Sampler.PERSIST:.0f}s", flush=True)
 
 
 @scenario("native-fullscreen-across-churn",
@@ -1822,9 +1860,12 @@ def s_straggler(base):
         if before_main:
             make_main(int(before_main))
             settle(2)
-    if sampler.worst:
-        raise Violation("straggler-after-return: transient breakage mid-return:\n      "
-                        + "\n      ".join(sampler.worst[:2]))
+    # The same bar as `transient-glitch`: what outlives the churn is rift's.
+    stuck = sampler.persisted()
+    if stuck:
+        raise Violation("straggler-after-return: breakage mid-return lasting "
+                        f"{Sampler.PERSIST:.0f}s or more:\n      "
+                        + "\n      ".join(f"{t} for {d:.2f}s" for t, d in stuck[:2]))
 
 
 @scenario("long-absence", doc="stay away past GIVE_UP_ON_DISPLAY (120s)")
