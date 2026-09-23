@@ -2228,6 +2228,17 @@ impl Reactor {
                 // Whatever else this report means, the window is this size
                 // now, so no recorded minimum may claim it cannot be.
                 self.layout_manager.layout_engine.relax_observed_min_size(wid, new_frame.size);
+                // Including the one the app declared: kept as it was, letting
+                // go of a learnt minimum at a press rebuilt the constraint from
+                // it and put the stale figure straight back.
+                if let Some(window) = self.state.windows.window_mut(wid)
+                    && let Some(declared) = window.info.min_size.as_mut()
+                    && new_frame.size.width > 0.0
+                    && new_frame.size.height > 0.0
+                {
+                    declared.width = declared.width.min(new_frame.size.width);
+                    declared.height = declared.height.min(new_frame.size.height);
+                }
                 // And by the same token: a window that has changed size is not
                 // the fixed-size window it was observed to be, whatever the
                 // accessibility API said while it was still starting up.

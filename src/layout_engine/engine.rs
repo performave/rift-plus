@@ -4038,7 +4038,27 @@ impl LayoutEngine {
     /// A window seen at `size` can evidently be that size, so a recorded
     /// minimum above it was wrong — an app's minimum can change with its
     /// content — and comes down to match.
+    ///
+    /// The same holds for the minimum the app declared. rift reads that once,
+    /// when it finds the window, and an app whose minimum later drops -- its
+    /// content changed, or the figure was from a layout it was still building
+    /// -- pinned the window to it for good: the layout never asks for less,
+    /// so nothing corrected it. A window reported smaller than it is the
+    /// evidence, so the constraint comes down to what was seen. Only on that
+    /// evidence: taking the floor away wholesale let the layout hand windows
+    /// slots their apps refused, and they overlapped.
     pub fn relax_observed_min_size(&mut self, window: WindowId, size: CGSize) {
+        if size.width > 0.0
+            && size.height > 0.0
+            && let Some(constraints) = self.window_layout_constraints.get_mut(&window)
+        {
+            if size.width + 0.5 < constraints.min_width {
+                constraints.min_width = size.width;
+            }
+            if size.height + 0.5 < constraints.min_height {
+                constraints.min_height = size.height;
+            }
+        }
         let Some(entry) = self.observed_min_sizes.get_mut(&window) else {
             return;
         };
@@ -4475,6 +4495,33 @@ mod tests {
             engine.window_layout_constraints.get(&neighbour).unwrap().min_width,
             0.0,
         );
+    }
+
+    /// A declared minimum the window is seen below was wrong, and comes down to
+    /// what was seen; one it is only seen at stays.
+    #[test]
+    fn a_window_seen_below_its_declared_minimum_lowers_it() {
+        let mut engine = test_engine();
+        let wid = WindowId::new(1, 1);
+        engine.window_layout_constraints.insert(wid, WindowLayoutConstraints {
+            is_resizable: true,
+            min_width: 500.0,
+            min_height: 300.0,
+            ..WindowLayoutConstraints::default()
+        });
+
+        engine.relax_observed_min_size(wid, CGSize::new(500.0, 600.0));
+        let kept = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!((kept.min_width, kept.min_height), (500.0, 300.0));
+
+        engine.relax_observed_min_size(wid, CGSize::new(380.0, 600.0));
+        let lowered = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!((lowered.min_width, lowered.min_height), (380.0, 300.0));
+
+        // A report with no size says nothing about what the window can be.
+        engine.relax_observed_min_size(wid, CGSize::new(0.0, 0.0));
+        let same = engine.window_layout_constraints.get(&wid).unwrap();
+        assert_eq!((same.min_width, same.min_height), (380.0, 300.0));
     }
 
     /// A learnt minimum is self-reinforcing. The layout stops asking for less

@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A stale minimum size no longer pins a window.** rift read the minimum an
+  app declares once, when it found the window, and a minimum that later
+  dropped held the window at the old figure for good, because the layout never
+  asked for less. A window seen smaller than its minimum now lowers it to what
+  was seen.
 - **A modifier-drag resize no longer moves the window the opposite way.** A
   press in the half of a tiled window next to the screen edge picked that
   edge, which has nothing to trade width with, so the layout took the change
