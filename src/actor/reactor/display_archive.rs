@@ -58,6 +58,10 @@ const PRE_CHURN_TTL: Duration = Duration::from_secs(10);
 /// last one took describes a state that is no longer the one before this one.
 const CHURN_BURST_GAP: Duration = Duration::from_secs(3);
 
+/// How long a window sent back off an unknown display counts as on its way
+/// home -- long enough for the window server to report it arriving.
+const KEPT_OFF_IN_FLIGHT: Duration = Duration::from_secs(10);
+
 /// How long after the window server last moved windows for a display change
 /// a desktop going missing is still its doing rather than the user's.
 ///
@@ -86,6 +90,9 @@ pub(super) struct DisplayArchive {
     /// Where the last return decided each window belonged, kept for the few
     /// seconds the window server may still be moving them. See `AFTERCARE`.
     pub(super) aftercare: Option<super::display_record::Aftercare>,
+    /// Windows a standing record sent back off a display it does not know,
+    /// with where and when. See `keep_record_window_off_an_unknown_display`.
+    pub(super) kept_off: HashMap<WindowId, (SpaceId, Instant)>,
     /// The displays as the window server last reported them whole — every
     /// screen showing a desktop, every managed display one of the screens.
     /// Mid-reshuffle it reports neither: a screen with no desktop, or the
@@ -203,6 +210,12 @@ impl DisplayArchive {
             .find_map(|homing| homing.waiting.get(&wid).copied())
             .or_else(|| self.record.as_ref().and_then(|record| record.destination(wid)))
             .or_else(|| self.aftercare.as_ref().and_then(|aftercare| aftercare.destination(wid)))
+            .or_else(|| {
+                self.kept_off
+                    .get(&wid)
+                    .filter(|(_, at)| at.elapsed() <= KEPT_OFF_IN_FLIGHT)
+                    .map(|(space, _)| *space)
+            })
     }
 
     /// A stay-behind archive is only actionable once the display it waits

@@ -2242,6 +2242,10 @@ impl Reactor {
             if let Some(record) = self.display_archive.record.as_mut() {
                 record.own_moves.insert(wid);
             }
+            // On its way home, for everything that asks: its leaving the
+            // desktop it was carried to must not replace the slot it is going
+            // back to, as it did before this was registered.
+            self.display_archive.kept_off.insert(wid, (home, crate::sys::trace::now()));
             self.note_window_sent_to_space(wsid);
             info!(
                 ?wid,

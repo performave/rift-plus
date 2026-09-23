@@ -10911,6 +10911,12 @@ mod display_archive {
             "the window macOS carried onto the newcomer was not sent back: {:?}",
             &sa::window_moves()[moves_before..]
         );
+        assert_eq!(
+            f.reactor.display_archive.homing_destination(f.survivor),
+            Some(space1()),
+            "the send is not known to be on its way home, so leaving the newcomer's \
+             desktop replaces the slot it is going back to"
+        );
         spaces_cleanup(&f, &[]);
     }
 
