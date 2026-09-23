@@ -405,6 +405,16 @@ def reset_between_scenarios() -> str:
     notes = []
     unplug(quiet=True)
     settle(2)
+    # A fresh rift. The unplug above leaves a display record standing, and the
+    # next scenario's first plug is then a return that puts back whatever the
+    # last scenario left -- a window it moved to the external went back to it,
+    # out of the stack the next scenario had just built round it, and
+    # `stack-across-churn` failed on another scenario's residue. The layout
+    # file goes too, or the restart would restore the same state. macOS keeps
+    # its own memory of which display a window was on; that is not cleared,
+    # and handling it is part of what is being measured.
+    restart_rift()
+    notes.append("rift restarted")
     # Unconditionally, and it is worth the ten seconds. A fullscreen window on
     # a space nothing is showing cannot be detected at all: rift drops it from
     # `query windows` along with the rest of that space, so neither the shown-
@@ -442,6 +452,24 @@ def reset_between_scenarios() -> str:
     if retiled:
         notes.append(f"re-tiled {retiled}")
     return "; ".join(notes)
+
+
+def restart_rift() -> None:
+    """Restart rift on a clean layout and wait until it answers again."""
+    sh(f"launchctl bootout gui/{UID}/rift-harness 2>/dev/null; true", timeout=30)
+    time.sleep(2)
+    try:
+        os.remove(LAYOUT)
+    except OSError:
+        pass
+    sh(f"launchctl bootstrap gui/{UID} {HOME}/Library/LaunchAgents/rift-harness.plist "
+       "2>/dev/null; true", timeout=30)
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        time.sleep(1)
+        if rift("displays"):
+            break
+    settle(3)
 
 
 def show_the_desktop_holding_the_windows() -> list:
