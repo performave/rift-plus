@@ -864,6 +864,59 @@ right after it happens (`rift execute trace dump <path>`) would settle it.
 six plug/unplug cycles, zero aftercare sends, every window in a tree (v24). The
 one-window-per-replug resend is gone.
 
+## Closing the battery out, and the resize that went the wrong way (2026-09-23)
+
+Every fix below was read from a battery trace or from Eric's own flight
+recorder, and each has a unit test that fails without it.
+
+| Commit | Fix | Seen as |
+|---|---|---|
+| `fe716aa` | a restore that could not place the window keeps its slot | `plain-replug`: the last two windows swapped |
+| `90da556` | the window server wins over a flickering appearance notice mid-churn | a window filed on a desktop it never reached |
+| `c1db1b4` | a resize stays on the books until the window reaches the frame asked for | Safari straddling the seam after a refused write |
+| `4f77e98` | a window sent back off an unknown display counts as on its way home | its slot replaced mid-trip |
+| `36acfef` | a window split in beside a fullscreen one leaves it fullscreen | `fullscreen-across-churn` |
+| `ec411f4`, `b69c16a` | a window a display change carries to another display is sent back to its slot, as the slot is taken -- not if the user moved it since | `become-main`: a window tiled on the old main display |
+| `05ff0ed` | a write unanswered for a second is sent again, not skipped as requested | `fast-churn`: windows stuck mid-cascade |
+| `ed2fba1` | ... including onto an arriving display once the arrival's repair is done | `plain-replug`: a laptop window macOS moved to the external became a stand-in desktop at every unplug (workspace leak 1 -> 2) |
+| `b6a738c` | a modifier-drag press beside the screen edge takes the edge that can move | Eric: "resizes in the opposite direction of my drag" |
+
+### Harness changes that move the score
+
+- `transient-glitch` fails only an overlap lasting 1 s or more
+  (`Sampler.PERSIST`) and prints every episode. Measured across five runs,
+  every overlap was over within 0.64 s: macOS moving windows to their
+  remembered place a beat before rift hears of the display, then apps taking a
+  few hundred ms to apply the layout. Writing sooner is what `d4ee368` reverted.
+- Windows under a stack, nested splits included, are exempt from the overlap
+  check; the reset fetches windows left on the unplugged probe; `normalize`
+  puts the menu bar back on the main display before each side.
+
+### The resize direction
+
+Eric's recorder, 60 presses on one window at a click rate: every other press
+landed in the right half of the rightmost window, picked the right edge, and
+the layout -- with nothing to the right to trade with -- took the drag out of
+the left edge, reversed. Pointer left 327 px, left edge right 327 px. The
+earlier ratchet fixes (stale press base, clamped aim) were real but this was
+the half of the complaint they could not touch. `resize-spam.py` pressed at the
+window's exact middle and measured width drift, so it could never see it;
+`scripts/resize-direction-test.py` presses on the screen side of each end
+window and checks which edge moved. Same TextEdit row, same presses: v29
+moved the edge the wrong way on all four legs (150 px each), v30 on none, and
+spam at 8/s nets zero on both.
+
+### Setup now gives the same five windows every time
+
+Safari restores however many windows it last had, so the baseline was four
+windows on one side of an A/B and five on the other. Setup tops Safari up to
+two with ⌘N (`dtool key 45 cmd`; Apple Events hang in the guest). And
+`tile_all` read the active display only, and its toggle acts on whatever is
+focused -- which lands a beat after a focus across displays -- so with the
+probe attached it tiled two of five, or untiled one window while "tiling"
+another. It now walks every shown desktop, checks each toggle took, and goes
+round until nothing is left floating.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in

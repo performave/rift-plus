@@ -349,6 +349,21 @@ def current_displaced_mode() -> str:
 
 # ------------------------------------------------------------------- windows
 
+def shown_windows() -> list:
+    """Every window on a desktop some display is showing.
+
+    Unfiltered, `query windows` answers for the active display only. With the
+    probe attached and active, tiling from it left the laptop's windows
+    floating -- setup came back with two windows tiled instead of five.
+    """
+    out = []
+    for d in rift("displays") or []:
+        sid = d.get("space")
+        if sid is not None:
+            out.extend(rift("windows", "--space-id", str(sid)) or [])
+    return out
+
+
 def spawn_windows() -> None:
     for i in (1, 2, 3):
         with open(f"/tmp/doc{i}.txt", "w") as fh:
@@ -357,6 +372,17 @@ def spawn_windows() -> None:
     for app in TEST_APPS[1:]:
         sh(f'open -a "{app}"')
     time.sleep(10)
+    # Safari opens with however many windows it had when it last quit, so the
+    # baseline came out at four windows on one run and five on the next, and
+    # two sides of an A/B were measuring different layouts. Top it up to two.
+    for _ in range(3):
+        safari = [w for w in shown_windows() if w.get("app_name") == "Safari"]
+        if len(safari) >= 2 or not safari:
+            break
+        focus(safari[0])
+        time.sleep(0.5)
+        sh(f"{DTOOL} key 45 cmd")
+        time.sleep(3)
 
 
 def scenario_start(name: str, base: dict) -> dict:
@@ -664,18 +690,35 @@ def focus(w: dict) -> bool:
 def tile_all() -> int:
     """Tile every floating window. The config is tile-on-demand (its catch-all
     rule floats everything), so a layout only exists if we build one."""
-    tiled = 0
-    for w in (rift("windows") or []):
-        if not w.get("is_floating"):
-            continue
-        if not focus(w):
-            continue
-        time.sleep(0.25)
-        rift_exec("window toggle-float")
-        time.sleep(0.25)
-        tiled += 1
+    # The toggle acts on whatever is focused, and focus crossing to another
+    # display lands a beat after the command reports success: a toggle meant
+    # for a Safari window on the probe untiled a TextEdit on the laptop, the
+    # next toggle tiled it again, and setup counted five while both Safari
+    # windows stayed floating. So each toggle is checked, and a window is
+    # only counted once rift reports it tiled.
+    def floating_now(w):
+        ident = w.get("id")
+        return any(o.get("id") == ident and o.get("is_floating") for o in shown_windows())
+
+    # A misdirected toggle can also untile a window this loop has already
+    # passed, so go round again until nothing is left floating.
+    done = set()
+    for _pass in range(3):
+        left = [w for w in shown_windows() if w.get("is_floating")]
+        if not left:
+            break
+        for w in left:
+            for _ in range(3):
+                if not focus(w):
+                    break
+                time.sleep(0.6)
+                rift_exec("window toggle-float")
+                time.sleep(0.4)
+                if not floating_now(w):
+                    done.add(json.dumps(w.get("id"), sort_keys=True))
+                    break
     time.sleep(1.5)
-    return tiled
+    return len(done)
 
 
 # ----------------------------------------------------------------- snapshots

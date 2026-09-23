@@ -128,9 +128,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
         // (53) closes Mission Control when it is open and does nothing when it
         // is not, which is the only way to put it in a known state: opening
         // it again toggles it, and nothing reports whether it is open.
+        // An optional `cmd` holds Command with it: ⌘N is how the harness
+        // asks an app for a window, since Apple Events hang in the guest.
         CGKeyCode code = (CGKeyCode)atoi(argv[2]);
         CGEventRef down = CGEventCreateKeyboardEvent(NULL, code, true);
         CGEventRef up = CGEventCreateKeyboardEvent(NULL, code, false);
+        if (argc > 3 && !strcmp(argv[3], "cmd")) {
+            CGEventSetFlags(down, kCGEventFlagMaskCommand);
+            CGEventSetFlags(up, kCGEventFlagMaskCommand);
+        }
         CGEventPost(kCGHIDEventTap, down);
         usleep(30000);
         CGEventPost(kCGHIDEventTap, up);
