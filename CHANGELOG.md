@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Plugging a different monitor into the same port keeps your windows
+  put.** While the display that left is away, macOS can carry a window it
+  remembers on the newcomer onto it the moment it attaches, and rift tiled it
+  there alone. The departure record still has the window on a desktop that is
+  here, so rift now sends it back -- only while macOS is moving windows for the
+  change; a window you move there afterwards stays.
 - **A window leaving native fullscreen finds its slot after a display
   change.** The slot waits on the desktop the window left, and a display
   change can give that desktop a new id while the window is away. The slot

@@ -2132,6 +2132,80 @@ impl Reactor {
         }
     }
 
+    /// A display the standing record does not know has arrived -- another
+    /// monitor on the same port while the recorded one is away -- and the
+    /// window server has carried one of the record's windows onto it. macOS
+    /// does that for a window it remembers on that display, and the record,
+    /// which has the window on a desktop still here, is the better answer:
+    /// the window was on the laptop a moment ago and nobody moved it. Send it
+    /// back, as rift's own move, so it is not then filed as the user's
+    /// placement. Only while the window server is moving windows for the
+    /// change, and only onto a desktop still listed; a window the user moves
+    /// later fails the first test and stays where they put it.
+    pub(super) fn keep_record_window_off_an_unknown_display(
+        &mut self,
+        wid: WindowId,
+        space: SpaceId,
+    ) {
+        let Some(record) = self.display_archive.record.as_ref() else {
+            return;
+        };
+        if record.pass.is_some() {
+            return;
+        }
+        if !crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < PLACEMENT_AFTER_CHURN)
+        {
+            return;
+        }
+        let now = self.display_space_ids_now();
+        let Some(owner) = now
+            .iter()
+            .find(|(_, spaces)| spaces.contains(&space))
+            .map(|(uuid, _)| uuid.clone())
+        else {
+            return;
+        };
+        if record.displays.iter().any(|d| d.uuid == owner) {
+            return;
+        }
+        let Some(home) = record.desired(wid) else {
+            return;
+        };
+        if home == space || !now.values().flatten().any(|s| *s == home) {
+            return;
+        }
+        let Some(wsid) = self.state.windows.window(wid).and_then(|state| state.info.sys_id) else {
+            return;
+        };
+        if !scripting_addition::is_available() {
+            warn!(
+                ?wid,
+                landed = space.get(),
+                home = home.get(),
+                "A window was carried onto a display the record does not know; sending it back needs the scripting addition"
+            );
+            return;
+        }
+        if scripting_addition::move_window_to_space(wsid.as_u32(), home.get()) {
+            if let Some(record) = self.display_archive.record.as_mut() {
+                record.own_moves.insert(wid);
+            }
+            self.note_window_sent_to_space(wsid);
+            info!(
+                ?wid,
+                landed = space.get(),
+                display = %owner,
+                home = home.get(),
+                "The window server carried a window onto a display the record does not know; sent it back"
+            );
+            crate::sys::trace::act(
+                "record_kept_off_unknown",
+                &(wid.idx.get(), space.get(), home.get()),
+            );
+        }
+    }
+
     /// Restores the pass's trees. After the return, the record is done and
     /// the desktops made at departure whose windows went back — empty by
     /// now — are destroyed once nothing shows them.

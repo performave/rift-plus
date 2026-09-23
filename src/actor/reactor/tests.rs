@@ -10630,6 +10630,61 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// Another monitor on the same port while the recorded one is away: macOS
+    /// carries a window it remembers on the newcomer onto it, and the record,
+    /// which has the window on a desktop still here, puts it back. In the VM
+    /// a TextEdit went from the laptop's desktop to the second monitor's the
+    /// instant it attached, and was tiled there alone (`different-monitor`).
+    #[test]
+    fn a_window_carried_onto_a_display_the_record_does_not_know_is_sent_back() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        assert!(
+            f.reactor.display_archive.record.is_some(),
+            "the departure is recorded"
+        );
+
+        let newcomer = SpaceId::new(90);
+        managed(vec![
+            ("test-display-0", vec![space1(), space2(), space2_extra()]),
+            ("test-display-other", vec![newcomer]),
+        ]);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        let moves_before = sa::window_moves().len();
+        f.reactor.keep_record_window_off_an_unknown_display(f.survivor, newcomer);
+
+        assert!(
+            sa::window_moves()[moves_before..].contains(&(survivor_wsid.as_u32(), space1().get())),
+            "the window macOS carried onto the newcomer was not sent back: {:?}",
+            &sa::window_moves()[moves_before..]
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// The same window moved by the user once the change has settled is theirs.
+    #[test]
+    fn a_window_moved_onto_an_unknown_display_after_the_change_stays() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        let newcomer = SpaceId::new(90);
+        managed(vec![
+            ("test-display-0", vec![space1(), space2(), space2_extra()]),
+            ("test-display-other", vec![newcomer]),
+        ]);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(120),
+        ));
+        let moves_before = sa::window_moves().len();
+        f.reactor.keep_record_window_off_an_unknown_display(f.survivor, newcomer);
+        assert!(sa::window_moves()[moves_before..].is_empty());
+        spaces_cleanup(&f, &[]);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees
