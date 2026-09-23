@@ -549,7 +549,13 @@ pub fn handle_window_frame_changed(
                 new_frame.origin.y,
                 new_frame.max().y,
             ) || (!screens.is_empty() && off_screen);
-            if relocated {
+            if entering {
+                // Keep layout state pristine while it covers the screen.
+            } else if leaving {
+                // Leaving self-fullscreen: snap the window back into its
+                // slot instead of deriving new ratios from the restored frame.
+                outcome = outcome.with_arrange_passes(1);
+            } else if relocated {
                 crate::sys::trace::act(
                     "resize_ignored_relocation",
                     &(wid.idx.get(), new_frame.origin.x, new_frame.origin.y),
@@ -563,12 +569,6 @@ pub fn handle_window_frame_changed(
                 if drag.skip_layout_for_window == Some(wid) {
                     drag.skip_layout_for_window = None;
                 }
-                outcome = outcome.with_arrange_passes(1);
-            } else if entering {
-                // Keep layout state pristine while it covers the screen.
-            } else if leaving {
-                // Leaving self-fullscreen: snap the window back into its
-                // slot instead of deriving new ratios from the restored frame.
                 outcome = outcome.with_arrange_passes(1);
             } else {
                 outcome.arrange.is_resize = true;

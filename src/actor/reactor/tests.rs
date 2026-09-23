@@ -1699,6 +1699,33 @@ fn a_window_moved_as_a_whole_is_not_taken_for_a_resize() {
     assert!(outcome.arrange.passes > 0);
 }
 
+/// A window growing to cover its screen is going fullscreen, even though both
+/// of its edges move and so it looks moved as a whole. Checked the other way
+/// round, the relocation branch put the tile back over the app's own
+/// fullscreen (`fullscreen-across-churn` in the VM).
+#[test]
+fn a_window_going_fullscreen_is_not_put_back_as_a_relocation() {
+    let (mut reactor, wid, _wsid, _space1, _space2, screen) = reactor_with_window_on_space1();
+    let tile = CGRect::new(CGPoint::new(725., 5.), CGSize::new(710., 890.));
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic = tile;
+
+    let _ = reactor
+        .dispatch_workflow(Event::WindowFrameChanged(
+            wid,
+            screen,
+            None,
+            Requested(false),
+            Some(MouseState::Up),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        reactor.drag_manager.skip_layout_for_window,
+        Some(wid),
+        "a window going fullscreen was queued to be put back into its tile"
+    );
+}
+
 /// The same window dragged by one edge is still a resize.
 #[test]
 fn a_window_resized_by_one_edge_is_still_a_resize() {
