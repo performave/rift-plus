@@ -15,6 +15,10 @@ use crate::sys::screen::SpaceId;
 use crate::sys::timer::Timer;
 use crate::sys::window_server::WindowServerId;
 
+/// How long a write stays "already requested" without an answer. Apps answer
+/// in well under this; one that has not by then is not going to.
+const UNANSWERED_WRITE: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub type Sender = mpsc::UnboundedSender<Message>;
 pub type Receiver = mpsc::UnboundedReceiver<Message>;
 
@@ -210,9 +214,17 @@ impl AnimationManager {
                             );
                         }
                         let wsid = window.info.sys_id;
+                        // Already requested only while an answer can still
+                        // be coming. A write the app never answered -- macOS
+                        // swallows some in the middle of a display change --
+                        // otherwise stayed "requested" for good, and the
+                        // window was left wherever macOS had put it.
                         if let Some(wsid) = wsid
                             && let Some(pending) =
                                 reactor.transaction_manager.get_target_frame(wsid)
+                            && reactor
+                                .transaction_manager
+                                .target_sent_within(wsid, UNANSWERED_WRITE)
                         {
                             if pending.same_as(target_frame) {
                                 trace!(?wid, ?target_frame, "Skipping redundant layout request");

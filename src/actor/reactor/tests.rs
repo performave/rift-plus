@@ -1203,6 +1203,54 @@ fn an_appearance_outside_a_churn_is_still_a_move() {
     assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space2));
 }
 
+/// A write the app never answered does not block the next one. With a resize
+/// kept on the books until its window reaches the frame, a write macOS
+/// swallowed mid-churn stayed "already requested" for good: every arrange
+/// after it skipped the window as redundant, and two TextEdits sat at the
+/// cascaded frames macOS had put them in, over each other (`fast-churn`).
+#[test]
+fn an_unanswered_write_is_sent_again() {
+    let (mut reactor, wid, wsid, space1, _space2, _frame) = reactor_with_window_on_space1();
+    let (app_tx, mut app_rx) = crate::actor::channel();
+    reactor.app_manager.apps.get_mut(&wid.pid).unwrap().handle =
+        crate::actor::app::AppThreadHandle::new_for_test(app_tx);
+    reactor.send_layout_event(crate::actor::reactor::LayoutEvent::WindowAdded(space1, wid));
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic =
+        CGRect::new(CGPoint::new(337., 125.), CGSize::new(673., 439.));
+    let _ = LayoutManager::update_layout(&mut reactor, false, false, Some(space1));
+    let first: Vec<CGRect> = std::iter::from_fn(|| app_rx.try_recv().ok())
+        .filter_map(|(_, request)| match request {
+            Request::SetWindowFrame(w, frame, _, _) if w == wid => Some(frame),
+            Request::SetBatchWindowFrame(frames, _, _) => {
+                frames.into_iter().find(|(w, _)| *w == wid).map(|(_, frame)| frame)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !first.is_empty(),
+        "the first arrange must write, or this tests nothing"
+    );
+
+    // No answer; discovery reads the window where macOS left it; a while
+    // later another arrange.
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic =
+        CGRect::new(CGPoint::new(337., 125.), CGSize::new(673., 439.));
+    reactor
+        .transaction_manager
+        .backdate_target(wsid, std::time::Duration::from_secs(2));
+    let _ = LayoutManager::update_layout(&mut reactor, false, false, Some(space1));
+    let again = std::iter::from_fn(|| app_rx.try_recv().ok()).any(|(_, request)| match request {
+        Request::SetWindowFrame(w, _, _, _) => w == wid,
+        Request::SetBatchWindowFrame(frames, _, _) => frames.iter().any(|(w, _)| *w == wid),
+        _ => false,
+    });
+    assert!(
+        again,
+        "a write left unanswered for two seconds was skipped as already requested"
+    );
+}
+
 /// A resize in flight on the window's own desktop is not completed by the
 /// window server confirming the window is on that desktop. Every visibility
 /// refresh does, and wiping the write then took the refusal with it: Safari,

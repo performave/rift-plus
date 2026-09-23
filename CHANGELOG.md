@@ -53,7 +53,9 @@ Entries describe this fork's changes relative to
   checked against, so a window answering with its minimum instead of the size
   asked was accepted as it was -- Safari stayed 574 wide in a 460 slot, across
   the edge of its display, the shape of a window left over the seam. A resize
-  stays on the books until its window reaches the frame asked for.
+  stays on the books until its window reaches the frame asked for -- or for a
+  second without an answer, after which it is sent again rather than left
+  "already requested" for good.
 - **A window stays with the others when a display takes over as main.** While
   macOS moves windows for a display change, its notices of which desktop a
   window is on flicker; one said Safari had moved to another desktop while the

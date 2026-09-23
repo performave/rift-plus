@@ -64,6 +64,11 @@ impl TransactionManager {
     /// Whether a target is pending for the window and was sent within
     /// `within` — a write still to be believed over the window server's
     /// report of where the window is.
+    #[cfg(test)]
+    pub fn backdate_target(&self, wsid: WindowServerId, by: std::time::Duration) {
+        self.store.backdate_target(&wsid, by);
+    }
+
     pub fn target_sent_within(&self, wsid: WindowServerId, within: std::time::Duration) -> bool {
         self.store.target_age(&wsid).is_some_and(|age| age <= within)
     }

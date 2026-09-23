@@ -22,9 +22,7 @@ pub struct TxRecord {
 pub struct WindowTxStore(Arc<DashMap<WindowServerId, TxRecord>>);
 
 impl WindowTxStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     pub fn insert(&self, id: WindowServerId, txid: TransactionId, target: CGRect) {
         let record = TxRecord {
@@ -48,13 +46,20 @@ impl WindowTxStore {
         Some(crate::sys::trace::now().saturating_duration_since(sent_at))
     }
 
+    #[cfg(test)]
+    pub fn backdate_target(&self, id: &WindowServerId, by: std::time::Duration) {
+        if let Some(mut record) = self.0.get_mut(id)
+            && let Some(sent_at) = record.sent_at
+        {
+            record.sent_at = Some(sent_at - by);
+        }
+    }
+
     pub fn get(&self, id: &WindowServerId) -> Option<TxRecord> {
         self.0.get(id).map(|entry| *entry)
     }
 
-    pub fn remove(&self, id: &WindowServerId) {
-        self.0.remove(id);
-    }
+    pub fn remove(&self, id: &WindowServerId) { self.0.remove(id); }
 
     pub fn clear_target(&self, id: &WindowServerId) {
         if let Some(mut record) = self.0.get_mut(id) {
