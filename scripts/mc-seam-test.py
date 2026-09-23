@@ -264,8 +264,46 @@ def main():
         # Just the plug, watched. As a display arrives macOS moves windows to
         # where they last were on it -- partly across the seam -- and rift
         # used to read those frames as tile edges being dragged, moving
-        # splits past the edge of the screen. Sample every shown desktop for
-        # a while and report any tiled window mostly off its display.
+        # splits past the edge of the screen. macOS only does that for a
+        # display it remembers the windows on, so first give it the memory:
+        # half the windows onto the probe, unplug, and plug the same probe
+        # again. Then sample every shown desktop for a while and report any
+        # tiled window mostly off its display.
+        tile_all()
+        time.sleep(1)
+        home = main_d["space"]
+        ws = [w for w in rift("windows", "--space-id", str(home)) or [] if is_tiled(w)]
+        for w in ws[: max(1, len(ws) // 2)]:
+            sh(f"{CLI} execute display move-window --uuid {probe['uuid']} "
+               f"--window-id {w['id']['idx']}")
+            time.sleep(1)
+        settle(4)
+        report("moved to the probe", probe["space"])
+        serial = sh("sed -n 's/.*serial=\\(0x[0-9a-f]*\\).*/\\1/p' /tmp/vdisp.out | tail -1").strip()
+        unplug()
+        settle(6)
+        # The same probe, same serial, so macOS knows it.
+        unplug(quiet=True)
+        args = [f"{BIN}/vdisp", "1512", "982", serial] + (["hidpi"] if hidpi else [])
+        with open(VDISP_PLIST, "w") as fh:
+            fh.write('<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>\n'
+                     '<key>Label</key><string>vdisp</string>\n<key>ProgramArguments</key><array>'
+                     + "".join(f"<string>{a}</string>" for a in args)
+                     + '</array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><false/>\n'
+                     '<key>StandardOutPath</key><string>/tmp/vdisp.out</string>\n'
+                     '<key>StandardErrorPath</key><string>/tmp/vdisp.err</string>\n</dict></plist>')
+        sh(f"launchctl bootstrap gui/{UID} {VDISP_PLIST} 2>/dev/null; true")
+        if not wait_for_displays(2):
+            print("FAIL setup: the probe did not come back")
+            return 2
+        if hidpi:
+            for _ in range(20):
+                if sh(f"{DTOOL} setmode 1512 982 {probe_id()} 2>&1").strip().endswith("-> ok"):
+                    break
+                time.sleep(0.5)
+        if "left" in args:
+            main_h = max(b[3] for b in cg_display_bounds() if b[0] == 0 and b[1] == 0)
+            sh(f"{DTOOL} place {probe_id()} -1512 {int(main_h - 982)}")
         bad = []
         for i in range(10):
             for d in displays():
