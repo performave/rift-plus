@@ -1339,9 +1339,26 @@ def s_stack_churn(base):
     rift_exec("layout toggle-stack")
     settle(2)
     a = snapshot("stacked")
-    if not any(stacks(sh) for sh in a["shapes"].values()):
-        raise Violation("no stack was created -- toggle-stack is a no-op in this "
-                        f"layout mode ({[sh.get('mode') for sh in a['shapes'].values()]})")
+    # A stack of one is no stack: on a freshly started rift the selection can
+    # sit on a window's own container, and stacking that makes a container a
+    # normalising pass is entitled to flatten -- which the attach check then
+    # reports as a stack lost. Climb until the stack holds more than one.
+    for _ in range(2):
+        largest = max((len(m) for sh in a["shapes"].values() for m, _ in stacks(sh)), default=0)
+        if largest >= 2:
+            break
+        if largest:
+            rift_exec("layout toggle-stack")
+            settle(1)
+        rift_exec("layout ascend")
+        settle(1)
+        rift_exec("layout toggle-stack")
+        settle(2)
+        a = snapshot("stacked")
+    if not any(len(m) >= 2 for sh in a["shapes"].values() for m, _ in stacks(sh)):
+        raise Violation("no stack of two or more windows was created -- toggle-stack is "
+                        "a no-op in this layout mode "
+                        f"({[sh.get('mode') for sh in a['shapes'].values()]})")
     try:
         plug(); settle()
         check_stacks(a["shapes"], snapshot("stack + display")["shapes"], "stack-across-churn attach")
