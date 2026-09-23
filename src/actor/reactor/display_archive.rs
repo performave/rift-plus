@@ -1198,11 +1198,7 @@ impl Reactor {
                 .iter()
                 .any(|(display, spaces)| display != uuid && spaces.contains(&old_space));
         if !old_space_in_use {
-            self.layout_manager.layout_engine.remap_space(
-                &mut self.state.windows,
-                old_space,
-                new_space,
-            );
+            self.remap_space_state(old_space, new_space);
         }
         self.layout_manager
             .layout_engine

@@ -50,9 +50,28 @@ struct FullscreenSlot {
 
 impl FullscreenSlots {
     pub(super) fn forget(&mut self, window: WindowId) { self.slots.remove(&window); }
+
+    /// A desktop came back under a new id. A slot keyed on the old one is
+    /// waiting for a window that will now come home to the new one; left
+    /// alone, the window's return did not match it and the slot went unused.
+    pub(super) fn remap_space(&mut self, old: SpaceId, new: SpaceId) {
+        for slot in self.slots.values_mut() {
+            if slot.space == old {
+                slot.space = new;
+            }
+        }
+    }
 }
 
 impl Reactor {
+    /// Move everything keyed on desktop `old` onto `new`: the layout engine's
+    /// state and the fullscreen slots waiting for a window to come back to it.
+    /// Every remap goes through here, so neither can be missed.
+    pub(super) fn remap_space_state(&mut self, old: SpaceId, new: SpaceId) {
+        self.layout_manager.layout_engine.remap_space(&mut self.state.windows, old, new);
+        self.fullscreen_slots.remap_space(old, new);
+    }
+
     /// Called from the layout-event sink just before the removal that takes
     /// a window entering native fullscreen out of its tree.
     pub(super) fn record_fullscreen_slot(&mut self, window: WindowId) {

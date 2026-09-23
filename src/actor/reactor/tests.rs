@@ -9066,6 +9066,27 @@ mod fullscreen_slots {
         );
     }
 
+    /// A slot waits on the desktop the window left, and a display change can
+    /// hand that desktop a new id while the window is away. The slot was never
+    /// told: the window came home to the new id, did not match, and came back
+    /// without its slot being used at all (`native-fullscreen-across-churn`).
+    #[test]
+    fn a_slot_follows_its_desktop_to_a_new_id() {
+        let (mut reactor, _screen, space, wids, _wsids) = bsp_reactor_with_three_tiled();
+        let w = wids[0];
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
+
+        let renumbered = SpaceId::new(77);
+        reactor.remap_space_state(space, renumbered);
+
+        assert_eq!(
+            reactor.fullscreen_slots_awaiting_insertion(),
+            vec![(w, renumbered)],
+            "the slot stayed on the desktop's old id"
+        );
+    }
+
     #[test]
     fn exit_puts_the_window_back_exactly_when_nothing_changed() {
         let (mut reactor, screen, space, [w1, w2, w3], [_, wsid2, _]) =

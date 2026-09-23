@@ -1176,9 +1176,7 @@ impl Reactor {
         crate::sys::trace::act("settle", &(desktop_moves, sent.len()));
 
         if let Some((made, gone, _)) = stopgap {
-            self.layout_manager
-                .layout_engine
-                .remap_space(&mut self.state.windows, gone, made);
+            self.remap_space_state(gone, made);
             self.layout_manager
                 .layout_engine
                 .update_space_display(made, Some(survivor.uuid.clone()));
@@ -1634,9 +1632,11 @@ impl Reactor {
         // a made desktop at departure comes from there.
         for (old, new) in &subst {
             let from = record.stopgap_for(*old).unwrap_or(*old);
+            // `remap_space_state`, spelt out: the record is still borrowed.
             self.layout_manager
                 .layout_engine
                 .remap_space(&mut self.state.windows, from, *new);
+            self.fullscreen_slots.remap_space(from, *new);
         }
         for d in &record.displays {
             for space in now.get(&d.uuid).into_iter().flatten() {

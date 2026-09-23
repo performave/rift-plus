@@ -4233,11 +4233,7 @@ impl Reactor {
                 );
                 continue;
             }
-            self.layout_manager.layout_engine.remap_space(
-                &mut self.state.windows,
-                previous_space,
-                space,
-            );
+            self.remap_space_state(previous_space, space);
         }
         for screen in &self.space_state.screens {
             let (Some(space), Some(display_uuid)) = (screen.space, screen.display_uuid_opt())

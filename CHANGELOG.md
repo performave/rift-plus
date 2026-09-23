@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window leaving native fullscreen finds its slot after a display
+  change.** The slot waits on the desktop the window left, and a display
+  change can give that desktop a new id while the window is away. The slot
+  kept the old id, so the returning window matched nothing and was tiled
+  wherever it landed. Slots now follow their desktop to its new id.
 - **Plugging in a display no longer squeezes tiles to slivers.** As a display
   arrives, macOS moves windows to where they last were on it -- resized,
   cascaded, partly off the display they are still on -- a beat before the
