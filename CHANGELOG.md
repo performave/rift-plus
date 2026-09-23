@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Replugging no longer leaves an extra desktop behind each time.** When an
+  arriving display takes the desktop the laptop was showing, macOS mints the
+  laptop a fresh one, and rift retires it -- but it cannot go while shown, and
+  the next departure recorded it as one of the laptop's own. Its going then
+  read as a loss: rift made a stand-in for an empty desktop, and the return
+  kept macOS's next fresh desktop as its replacement. Desktops rift is
+  retiring are no longer part of what a departure records.
 - **The layout is saved again after rift destroys a desktop.** Destroying a
   desktop rift made for a display change -- a stand-in, or one macOS minted
   for a return -- detaches its workspaces but leaves them in place, because a

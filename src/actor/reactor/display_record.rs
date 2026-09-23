@@ -309,6 +309,14 @@ impl DisplayRecord {
     #[cfg(test)]
     pub(super) fn is_arrival(&self) -> bool { self.arrival }
 
+    #[cfg(test)]
+    pub(super) fn recorded_display(&self, uuid: &str) -> Option<(Vec<SpaceId>, Option<SpaceId>)> {
+        self.displays
+            .iter()
+            .find(|d| d.uuid == uuid)
+            .map(|d| (d.desktops.clone(), d.shown))
+    }
+
     /// Where the record wants `wid`: where the user put it while away, else
     /// where it was at departure.
     pub(super) fn desired(&self, wid: WindowId) -> Option<SpaceId> {
@@ -593,6 +601,23 @@ impl Reactor {
                     display = %d.uuid,
                     "The window server had already given a departing display's desktops away; recording them as the departing display's"
                 );
+            }
+        }
+        // A desktop rift is already retiring belongs to no layout: macOS
+        // minted it for a return, or rift made it at a departure, and it is
+        // only still here because a display was showing it. Recorded as a
+        // display's own, its going read as a loss -- the survivor was made a
+        // stand-in for the windows of a desktop that had none, and the return
+        // kept macOS's next fresh desktop as its replacement, one desktop
+        // more for every plug and unplug.
+        let retiring: HashSet<SpaceId> =
+            self.display_archive.retiring.iter().map(|(space, _)| *space).collect();
+        if !retiring.is_empty() {
+            for d in &mut displays {
+                d.desktops.retain(|space| !retiring.contains(space));
+                if d.shown.is_some_and(|space| retiring.contains(&space)) {
+                    d.shown = None;
+                }
             }
         }
 

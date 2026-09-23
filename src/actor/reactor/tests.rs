@@ -10233,6 +10233,48 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A desktop rift is retiring is not part of the layout a departure
+    /// records. macOS mints the laptop a fresh desktop when an arriving
+    /// display takes the one it was showing; the arrival retires it, but it
+    /// cannot go while it is shown. Recorded at the next departure as one of
+    /// the survivor's own, its disappearance read as a loss: the survivor got
+    /// a stand-in "for the windows of" an empty desktop, and the return kept
+    /// macOS's next fresh desktop as its replacement -- one desktop more per
+    /// plug and unplug, the workspace leak `plain-replug` reported in the VM.
+    #[test]
+    fn a_desktop_being_retired_is_left_out_of_a_departure_record() {
+        let mut f = spaces_fixture();
+        let minted = SpaceId::new(77);
+        let mut whole = f.reactor.display_archive.whole_displays.clone().expect("a whole set");
+        let survivor = whole
+            .iter()
+            .position(|d| d.desktops.contains(&space1()))
+            .expect("the survivor is in the whole set");
+        whole[survivor].desktops.push(minted);
+        whole[survivor].shown = Some(minted);
+        let survivor_uuid = whole[survivor].uuid.clone();
+        f.reactor.display_archive.whole_displays = Some(whole);
+        f.reactor.display_archive.retiring.push((minted, crate::sys::trace::now()));
+
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+
+        let (desktops, shown) = f
+            .reactor
+            .display_archive
+            .record
+            .as_ref()
+            .expect("the departure is recorded")
+            .recorded_display(&survivor_uuid)
+            .expect("the survivor is recorded");
+        assert!(
+            !desktops.contains(&minted),
+            "a desktop being retired was recorded as the survivor's: {desktops:?}"
+        );
+        assert_ne!(shown, Some(minted), "nor as the one it shows");
+        spaces_cleanup(&f, &[]);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees
