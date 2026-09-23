@@ -119,6 +119,24 @@ impl Reactor {
                 );
                 return;
             }
+            // Nor while rift itself is sending the window to the slot's own
+            // desktop. Aftercare sends a window macOS dropped elsewhere back
+            // home, and its leaving the desktop it was dropped on says nothing
+            // about where it belongs -- recorded, it replaced the slot it was
+            // on its way back to, and the window came home to none and was
+            // appended at the end.
+            if self.display_archive.homing_destination(window) == Some(existing.space) {
+                crate::sys::trace::act(
+                    "fullscreen_slot",
+                    &(
+                        window.idx.get(),
+                        "going home; slot kept",
+                        existing.space.get(),
+                        space.get(),
+                    ),
+                );
+                return;
+            }
             crate::sys::trace::act(
                 "fullscreen_slot",
                 &(

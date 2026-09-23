@@ -9126,6 +9126,50 @@ mod fullscreen_slots {
         );
     }
 
+    /// A window rift is sending home keeps the slot it has there. Aftercare
+    /// sends a window macOS put on the wrong desktop back to its own; leaving
+    /// the wrong desktop's tree on the way is not news about where it
+    /// belongs, but it recorded a slot there over the good one, and the window
+    /// came home to no slot and was appended at the end (`plain-replug`: two
+    /// windows swapped).
+    #[test]
+    fn a_window_being_sent_home_keeps_its_slot_there() {
+        let (mut reactor, _screen, space, wids, _wsids) = bsp_reactor_with_three_tiled();
+        let w = wids[1];
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
+
+        // macOS drops it on another desktop, rift files it there, and
+        // aftercare sends it home.
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        let workspace = reactor.test_workspace(elsewhere, 0);
+        assert!(reactor.assign_test_window_to_workspace(elsewhere, w, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(elsewhere, w));
+        assert!(
+            reactor.layout_manager.layout_engine.is_window_tiled(elsewhere, w),
+            "filed on the other desktop, or this tests nothing"
+        );
+        let mut aftercare = crate::actor::reactor::display_record::Aftercare::for_test(
+            [(w, space)].into_iter().collect(),
+        );
+        aftercare.sent.insert(w, space);
+        reactor.display_archive.aftercare = Some(aftercare);
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+
+        assert_eq!(
+            reactor.fullscreen_slots_awaiting_insertion(),
+            vec![(w, space)],
+            "leaving the desktop macOS dropped it on replaced the slot it is going home to"
+        );
+    }
+
     /// A slot waits on the desktop the window left, and a display change can
     /// hand that desktop a new id while the window is away. The slot was never
     /// told: the window came home to the new id, did not match, and came back

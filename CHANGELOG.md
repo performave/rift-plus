@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window macOS drops on the wrong desktop during a replug comes home to
+  its own slot.** rift sends such a window back, and on the way it leaves the
+  desktop it was dropped on; that removal was recorded as the window's new
+  place, overwriting the slot it was going home to, and it came back at the end
+  of the layout instead. A window rift is sending home keeps its slot.
 - **A window macOS moves before a display change no longer drops out of the
   layout.** macOS relocates windows a moment ahead of telling anyone a display
   has changed, sometimes past the edge of every display rift knows of. rift
