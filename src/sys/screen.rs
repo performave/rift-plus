@@ -587,6 +587,56 @@ impl NSScreenExt for NSScreen {
     }
 }
 
+// Per thread: every test runs its reactor on its own, and a process-wide
+// override set by one would make arranges in the tests beside it skip.
+#[cfg(test)]
+thread_local! {
+    static LIVE_DISPLAY_BOUNDS_OVERRIDE: std::cell::RefCell<Option<HashMap<u32, CGRect>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Stand in for the window server's display bounds under test.
+#[cfg(test)]
+pub fn set_live_display_bounds_override(bounds: Option<HashMap<u32, CGRect>>) {
+    LIVE_DISPLAY_BOUNDS_OVERRIDE.with(|cell| *cell.borrow_mut() = bounds);
+}
+
+/// Whether the display `id` is no longer where `frame` -- rift's record of
+/// it -- puts it: moved, resized or gone.
+///
+/// The window server moves windows for a display change a beat before rift
+/// hears of the change, and an arrange in that beat lays out against the
+/// arrangement that was: unplugging an ultrawide above the laptop, rift wrote
+/// the laptop's windows at the laptop's old coordinates -- a float at
+/// y=1561 on a laptop now 886 tall, which macOS clamped to a sliver at the
+/// corner. Asking the window server directly is what tells that beat apart.
+pub fn display_moved_under(id: ScreenId, frame: CGRect) -> bool {
+    #[cfg(test)]
+    {
+        return LIVE_DISPLAY_BOUNDS_OVERRIDE.with(|cell| {
+            let guard = cell.borrow();
+            let Some(bounds) = guard.as_ref() else { return false };
+            match bounds.get(&id.as_u32()) {
+                Some(b) => !rect_within(frame, *b),
+                None => true,
+            }
+        });
+    }
+    #[allow(unreachable_code)]
+    {
+        let live = CGDisplayBounds(id.as_u32());
+        live.size.width <= 0.0 || live.size.height <= 0.0 || !rect_within(frame, live)
+    }
+}
+
+fn rect_within(inner: CGRect, outer: CGRect) -> bool {
+    const SLACK: f64 = 1.0;
+    inner.origin.x >= outer.origin.x - SLACK
+        && inner.origin.y >= outer.origin.y - SLACK
+        && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width + SLACK
+        && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height + SLACK
+}
+
 pub fn get_active_space_number() -> Option<SpaceId> {
     active_menu_bar_display_uuid().and_then(|uuid| current_space_for_display_uuid(&uuid))
 }

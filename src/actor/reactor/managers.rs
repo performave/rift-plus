@@ -558,6 +558,44 @@ impl LayoutManager {
                     }),
                 );
             }
+            // Laid out for a display the window server has already moved. The
+            // change is on its way to rift, and the arrange it brings lays
+            // this desktop out for where the display is now; writing these
+            // frames first put windows at coordinates that no longer belong
+            // to any screen.
+            //
+            // For a moment only. rift hears of a display change within a
+            // fraction of a second; a disagreement that outlasts that is not a
+            // change on its way but a record that will not catch up, and
+            // holding every arrange for it would leave the display unmanaged.
+            if let Some(screen) = screen {
+                let id = screen.id.as_u32();
+                if crate::sys::screen::display_moved_under(screen.id, screen.frame) {
+                    let since = *reactor
+                        .display_disagreement
+                        .entry(id)
+                        .or_insert_with(crate::sys::trace::now);
+                    if since.elapsed() < DISPLAY_DISAGREEMENT_GRACE {
+                        crate::sys::trace::act(
+                            "arrange_apply",
+                            &serde_json::json!({
+                                "space": space,
+                                "skipped": "display moved under this arrange",
+                            }),
+                        );
+                        continue;
+                    }
+                    crate::sys::trace::act(
+                        "arrange_apply",
+                        &serde_json::json!({
+                            "space": space,
+                            "arranging": "display still disagrees with rift's record",
+                        }),
+                    );
+                } else {
+                    reactor.display_disagreement.remove(&id);
+                }
+            }
             if let Some(screen) = screen {
                 let screen_frame = screen.frame;
                 let display_uuid = screen.display_uuid_owned();
@@ -675,6 +713,10 @@ impl LayoutManager {
         Ok(any_frame_changed)
     }
 }
+
+/// How long an arrange waits for rift to catch up with a display the window
+/// server has already moved.
+const DISPLAY_DISAGREEMENT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Manages pending space changes
 pub struct PendingSpaceChangeManager {

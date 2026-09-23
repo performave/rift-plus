@@ -34,6 +34,14 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Unplugging a monitor no longer leaves a window hanging off the laptop's
+  screen.** macOS moves windows for a display change a moment before rift
+  hears of it, and an arrange in that moment laid the laptop out at its old
+  place in the arrangement: with the laptop below an ultrawide, unplugging
+  the ultrawide wrote a floating window below the bottom of the laptop's
+  screen, and macOS left a sliver of it in the corner. rift now holds an
+  arrange for a display the window server has already moved until it has
+  caught up.
 - **A stale minimum size no longer pins a window.** rift read the minimum an
   app declares once, when it found the window, and a minimum that later
   dropped held the window at the old figure for good, because the layout never

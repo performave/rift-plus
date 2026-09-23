@@ -9596,6 +9596,79 @@ mod fullscreen_slots {
         );
     }
 
+    /// An arrange laid out for a display the window server has already moved
+    /// writes nothing. macOS moves windows for a display change a beat before
+    /// rift hears of it; an arrange in that beat wrote the laptop's windows at
+    /// the laptop's old coordinates -- a float below the bottom of the screen,
+    /// left as a sliver in the corner (`commute`).
+    #[test]
+    fn an_arrange_for_a_display_that_has_moved_writes_nothing() {
+        let (mut reactor, screen, _space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let before: Vec<_> = wsids
+            .iter()
+            .map(|wsid| reactor.transaction_manager.get_target_frame(*wsid))
+            .collect();
+        // A window leaves, so the next arrange would move the other two.
+        reactor.send_layout_event(LayoutEvent::WindowRemoved(wids[0]));
+
+        let mut moved = std::collections::HashMap::default();
+        moved.insert(
+            0u32,
+            CGRect::new(
+                CGPoint::new(1000., 1440.),
+                CGSize::new(screen.size.width, screen.size.height),
+            ),
+        );
+        crate::sys::screen::set_live_display_bounds_override(Some(moved));
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        crate::sys::screen::set_live_display_bounds_override(None);
+        let during: Vec<_> = wsids
+            .iter()
+            .map(|wsid| reactor.transaction_manager.get_target_frame(*wsid))
+            .collect();
+        assert_eq!(
+            before[1..],
+            during[1..],
+            "frames were written for a display that has moved"
+        );
+
+        // Once the display is where rift thinks, the same arrange goes ahead.
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        let after: Vec<_> = wsids
+            .iter()
+            .map(|wsid| reactor.transaction_manager.get_target_frame(*wsid))
+            .collect();
+        assert_ne!(before[1..], after[1..], "the arrange never went ahead");
+    }
+
+    /// But not for good: a record that never catches up would otherwise leave
+    /// the display unmanaged.
+    #[test]
+    fn a_display_that_goes_on_disagreeing_is_arranged_anyway() {
+        let (mut reactor, screen, _space, wids, wsids) = bsp_reactor_with_three_tiled();
+        reactor.send_layout_event(LayoutEvent::WindowRemoved(wids[0]));
+        let before = reactor.transaction_manager.get_target_frame(wsids[1]);
+        let mut moved = std::collections::HashMap::default();
+        moved.insert(
+            0u32,
+            CGRect::new(
+                CGPoint::new(1000., 1440.),
+                CGSize::new(screen.size.width, screen.size.height),
+            ),
+        );
+        crate::sys::screen::set_live_display_bounds_override(Some(moved));
+        reactor
+            .display_disagreement
+            .insert(0, crate::sys::trace::now() - std::time::Duration::from_secs(3));
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        crate::sys::screen::set_live_display_bounds_override(None);
+        assert_ne!(
+            before,
+            reactor.transaction_manager.get_target_frame(wsids[1]),
+            "a disagreement older than the grace still held the arrange"
+        );
+    }
+
     /// A slot is used up only by a restore that put the window back. The
     /// "ordered in" report can come while the window is still in another
     /// desktop's tree -- aftercare has sent it home and it has not arrived --

@@ -653,6 +653,9 @@ pub struct Reactor {
     /// change carried to another display is sent back to its slot, but not
     /// one the user may have moved since.
     pub(super) last_user_input: Option<std::time::Instant>,
+    /// Displays the window server has moved and rift's record has not caught
+    /// up with, by display id, since when. See `apply_layout`.
+    pub(super) display_disagreement: HashMap<u32, std::time::Instant>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -831,6 +834,7 @@ impl Reactor {
             refusal_candidates: HashMap::default(),
             last_layout_command: None,
             last_user_input: None,
+            display_disagreement: HashMap::default(),
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
