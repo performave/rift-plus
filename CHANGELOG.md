@@ -45,7 +45,9 @@ Entries describe this fork's changes relative to
   display change reaches rift, which read those frames as the user dragging
   tile edges and moved the splits past the edge of the screen. The next
   arrange gave a window a 115px slot. A frame moved as a whole, or off the
-  window's screens, is no longer taken for a resize.
+  window's screens, is no longer taken for a resize, and the window is put
+  straight back into its tile rather than left over its neighbours until the
+  display change settles.
 - **Unplugging soon after plugging in keeps the desktops' order.** A
   departure records the layout from a snapshot taken as the first window
   leaves, and that snapshot was treated as current for ten seconds -- so an
