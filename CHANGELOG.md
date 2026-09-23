@@ -94,6 +94,16 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **Plugging the display in no longer scrambles the one already there, even
+  when rift has no record of it leaving.** rift remembers where everything was
+  when a display is unplugged, and puts it back when it returns. But a display
+  can arrive with nothing to return to -- after rift restarts or is updated
+  while you are undocked, or around a lid close -- and macOS reshuffles then
+  too: it can switch the laptop to a fresh empty desktop and move windows off
+  the one you were using, breaking up stacks on the way. rift now records the
+  display that was already there at that moment and puts its desktops, windows
+  and layouts back, leaving the new display as macOS set it up.
+
 - **A window no longer drifts off its desktop a little further with every
   replug.** After a display returns, rift sends home any window macOS put on
   the wrong desktop -- but it then refused to believe the window had arrived,

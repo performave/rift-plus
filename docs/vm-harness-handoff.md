@@ -689,16 +689,24 @@ with a stack on the desktop:
    `pre_churn: false, missing: [1556, 1554]` -- the attach's snapshot had
    expired). From the chair: unplug, and the windows are gone.
 
-The pieces for an arrival-side record exist -- the attach takes and pins a
-pre-churn snapshot, and the departure pass already restores a snapshot tree
-onto whichever desktop now holds its windows. **It was deliberately not built
-blind.** Everything that motivates it is how macOS behaves in this VM when a
-*virtual* display attaches and becomes main. Whether a real display attaching
-does the same -- switch the other display to a fresh desktop and move windows
-off it -- decides whether this is the next feature or a guest artifact. One
-check on real hardware settles it: `rift query displays` and
-`rift query windows --space-id <each>` before and after plugging the external
-in, looking for a desktop id that changed or windows that moved.
+**Since built (`9caf64c`), after the real-hardware check came back yes.** The
+recorded clamshell trace from Eric's machine has LG arrivals with no record
+open, and in the first of them two windows changed desktop -- so this is not a
+VZ artifact. It happens whenever the LG arrives without a matching departure in
+the same rift session: after a restart or redeploy while undocked, and around
+the lid's pseudo display.
+
+`record_arrival` records the display that was already present, from the fresh
+pre-churn snapshot, before the departure handling runs (which clears that
+snapshot on every display-set change, departure or not -- the first version ran
+after it and never recorded anything). Its return pass runs at once, because
+every display it names is on screen, and brings that display's desktops,
+windows, trees and shown desktop back; the arriving display keeps what macOS
+gave it, since the pass only considers desktops on displays the record names.
+Scoped to one display before the arrival (the pass gives unrecognised desktops
+to "the display that stayed", which with several could move one between them),
+to spaces mode, and to a fresh snapshot. Pinned by
+`an_arrival_with_no_record_puts_the_display_that_was_here_back`.
 
 Two related observations. The two tree-less windows are not stuck: showing
 their desktop lays them out at once, like any hidden desktop. And released
