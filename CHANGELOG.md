@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Windows keep their order when one is sent home after a replug.** The
+  report that a window is back could come while it was still on the desktop
+  macOS had dropped it on; rift restored the layout then, could not place that
+  window, and used up the record of where it went anyway, so on arriving a
+  moment later it was inserted beside its old neighbour the wrong way round.
 - **A slow app is no longer taken to refuse its size.** rift learns an app's
   minimum size from a window answering a resize with a larger size -- and an
   app that simply had not applied the resize yet answers exactly the same way.

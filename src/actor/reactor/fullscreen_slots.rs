@@ -304,6 +304,27 @@ impl Reactor {
             &mut self.state.windows,
             &layout_settings,
         ) {
+            // A restore that put the others back and not this window leaves
+            // it where it was: the "ordered in" report that asked for it can
+            // come while the window is still in another desktop's tree, sent
+            // home and not yet arrived. Used up then, the slot was gone when
+            // the window did arrive a moment later, and it was inserted below
+            // its old neighbour instead of above. Keep it for the arrival.
+            Ok(report)
+                if report.matched > 0
+                    && !self.layout_manager.layout_engine.is_window_tiled(space, window) =>
+            {
+                crate::sys::trace::act(
+                    "fullscreen_slot",
+                    &(
+                        window.idx.get(),
+                        "restored without it; slot kept",
+                        report.matched,
+                    ),
+                );
+                self.fullscreen_slots.slots.insert(window, slot);
+                return false;
+            }
             Ok(report) if report.matched > 0 => {
                 info!(
                     ?window,

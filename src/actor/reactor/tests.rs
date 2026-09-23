@@ -9211,6 +9211,44 @@ mod fullscreen_slots {
         );
     }
 
+    /// A slot is used up only by a restore that put the window back. The
+    /// "ordered in" report can come while the window is still in another
+    /// desktop's tree -- aftercare has sent it home and it has not arrived --
+    /// and the restore then matched the rest and not it, consuming the slot;
+    /// the window's real arrival a millisecond later found none and was
+    /// inserted below its old neighbour (`plain-replug`: the last two swapped).
+    #[test]
+    fn a_restore_that_could_not_place_the_window_keeps_its_slot() {
+        let (mut reactor, _screen, space, wids, _wsids) = bsp_reactor_with_three_tiled();
+        let w = wids[1];
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
+
+        // Still on the other desktop when the restore is asked for.
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        let workspace = reactor.test_workspace(elsewhere, 0);
+        assert!(reactor.assign_test_window_to_workspace(elsewhere, w, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(elsewhere, w));
+        assert!(reactor.layout_manager.layout_engine.is_window_tiled(elsewhere, w));
+
+        let _ = reactor.reinstate_fullscreen_slot(w, space);
+
+        if !reactor.layout_manager.layout_engine.is_window_tiled(space, w) {
+            assert_eq!(
+                reactor.fullscreen_slots_awaiting_insertion(),
+                vec![(w, space)],
+                "a restore that did not put the window back used up its slot"
+            );
+        }
+    }
+
     /// A window rift is sending home keeps the slot it has there. Aftercare
     /// sends a window macOS put on the wrong desktop back to its own; leaving
     /// the wrong desktop's tree on the way is not news about where it
