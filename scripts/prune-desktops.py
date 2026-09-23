@@ -36,15 +36,20 @@ def main():
     cy = f["origin"]["y"] + f["size"]["height"] / 2
     tool = CLI[:CLI.rindex("/")]
     sh(f"{tool}/mtool move {cx:.0f} {cy:.0f}")
+    # Which desktops are empty is decided once: nothing else moves windows
+    # while this runs, and asking per desktop per pass was quadratic -- over
+    # an hour for three hundred.
+    initial = d.get("space_ids") or []
+    empty = {s for s in initial if s != keep
+             and not (rift("windows", "--space-id", str(s)) or [])}
     destroyed, stuck = 0, 0
-    for _ in range(before):
+    while empty:
         cur = next((x for x in rift("displays") or [] if x["uuid"] == d["uuid"]), None)
         ids = (cur or {}).get("space_ids") or []
-        empty = [s for s in ids if s != keep
-                 and not (rift("windows", "--space-id", str(s)) or [])]
+        empty &= set(ids)
         if not empty:
             break
-        target = empty[-1]
+        target = max(empty, key=ids.index)
         sh(f"{CLI} execute space switch-to {ids.index(target) + 1}")
         time.sleep(0.6)
         if (next((x for x in rift("displays") or [] if x["uuid"] == d["uuid"]), {}) or {}).get("space") != target:
@@ -54,6 +59,7 @@ def main():
             continue
         sh(f"{CLI} execute space destroy")
         time.sleep(0.8)
+        empty.discard(target)
         destroyed += 1
     # Back to the desktop the windows are on.
     ids = (next((x for x in rift("displays") or [] if x["uuid"] == d["uuid"]), {}) or {}).get("space_ids") or []
