@@ -415,6 +415,9 @@ def reset_between_scenarios() -> str:
     # and handling it is part of what is being measured.
     restart_rift()
     notes.append("rift restarted")
+    gathered = gather_test_windows()
+    if gathered:
+        notes.append(f"gathered {gathered} window(s) onto one desktop")
     # Unconditionally, and it is worth the ten seconds. A fullscreen window on
     # a space nothing is showing cannot be detected at all: rift drops it from
     # `query windows` along with the rest of that space, so neither the shown-
@@ -452,6 +455,56 @@ def reset_between_scenarios() -> str:
     if retiled:
         notes.append(f"re-tiled {retiled}")
     return "; ".join(notes)
+
+
+def gather_test_windows() -> int:
+    """Put every test window on one desktop of the main display, the one that
+    already holds most of them, and show it.
+
+    A scenario that ends with a window on another desktop -- a failure, or
+    macOS keeping a window where the churn left it -- hands the next one a
+    split baseline: `stack-across-churn` then found Safari alone on the shown
+    desktop and the TextEdits on another, and built a stack of one. Returns
+    how many windows it moved.
+    """
+    ds = rift("displays") or []
+    main = next((d for d in ds if (d.get("frame") or {}).get("origin", {}).get("x") in (0, 0.0, 56, 56.0)), None) \
+        or (ds[0] if ds else None)
+    if not main:
+        return 0
+    ids = (main.get("active_space_ids") or []) + (main.get("inactive_space_ids") or [])
+    ids = main.get("space_ids") or ids
+    where = {}
+    for sid in all_space_ids(ds):
+        for w in rift("windows", "--space-id", str(sid)) or []:
+            if w.get("app_name") in ("Safari", "TextEdit"):
+                where[str(w.get("window_server_id"))] = (sid, w)
+    if not where:
+        return 0
+    counts = {}
+    for sid, _ in where.values():
+        if sid in ids:
+            counts[sid] = counts.get(sid, 0) + 1
+    if not counts:
+        return 0
+    target = max(counts, key=counts.get)
+    f = main.get("frame") or {}
+    o, sz = f.get("origin", {}), f.get("size", {})
+    tool = CLI[:CLI.rindex("/")]
+    sh(f"{tool}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
+       f"{o.get('y', 0) + sz.get('height', 0) / 2:.0f}")
+    moved = 0
+    for sid, w in where.values():
+        if sid == target:
+            continue
+        focus(w)
+        time.sleep(0.8)
+        sh(f"{CLI} execute space move-window {ids.index(target) + 1}")
+        time.sleep(0.8)
+        moved += 1
+    sh(f"{CLI} execute space switch-to {ids.index(target) + 1}")
+    time.sleep(1.5)
+    return moved
 
 
 def restart_rift() -> None:
