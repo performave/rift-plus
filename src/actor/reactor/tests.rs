@@ -1661,6 +1661,64 @@ fn external_resize_requests_one_arrange_pass() {
     assert!(outcome.arrange.is_resize);
 }
 
+/// A frame the window server moved as a whole is not a resize. As a display
+/// arrives, macOS moves windows to where they last were on it -- cascaded,
+/// resized, partly off the display they are still on -- a beat before the
+/// display change reaches rift. Read as the user dragging tile edges, those
+/// frames moved the splits to x=2930 and 2988 on a 2494-wide screen, and the
+/// next arrange handed a TextEdit a 115px slot.
+#[test]
+fn a_window_moved_as_a_whole_is_not_taken_for_a_resize() {
+    let (mut reactor, wid, _wsid, _space1, _space2, _screen) = reactor_with_window_on_space1();
+    let tile = CGRect::new(CGPoint::new(0., 0.), CGSize::new(720., 900.));
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic = tile;
+    let relocated = CGRect::new(CGPoint::new(1300., 125.), CGSize::new(673., 439.));
+
+    let outcome = reactor
+        .dispatch_workflow(Event::WindowFrameChanged(
+            wid,
+            relocated,
+            None,
+            Requested(false),
+            Some(MouseState::Up),
+        ))
+        .unwrap();
+
+    assert!(
+        !outcome
+            .layout_events
+            .iter()
+            .any(|e| matches!(e, LayoutEvent::WindowResized { .. })),
+        "a window macOS moved as a whole was folded into the split ratios"
+    );
+}
+
+/// The same window dragged by one edge is still a resize.
+#[test]
+fn a_window_resized_by_one_edge_is_still_a_resize() {
+    let (mut reactor, wid, _wsid, _space1, _space2, _screen) = reactor_with_window_on_space1();
+    let tile = CGRect::new(CGPoint::new(0., 0.), CGSize::new(720., 900.));
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic = tile;
+    let wider = CGRect::new(CGPoint::new(0., 0.), CGSize::new(800., 900.));
+
+    let outcome = reactor
+        .dispatch_workflow(Event::WindowFrameChanged(
+            wid,
+            wider,
+            None,
+            Requested(false),
+            Some(MouseState::Up),
+        ))
+        .unwrap();
+
+    assert!(
+        outcome
+            .layout_events
+            .iter()
+            .any(|e| matches!(e, LayoutEvent::WindowResized { .. }))
+    );
+}
+
 /// Dropping a dragged window has to lay the space out again even when nothing
 /// was swapped: layout was skipped for the window while it followed the
 /// pointer, so its frame no longer matches the tree and it would otherwise be

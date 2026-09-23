@@ -517,7 +517,44 @@ pub fn handle_window_frame_changed(
             // layout would stop tracking it.
             let entering = covers(&new_frame) && !covers(&old_frame);
             let leaving = covers(&old_frame) && !covers(&new_frame);
-            if entering {
+            // Nor one the window server moved as a whole. A hand resizing a
+            // window moves one edge per axis, or both about a fixed centre; a
+            // relocation moves both and the centre with them, or puts the
+            // window off the screens it is laid out on. As a display arrives,
+            // macOS moves windows to where they last were on it -- cascaded,
+            // resized, partly off the display they are still on -- a beat
+            // before the display change reaches rift, and read as tile edges
+            // those frames moved the splits past the edge of the screen: the
+            // next arrange handed a TextEdit a 115px slot.
+            let moved_whole = |a0: f64, a1: f64, b0: f64, b1: f64| {
+                (b0 - a0).abs() > 0.5
+                    && (b1 - a1).abs() > 0.5
+                    && ((b0 + b1) / 2.0 - (a0 + a1) / 2.0).abs() > 8.0
+            };
+            let off_screen = !screens.iter().any(|(_, screen_frame, _)| {
+                let mid = new_frame.mid();
+                mid.x >= screen_frame.origin.x
+                    && mid.x <= screen_frame.max().x
+                    && mid.y >= screen_frame.origin.y
+                    && mid.y <= screen_frame.max().y
+            });
+            let relocated = moved_whole(
+                old_frame.origin.x,
+                old_frame.max().x,
+                new_frame.origin.x,
+                new_frame.max().x,
+            ) || moved_whole(
+                old_frame.origin.y,
+                old_frame.max().y,
+                new_frame.origin.y,
+                new_frame.max().y,
+            ) || (!screens.is_empty() && off_screen);
+            if relocated {
+                crate::sys::trace::act(
+                    "resize_ignored_relocation",
+                    &(wid.idx.get(), new_frame.origin.x, new_frame.origin.y),
+                );
+            } else if entering {
                 // Keep layout state pristine while it covers the screen.
             } else if leaving {
                 // Leaving self-fullscreen: snap the window back into its
