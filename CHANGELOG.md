@@ -48,6 +48,12 @@ Entries describe this fork's changes relative to
   window's screens, is no longer taken for a resize, and the window is put
   straight back into its tile rather than left over its neighbours until the
   display change settles.
+- **A display that takes over as main no longer strands a window on it.**
+  rift repairs what macOS scrambles when a display arrives from a snapshot
+  taken as the first window leaves its tree. On a plug where macOS had only
+  moved window frames by the time the arrival was seen there was no snapshot,
+  and the repair was skipped. It is now taken from the live trees, which are
+  still the state from before the arrival.
 - **Unplugging soon after plugging in keeps the desktops' order.** A
   departure records the layout from a snapshot taken as the first window
   leaves, and that snapshot was treated as current for ten seconds -- so an

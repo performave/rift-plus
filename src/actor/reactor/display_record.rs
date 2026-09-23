@@ -797,8 +797,15 @@ impl Reactor {
             skip("more than one display was already here");
             return;
         }
+        // The snapshot a first window leaving its tree takes. On a plug where
+        // macOS has only moved frames by the time the arrival is seen, nothing
+        // has left a tree and there is none -- and then the live trees are
+        // still the state from before the arrival, so take it from them.
+        if self.display_archive.fresh_pre_churn().is_none() {
+            self.capture_pre_churn_layout();
+        }
         let Some(pre) = self.display_archive.fresh_pre_churn() else {
-            skip("no fresh pre-churn snapshot");
+            skip("no pre-churn snapshot could be taken");
             return;
         };
         let (layout, members, modes, homes) = (
