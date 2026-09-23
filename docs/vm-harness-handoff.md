@@ -743,6 +743,27 @@ The control for this was inconclusive in one run: the trigger (aftercare firing
 at all) needs `straggler-after-return` to catch a straggler, which it does
 roughly half the time.
 
+## Two reports from real use (2026-09-22)
+
+**Deleting a desktop swapped the tiles on the one landed on -- fixed.** A
+destroy looks like a replacement from a snapshot (the shown desktop listed
+nowhere, the display showing another), and `compute_space_remaps` answered it by
+carrying the destroyed desktop's layout onto the one landed on. A replacement's
+desktop is always new; a destroy's landing desktop never is. Remaps now require
+a target no display listed before
+(`destroying_a_desktop_does_not_remap_it_onto_the_one_landed_on`). In the guest
+(`scripts/destroy-landing-test.py`): the build before left the arranged desktop
+with no tree; the build after kept its order exactly.
+
+**Windows left over the seam after moving desktops to the LG -- not reproduced.**
+The closest drivable equivalent (`scripts/desktop-move-seam-test.py`: an SA
+SPACE_MOVE onto an attached display, with tiled and floating windows) lands
+every window fully on the new display. It does show the move splitting a
+desktop -- two of five windows on a new desktop -- with rift doing nothing
+during it, so that is macOS under an SA move and not necessarily a real drag.
+Next step is a flight-recorder dump from the real machine taken right after it
+happens (`rift execute trace dump <path>`).
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
