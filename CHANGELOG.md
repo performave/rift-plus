@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A modifier-drag resize no longer moves the window the opposite way.** A
+  press in the half of a tiled window next to the screen edge picked that
+  edge, which has nothing to trade width with, so the layout took the change
+  out of the other edge in the other direction: dragging left moved the left
+  edge right. The press now takes the edge that can move, and it follows the
+  pointer.
 - **Plugging in a display no longer takes a window off the laptop for good.**
   macOS moves a window it remembers on the arriving display there a moment
   after rift has repaired the arrival. rift left it there, took the external

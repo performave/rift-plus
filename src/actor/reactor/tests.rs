@@ -9233,6 +9233,76 @@ mod fullscreen_slots {
         (reactor, screen, space, wids, wsids)
     }
 
+    fn press_and_drag(reactor: &mut Reactor, wsid: WindowServerId, at: CGPoint, dx: f64) {
+        reactor.handle_event(Event::MouseModifierDragBegin {
+            window: wsid,
+            at,
+            action: crate::common::config::MouseAction::Resize,
+        });
+        reactor.handle_event(Event::MouseModifierDrag {
+            dx,
+            dy: 0.0,
+            last: false,
+            at_x: at.x + dx,
+        });
+    }
+
+    fn laid_out(reactor: &mut Reactor, space: SpaceId) -> Vec<(WindowId, CGRect)> {
+        LayoutManager::calculate_layout(reactor, Some(space))
+            .into_iter()
+            .find(|(s, _)| *s == space)
+            .map(|(_, frames)| frames)
+            .unwrap_or_default()
+    }
+
+    /// A tiled window's edge against the screen cannot move, and the layout
+    /// took a drag of it out of the opposite edge, the opposite way: pressed
+    /// in the right half of the rightmost window, a drag to the left moved its
+    /// left edge right. The press takes the edge that can move instead, and
+    /// that edge follows the pointer.
+    #[test]
+    fn a_press_beside_the_screen_edge_moves_the_edge_that_can_follow_the_pointer() {
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let before = laid_out(&mut reactor, space);
+        let (i, frame) = (0..3)
+            .map(|i| (i, before.iter().find(|(w, _)| *w == wids[i]).unwrap().1))
+            .max_by(|a, b| a.1.max().x.partial_cmp(&b.1.max().x).unwrap())
+            .unwrap();
+        let at = CGPoint::new(frame.max().x - 20.0, frame.mid().y);
+
+        press_and_drag(&mut reactor, wsids[i], at, -100.0);
+
+        let after = laid_out(&mut reactor, space);
+        let moved = after.iter().find(|(w, _)| *w == wids[i]).unwrap().1;
+        assert!(
+            moved.min().x < frame.min().x - 50.0,
+            "the pointer went left and the window's left edge did not follow it: {frame:?} -> {moved:?}"
+        );
+        reactor.handle_event(Event::MouseUp);
+    }
+
+    /// With a neighbour on the side it chose, the press keeps that edge.
+    #[test]
+    fn a_press_beside_a_neighbour_keeps_the_edge_it_chose() {
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let before = laid_out(&mut reactor, space);
+        let (i, frame) = (0..3)
+            .map(|i| (i, before.iter().find(|(w, _)| *w == wids[i]).unwrap().1))
+            .min_by(|a, b| a.1.min().x.partial_cmp(&b.1.min().x).unwrap())
+            .unwrap();
+        let at = CGPoint::new(frame.max().x - 20.0, frame.mid().y);
+
+        press_and_drag(&mut reactor, wsids[i], at, -100.0);
+
+        let after = laid_out(&mut reactor, space);
+        let moved = after.iter().find(|(w, _)| *w == wids[i]).unwrap().1;
+        assert!(
+            moved.max().x < frame.max().x - 50.0 && (moved.min().x - frame.min().x).abs() < 1.0,
+            "the right edge should have followed the pointer left: {frame:?} -> {moved:?}"
+        );
+        reactor.handle_event(Event::MouseUp);
+    }
+
     fn fullscreen_space(space: SpaceId) -> SpaceId { SpaceId::new(0x400000000 + space.get()) }
 
     /// Where `a` sits relative to `b`: sign of the x and y offsets.

@@ -6069,8 +6069,58 @@ impl Reactor {
             action,
             origin_frame: frame,
             last_target: frame,
-            edges: ResizeEdges::from_press(frame, at),
+            edges: self.movable_edges(wid, frame, ResizeEdges::from_press(frame, at)),
         });
+    }
+
+    /// The edges a press chose, turned round where the chosen one cannot move.
+    ///
+    /// A tiled window's edge against the screen has nothing to trade width
+    /// with, so the layout takes a change to it out of the opposite edge --
+    /// in the opposite direction. Pressing in the right half of the rightmost
+    /// window and dragging left moved its left edge right by as much as the
+    /// pointer went left: every other press of a fast run landed there, which
+    /// is "it resizes the opposite way from my drag". Where the other side
+    /// has a neighbour, that edge is the one the gesture moves, so it follows
+    /// the pointer. A window with neighbours on neither side, or on both, keeps
+    /// what the press chose; a floating one moves any edge it likes.
+    fn movable_edges(&mut self, wid: WindowId, frame: CGRect, edges: ResizeEdges) -> ResizeEdges {
+        let Some(space) = self.best_space_for_window_id(wid) else {
+            return edges;
+        };
+        if !self.layout_manager.layout_engine.is_window_tiled(space, wid) {
+            return edges;
+        }
+        let Some(others) = LayoutManager::calculate_layout(self, Some(space))
+            .into_iter()
+            .find(|(s, _)| *s == space)
+            .map(|(_, frames)| {
+                frames
+                    .into_iter()
+                    .filter(|(w, _)| *w != wid)
+                    .map(|(_, f)| f)
+                    .collect::<Vec<_>>()
+            })
+        else {
+            return edges;
+        };
+        // Beside the window on that side, overlapping it along the edge. Gaps
+        // separate neighbours, so "beside" is anything past the edge at all.
+        let overlaps_y = |f: &CGRect| f.min().y < frame.max().y && f.max().y > frame.min().y;
+        let overlaps_x = |f: &CGRect| f.min().x < frame.max().x && f.max().x > frame.min().x;
+        let left = others.iter().any(|f| overlaps_y(f) && f.max().x <= frame.min().x + 1.0);
+        let right = others.iter().any(|f| overlaps_y(f) && f.min().x >= frame.max().x - 1.0);
+        let above = others.iter().any(|f| overlaps_x(f) && f.max().y <= frame.min().y + 1.0);
+        let below = others.iter().any(|f| overlaps_x(f) && f.min().y >= frame.max().y - 1.0);
+        let turn = |chosen: Option<bool>, before: bool, after: bool| match chosen {
+            Some(true) if !before && after => Some(false),
+            Some(false) if !after && before => Some(true),
+            other => other,
+        };
+        ResizeEdges {
+            horizontal: turn(edges.horizontal, left, right),
+            vertical: turn(edges.vertical, above, below),
+        }
     }
 
     /// The window a press belongs to.
