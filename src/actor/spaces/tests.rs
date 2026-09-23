@@ -935,6 +935,47 @@ fn switching_to_another_listed_desktop_is_not_a_replacement() {
     }
 }
 
+/// Destroying a desktop is not macOS replacing it.
+///
+/// Reported from real use: deleting a space with the keybind made the tiles
+/// swap on the desktop landed on right after. From here a destroy looks like
+/// a replacement -- the desktop the display showed is listed nowhere, and the
+/// display now shows another -- and a replacement is answered by carrying the
+/// old desktop's layout onto the one now shown. But a replacement's desktop is
+/// new, and the one a destroy lands on was already there, with a tree of its
+/// own that the remap then overwrote.
+#[test]
+fn destroying_a_desktop_does_not_remap_it_onto_the_one_landed_on() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let doomed = SpaceId::new(155);
+    let neighbour = SpaceId::new(5);
+
+    seed_display_desktops(&[("builtin", &[neighbour, doomed])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(1, "builtin", 0.0, 1000.0, Some(doomed))],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // The user destroys it; the display lands on the neighbour it already had.
+    seed_display_desktops(&[("builtin", &[neighbour])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(1, "builtin", 0.0, 1000.0, Some(neighbour))],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.space_remaps,
+                vec![],
+                "a destroyed desktop's layout was carried onto the existing desktop landed on"
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
 /// A desktop that moved to the *other* display has not been replaced.
 ///
 /// `source_still_exists` looks through every display's list rather than only
