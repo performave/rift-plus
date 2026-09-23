@@ -58,8 +58,8 @@ Entries describe this fork's changes relative to
   departure records the layout from a snapshot taken as the first window
   leaves, and that snapshot was treated as current for ten seconds -- so an
   unplug a few seconds after a plug recorded the trees the plug's own late
-  window moves had left, and the return had no order to put back. A window
-  leaving after three quiet seconds now starts a fresh snapshot.
+  window moves had left, and the return had no order to put back. A snapshot
+  now lapses three quiet seconds after its last window leaves.
 - **A window moved between displays is not given a false minimum size.**
   macOS resizes a window it carries to another display, and rift took the
   reply to its own resize, arriving mid-move, for the app refusing to go
