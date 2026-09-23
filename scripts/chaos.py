@@ -123,7 +123,7 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
     for _ in range(tries):
         sh(f'open -a "{app}"')
         time.sleep(2.5)
-        if app_fullscreen(app) == want:
+        if fullscreen_state(app, window) == want:
             return True
         # Ask twice. Fronting an app that is already fullscreen does not always
         # take the display to its space within one read, and treating that as
@@ -131,7 +131,7 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
         # in, leaving a trail of extra slot records for the assertions to trip
         # over.
         time.sleep(2.0)
-        if app_fullscreen(app) == want:
+        if fullscreen_state(app, window) == want:
             return True
         # `open -a` picks the app, not the window, and three TextEdit documents
         # make "the front window" a coin toss. rift's own focus names the one
@@ -144,7 +144,7 @@ def fullscreen_key(app: str, want: bool, window: dict = None, tries: int = 4) ->
         time.sleep(2.5)
     sh(f'open -a "{app}"')
     time.sleep(2.0)
-    return app_fullscreen(app) == want
+    return fullscreen_state(app, window) == want
 
 
 def cg_display_bounds() -> list:
@@ -208,6 +208,24 @@ def app_fullscreen(app: str) -> bool:
     return bool(fullscreen_windows(app)) or bool(displays_showing_fullscreen())
 
 
+def window_fullscreen(window: dict):
+    """Whether this one window is in a fullscreen space, from the window
+    server; None when the window has no server id to ask about."""
+    wsid = window.get("window_server_id") if window else None
+    if wsid is None:
+        return None
+    return sh(f"{DTOOL} winfs {wsid}") == "1"
+
+
+def fullscreen_state(app: str, window: dict = None) -> bool:
+    """The window's own state when there is a window to ask about. The app-level
+    reading answers for whichever of its windows the app put in front, and
+    with two Safari windows that was the other one: a window still in
+    fullscreen read as out of it, and the scenario measured a stuck window."""
+    per_window = window_fullscreen(window)
+    return app_fullscreen(app) if per_window is None else per_window
+
+
 def display_count() -> int:
     try:
         return int(sh(f"{DTOOL} count"))
@@ -217,24 +235,26 @@ def display_count() -> int:
 
 # ------------------------------------------------------------ display plumbing
 
-def write_vdisp_plist(width: int, height: int, serial: int) -> None:
-    with open(VDISP_PLIST, "w") as fh:
+def write_vdisp_plist(width: int, height: int, serial: int, hidpi: bool = False,
+                      label: str = "vdisp", path: str = None) -> None:
+    extra = "<string>hidpi</string>" if hidpi else ""
+    with open(path or VDISP_PLIST, "w") as fh:
         fh.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-  <key>Label</key><string>vdisp</string>
+  <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key><array>
     <string>{BIN}/vdisp</string><string>{width}</string>
-    <string>{height}</string><string>{serial}</string>
+    <string>{height}</string><string>{serial}</string>{extra}
   </array>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
-  <key>StandardOutPath</key><string>/tmp/vdisp.out</string>
-  <key>StandardErrorPath</key><string>/tmp/vdisp.err</string>
+  <key>StandardOutPath</key><string>/tmp/{label}.out</string>
+  <key>StandardErrorPath</key><string>/tmp/{label}.err</string>
 </dict></plist>""")
 
 
-def plug(width: int = 1920, height: int = 1080, serial: int = 1) -> None:
+def plug(width: int = 1920, height: int = 1080, serial: int = 1, hidpi: bool = False) -> None:
     unplug(quiet=True)
-    write_vdisp_plist(width, height, serial)
+    write_vdisp_plist(width, height, serial, hidpi)
     sh(f"launchctl bootstrap gui/{UID} {VDISP_PLIST} 2>/dev/null; true")
     if not wait_for_displays(2):
         raise Violation(f"virtual display never attached ({sh('cat /tmp/vdisp.err')})")
@@ -242,8 +262,69 @@ def plug(width: int = 1920, height: int = 1080, serial: int = 1) -> None:
 
 def unplug(quiet: bool = False) -> None:
     sh(f"launchctl bootout gui/{UID}/vdisp 2>/dev/null; true")
-    if not quiet and not wait_for_displays(1):
+    if not quiet and not wait_for_displays(1 + len(EXTRA_MONITORS)):
         raise Violation("virtual display never detached")
+
+
+# Monitors beyond the probe, by label: a dock with two of them, or the office
+# and home monitors of a commute. Each is its own vdisp job with its own
+# identity (serial), size and scale, so macOS keeps a separate arrangement and
+# rift a separate record for each -- which is what makes them different
+# monitors rather than the same one again.
+EXTRA_MONITORS: dict = {}
+
+
+def display_ids() -> list:
+    return [int(line.split()[0]) for line in sh(f"{DTOOL} list").splitlines()
+            if line.split() and line.split()[0].isdigit()]
+
+
+def attach(label: str, width: int = 1920, height: int = 1080, serial: int = 0x40,
+           hidpi: bool = False, wait: bool = True) -> int:
+    """Plug in one more monitor; returns its display id (0 when not waited for)."""
+    detach(label, quiet=True)
+    before = set(display_ids())
+    # In /tmp, not LaunchAgents: vm-ab refuses to run over stray agents there,
+    # and a scenario that dies mid-way must not block the next battery.
+    path = f"/tmp/{label}.plist"
+    write_vdisp_plist(width, height, serial, hidpi, label=label, path=path)
+    sh(f"launchctl bootstrap gui/{UID} {path} 2>/dev/null; true")
+    EXTRA_MONITORS[label] = 0
+    if label in MONITOR_SPECS:
+        note_monitor_used(label, True)
+    if not wait:
+        return 0
+    end = time.time() + 12
+    while time.time() < end:
+        new = set(display_ids()) - before
+        if new:
+            EXTRA_MONITORS[label] = new.pop()
+            return EXTRA_MONITORS[label]
+        time.sleep(0.2)
+    raise Violation(f"monitor {label} never attached ({sh(f'cat /tmp/{label}.err')})")
+
+
+def detach(label: str, quiet: bool = False, wait: bool = True) -> None:
+    was = EXTRA_MONITORS.pop(label, None)
+    count = display_count()
+    sh(f"launchctl bootout gui/{UID}/{label} 2>/dev/null; true")
+    sh(f"rm -f /tmp/{label}.plist")
+    if was is None or quiet or not wait:
+        return
+    if not wait_for_displays(count - 1):
+        raise Violation(f"monitor {label} never detached")
+
+
+def detach_all_monitors() -> None:
+    for label in list(EXTRA_MONITORS):
+        detach(label, quiet=True)
+    # And any a crashed run left behind: vdisp jobs other than the probe's.
+    for line in sh(f"launchctl list | grep -o 'mon-[a-z0-9-]*'").splitlines():
+        sh(f"launchctl bootout gui/{UID}/{line} 2>/dev/null; rm -f /tmp/{line}.plist")
+
+
+def place(display: int, x: int, y: int) -> None:
+    sh(f"{DTOOL} place {display} {x} {y}")
 
 
 def wait_for_displays(want: int, deadline: float = 12.0) -> bool:
@@ -429,6 +510,7 @@ def reset_between_scenarios() -> str:
     that can be undone without one.
     """
     notes = []
+    detach_all_monitors()
     unplug(quiet=True)
     settle(2)
     # A fresh rift. The unplug above leaves a display record standing, and the
@@ -441,7 +523,7 @@ def reset_between_scenarios() -> str:
     # and handling it is part of what is being measured.
     restart_rift()
     notes.append("rift restarted")
-    fetched = fetch_windows_left_on_the_probe()
+    fetched = fetch_windows_left_on_the_probe() + fetch_windows_left_on_monitors()
     if fetched:
         notes.append(f"fetched {fetched} window(s) back from the probe's desktops")
     gathered = gather_test_windows()
@@ -527,6 +609,85 @@ def fetch_windows_left_on_the_probe(expected: int = 5) -> int:
     return moved
 
 
+def bring_windows_to_the_laptop() -> int:
+    """Move every test window on another display's desktops to the laptop's
+    (display 1), with whatever monitors are attached right now."""
+    ds = rift("displays") or []
+    laptop = next((d for d in ds if int(d.get("screen_id", -1)) == 1), None)
+    if laptop is None:
+        return 0
+    moved = 0
+    for d in ds:
+        if d["uuid"] == laptop["uuid"]:
+            continue
+        for sid in (d.get("space_ids") or []):
+            for w in rift("windows", "--space-id", str(sid)) or []:
+                if w.get("app_name") not in ("Safari", "TextEdit"):
+                    continue
+                sh(f"{CLI} execute display move-window --uuid {laptop['uuid']} "
+                   f"--window-id {w['id']['idx']}")
+                time.sleep(1)
+                moved += 1
+    return moved
+
+
+# Every monitor a scenario plugs in, so the reset can go and fetch windows a
+# failed run left on one: macOS keeps a monitor's desktops, and the windows on
+# them, while it is away, and lists them under no display.
+# Listed up front, not learnt as they attach: the run that left a window on
+# one is usually a different process from the one that has to fetch it.
+MONITOR_SPECS: dict = {
+    "mon-office": dict(width=3440, height=1440, serial=0x52),
+    "mon-home": dict(width=2560, height=1440, serial=0x51),
+    "mon-swap": dict(width=2560, height=1440, serial=0x53),
+    "mon-moved": dict(width=1920, height=1080, serial=0x54),
+    "mon-rearrange": dict(width=1920, height=1080, serial=0x55),
+    "mon-scale": dict(width=1920, height=1080, serial=0x56),
+    "mon-dock-a": dict(width=1920, height=1080, serial=0x57),
+    "mon-dock-b": dict(width=2560, height=1440, serial=0x58),
+    "mon-pair-a": dict(width=1920, height=1080, serial=0x59),
+    "mon-pair-b": dict(width=2560, height=1440, serial=0x5a),
+    "mon-projector": dict(width=1920, height=1080, serial=0x5b),
+}
+
+
+# Which monitors have been plugged in since they were last emptied. Visiting
+# all eleven on every reset cost three minutes a scenario whenever a window was
+# unaccounted for -- usually one that was never on a monitor at all.
+MONITORS_USED = f"{HOME}/rift-harness/monitors-used"
+
+
+def monitors_used() -> list:
+    try:
+        with open(MONITORS_USED) as fh:
+            return [l.strip() for l in fh if l.strip() in MONITOR_SPECS]
+    except OSError:
+        return []
+
+
+def note_monitor_used(label: str, used: bool) -> None:
+    labels = [l for l in monitors_used() if l != label] + ([label] if used else [])
+    with open(MONITORS_USED, "w") as fh:
+        fh.write("".join(f"{l}\n" for l in dict.fromkeys(labels)))
+
+
+def fetch_windows_left_on_monitors(expected: int = 5) -> int:
+    moved = 0
+    for label in monitors_used():
+        if listed_test_windows() >= expected:
+            break
+        try:
+            attach(label, **MONITOR_SPECS[label])
+        except Violation:
+            continue
+        settle(4)
+        moved += bring_windows_to_the_laptop()
+        detach(label, quiet=True)
+        note_monitor_used(label, False)
+        settle(4)
+    return moved
+
+
 def gather_test_windows() -> int:
     """Put every test window on one desktop of the main display, the one that
     already holds most of them, and show it.
@@ -537,6 +698,13 @@ def gather_test_windows() -> int:
     desktop and the TextEdits on another, and built a stack of one. Returns
     how many windows it moved.
     """
+    # A rift restarted a moment ago has not yet found the windows on desktops
+    # nobody is showing. Gathering straight away saw only the shown desktop's,
+    # moved nothing, and every scenario after `commute` ran with its three
+    # TextEdits floating out of sight.
+    deadline = time.time() + 12
+    while listed_test_windows() < 5 and time.time() < deadline:
+        time.sleep(1)
     ds = rift("displays") or []
     main = next((d for d in ds if (d.get("frame") or {}).get("origin", {}).get("x") in (0, 0.0, 56, 56.0)), None) \
         or (ds[0] if ds else None)
@@ -970,9 +1138,17 @@ def check_windows(before: dict, after: dict, phase: str) -> None:
     if was != now:
         def render(part, loc):
             return " | ".join(sorted("+".join(sorted(loc[i][1] for i in g)) for g in part))
+
+        # Which window, and on which desktop: two TextEdits read the same, and
+        # "one of them moved" is not something a failure can be fixed from.
+        def detail(loc):
+            return ", ".join(f"{loc[i][1]} {i}{'' if loc[i][2] else ' (float)'}@{loc[i][0]}"
+                             for i in sorted(survivors, key=lambda i: (str(loc[i][0]), i)))
         raise Violation(f"{phase}: windows that shared a desktop no longer do\n"
                         f"      before: {render(was, before)}\n"
-                        f"      after:  {render(now, after)}")
+                        f"      after:  {render(now, after)}\n"
+                        f"      was: {detail(before)}\n"
+                        f"      now: {detail(after)}")
 
 
 def check_tiled_stayed_tiled(before: dict, after: dict, phase: str,
@@ -1239,9 +1415,65 @@ def check_no_limbo(phase: str) -> None:
                             f"is neither tiled nor floating")
 
 
+def live_frames() -> dict:
+    """Window server id -> (x, y, w, h), for every window actually on screen."""
+    live = {}
+    for line in sh(f"{DTOOL} frames").splitlines():
+        parts = line.split()
+        if len(parts) == 5:
+            live[parts[0]] = tuple(int(float(v)) for v in parts[1:])
+    return live
+
+
+def check_on_screen(snap: dict, phase: str, tolerance: int = 2,
+                    floating_share: float = 0.97) -> None:
+    """Every window a display is showing has to be on it -- floating ones too.
+
+    Eric's report: windows turning up nearly outside the viewport when a
+    monitor is connected again. `check_frames_within_display` could not have
+    caught that. It reads rift's record of a frame, which is the last one the
+    app reported, allows 40px of overhang, and skips floating windows --
+    and Eric's config floats everything by default, so most of his windows
+    are ones rift does not lay out and macOS moves on its own.
+
+    So this reads the window server's frames, and holds a tiled window to
+    lying inside one display and a floating one to having nearly all of
+    itself on a single display: a float left hanging over the seam, or mostly
+    off the edge, fails.
+    """
+    bounds = cg_display_bounds()
+    if not bounds:
+        return
+    live = live_frames()
+    shown = shown_desktops(snap)
+    for ident, rec in snap["windows"].items():
+        if rec[0] not in shown or ident not in live:
+            continue
+        x, y, w, h = live[ident]
+        if w <= 1 or h <= 1:
+            continue
+        app, tiled = rec[1], rec[2]
+        if tiled:
+            if not any(x >= bx - tolerance and y >= by - tolerance
+                       and x + w <= bx + bw + tolerance and y + h <= by + bh + tolerance
+                       for bx, by, bw, bh in bounds):
+                raise Violation(f"{phase}: tiled {app} at ({x},{y},{w},{h}) is not "
+                                f"inside any display {bounds}")
+        else:
+            best = 0.0
+            for bx, by, bw, bh in bounds:
+                ix = max(0, min(x + w, bx + bw) - max(x, bx))
+                iy = max(0, min(y + h, by + bh) - max(y, by))
+                best = max(best, ix * iy / (w * h))
+            if best < floating_share:
+                raise Violation(f"{phase}: floating {app} at ({x},{y},{w},{h}) has only "
+                                f"{best:.0%} of itself on any one display {bounds}")
+
+
 def check_full(base: dict, now: dict, phase: str) -> None:
     check_display_count(now, phase)
     check_no_limbo(phase)
+    check_on_screen(now, phase)
     check_frames(now, phase)
     check_frames_within_display(now, phase)
     check_windows(base["windows"], now["windows"], phase)
@@ -1688,6 +1920,408 @@ def s_transient(base):
                         + "\n      ".join(f"{t} for {d:.2f}s" for t, d in stuck[:3]))
     print(f"      {len(sampler.episodes)} overlap episode(s), longest "
           f"{sampler.longest():.2f}s, none past {Sampler.PERSIST:.0f}s", flush=True)
+
+
+# ------------------------------------------------------- real-world displays
+#
+# Eric does not plug the same monitor into the same port all day. Today's log
+# alone: a 2560-wide monitor with the laptop to its LEFT and lower, then an
+# ultrawide with the laptop BELOW it, each made main. These scenarios are that
+# life: different monitors, sizes, scales and arrangements, monitors swapped,
+# two at once, rearranged while attached, mirrored. Each floats one window,
+# because his config floats by default and those are the windows macOS moves
+# by itself, and each samples frames throughout.
+
+OFFICE = dict(width=3440, height=1440, serial=0x52)   # ultrawide, laptop below
+HOME_MONITOR = dict(width=2560, height=1440, serial=0x51)  # laptop left, lower
+
+
+def float_one() -> str:
+    """Float one TextEdit on a shown desktop; returns its window server id."""
+    for w in shown_windows():
+        if w.get("app_name") != "TextEdit" or w.get("is_floating"):
+            continue
+        for _ in range(3):
+            if not focus(w):
+                break
+            time.sleep(0.6)
+            rift_exec("window toggle-float")
+            time.sleep(0.6)
+            now = [o for o in shown_windows() if o.get("id") == w.get("id")]
+            if now and now[0].get("is_floating"):
+                return str(w.get("window_server_id"))
+    raise Violation("could not float a window to test with")
+
+
+def rift_display_for(screen_id: int, snap: dict = None):
+    for d in (snap or {}).get("displays") or rift("displays") or []:
+        if int(d.get("screen_id", -1)) == int(screen_id):
+            return d
+    return None
+
+
+def send_to_display(window_server_id: str, screen_id: int, snap: dict) -> None:
+    d = rift_display_for(screen_id)
+    rec = snap["windows"].get(str(window_server_id))
+    if d is None or rec is None:
+        raise Violation(f"cannot send {window_server_id} to display {screen_id}")
+    for w in shown_windows():
+        if str(w.get("window_server_id")) == str(window_server_id):
+            sh(f"{CLI} execute display move-window --uuid {d['uuid']} "
+               f"--window-id {w['id']['idx']}")
+            return
+
+
+def is_main(display: int) -> bool:
+    return any(line.split()[0] == str(display) and "main=1" in line
+               for line in sh(f"{DTOOL} list").splitlines() if line.split())
+
+
+def arrange(ext: int, laptop_at: tuple) -> None:
+    """The external as main, the laptop at `laptop_at` relative to it --
+    unless macOS already remembers exactly that for this monitor, which is
+    what a real reconnect relies on."""
+    if not is_main(ext):
+        make_main(ext); settle(3)
+    for line in sh(f"{DTOOL} list").splitlines():
+        parts = line.split()
+        if parts and parts[0] == "1":
+            at = parts[1].split("@")[1]
+            if at != f"{laptop_at[0]},{laptop_at[1]}":
+                place(1, *laptop_at); settle(3)
+            break
+
+
+def on_display(snap: dict, idents, screen_id: int) -> list:
+    """Of `idents`, the ones not on a desktop `screen_id` owns."""
+    d = rift_display_for(screen_id, snap)
+    owned = set(all_space_ids([d])) if d else set()
+    return [snap["windows"][i][1] for i in idents
+            if i in snap["windows"] and snap["windows"][i][0] not in owned]
+
+
+def check_sampler(sampler: "Sampler", phase: str) -> None:
+    for text, secs in sampler.episodes:
+        if secs >= 0.3:
+            print(f"      overlap for {secs:.2f}s: {text}", flush=True)
+    stuck = sampler.persisted()
+    if stuck:
+        raise Violation(f"{phase}: overlap(s) lasting {Sampler.PERSIST:.0f}s or more:\n      "
+                        + "\n      ".join(f"{t} for {d:.2f}s" for t, d in stuck[:3]))
+
+
+def restore_arrangement() -> None:
+    # Home first, while the monitors are still here to take them from.
+    bring_windows_to_the_laptop()
+    settle(2)
+    detach_all_monitors()
+    unplug(quiet=True)
+    settle(3)
+    if not is_main(1):
+        make_main(1)
+    place(1, 0, 0)
+    settle(2)
+
+
+@scenario("commute", doc="office ultrawide (laptop below) -> laptop -> home monitor "
+                         "(laptop left) -> laptop -> office again")
+def s_commute(base):
+    floated = float_one()
+    try:
+        with Sampler("commute") as sampler:
+            office = attach("mon-office", **OFFICE); settle(6)
+            arrange(office, (1000, 1440)); settle(4)
+            at_office = snapshot("office")
+            safari = [i for i, r in at_office["windows"].items() if r[1] == "Safari"]
+            for ident in safari:
+                send_to_display(ident, office, at_office)
+                time.sleep(1.0)
+            settle(4)
+            at_office = snapshot("office, Safari moved to the ultrawide")
+            check_full(at_office, at_office, "office")
+            if on_display(at_office, safari, office):
+                raise Violation("commute: could not put the Safari windows on the office monitor")
+
+            detach("mon-office"); settle(6)
+            check_full(at_office, snapshot("left the office"), "left the office")
+
+            home = attach("mon-home", **HOME_MONITOR); settle(6)
+            arrange(home, (-1502, 700)); settle(4)
+            at_home = snapshot("home")
+            check_on_screen(at_home, "arrived home")
+            check_no_limbo("arrived home")
+            check_frames(at_home, "arrived home")
+            check_windows(at_office["windows"], at_home["windows"], "arrived home")
+            te = [i for i, r in at_home["windows"].items()
+                  if r[1] == "TextEdit" and i != floated and r[2]]
+            if te:
+                send_to_display(te[0], home, at_home)
+                settle(4)
+            at_home = snapshot("home, a TextEdit on the monitor")
+            check_full(at_home, at_home, "home")
+
+            detach("mon-home"); settle(6)
+            check_full(at_home, snapshot("left home"), "left home")
+
+            office = attach("mon-office", **OFFICE); settle(8)
+            arrange(office, (1000, 1440)); settle(4)
+            back = snapshot("office again")
+            check_on_screen(back, "office again")
+            check_no_limbo("office again")
+            check_frames(back, "office again")
+            away = on_display(back, safari, office)
+            if away:
+                raise Violation(f"commute: back at the office, {away} did not return "
+                                "to the ultrawide")
+            detach("mon-office"); settle(6)
+            check_on_screen(snapshot("home time"), "home time")
+        check_sampler(sampler, "commute")
+    finally:
+        restore_arrangement()
+
+
+@scenario("hot-swap", doc="one monitor out and another in within a fraction of a second")
+def s_hot_swap(base):
+    floated = float_one()
+    try:
+        with Sampler("hot-swap") as sampler:
+            plug(); settle()
+            a = snapshot("monitor A")
+            ids = [i for i, r in a["windows"].items() if r[1] == "Safari"]
+            ext = probe_display(a["displays"], base["displays"])
+            for ident in ids:
+                send_to_display(ident, int(ext["screen_id"]), a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("monitor A, Safari on it")
+            unplug(quiet=True)
+            time.sleep(0.3)
+            other = attach("mon-swap", width=2560, height=1440, serial=0x53); settle(8)
+            check_full(a, snapshot("swapped to B"), "hot-swap to B")
+            detach("mon-swap", wait=False)
+            time.sleep(0.3)
+            plug(); settle(8)
+            back = snapshot("swapped back to A")
+            check_full(a, back, "hot-swap back to A")
+            away = on_display(back, ids, int(probe_display(back["displays"], base["displays"])["screen_id"]))
+            if away:
+                raise Violation(f"hot-swap: {away} did not return to monitor A")
+        check_sampler(sampler, "hot-swap")
+    finally:
+        restore_arrangement()
+
+
+@scenario("monitor-moved", doc="the same monitor comes back on the other side of the laptop")
+def s_monitor_moved(base):
+    float_one()
+    try:
+        with Sampler("monitor-moved") as sampler:
+            ext = attach("mon-moved", serial=0x54); settle(6)
+            a = snapshot("right of the laptop")
+            for ident in [i for i, r in a["windows"].items() if r[1] == "Safari"]:
+                send_to_display(ident, ext, a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("right of the laptop, Safari on it")
+            detach("mon-moved"); settle(6)
+            ext = attach("mon-moved", serial=0x54); settle(4)
+            # Left of the laptop and bottom-aligned with it.
+            place(ext, -1920, 886 - 1080); settle(8)
+            check_full(a, snapshot("left of the laptop"), "monitor-moved")
+        check_sampler(sampler, "monitor-moved")
+    finally:
+        restore_arrangement()
+
+
+@scenario("rearranged-while-attached",
+          doc="the display is dragged to the other side in Settings; no plug at all")
+def s_rearranged(base):
+    float_one()
+    try:
+        with Sampler("rearranged") as sampler:
+            ext = attach("mon-rearrange", serial=0x55); settle(6)
+            a = snapshot("right of the laptop")
+            for ident in [i for i, r in a["windows"].items() if r[1] == "Safari"]:
+                send_to_display(ident, ext, a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("right, Safari on it")
+            place(ext, -1920, 0); settle(6)
+            check_full(a, snapshot("moved left"), "moved left")
+            place(ext, 0, -1080); settle(6)
+            check_full(a, snapshot("moved above"), "moved above")
+            place(ext, 1502, 0); settle(6)
+            check_full(a, snapshot("moved back"), "moved back")
+        check_sampler(sampler, "rearranged")
+    finally:
+        restore_arrangement()
+
+
+@scenario("scale-change", doc="the same monitor comes back at 2x instead of 1x")
+def s_scale_change(base):
+    float_one()
+    try:
+        with Sampler("scale-change") as sampler:
+            ext = attach("mon-scale", width=1920, height=1080, serial=0x56); settle(6)
+            a = snapshot("1x")
+            for ident in [i for i, r in a["windows"].items() if r[1] == "Safari"]:
+                send_to_display(ident, ext, a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("1x, Safari on it")
+            detach("mon-scale"); settle(6)
+            attach("mon-scale", width=1280, height=720, serial=0x56, hidpi=True); settle(8)
+            check_full(a, snapshot("back at 2x"), "scale-change")
+        check_sampler(sampler, "scale-change")
+    finally:
+        restore_arrangement()
+
+
+@scenario("dock-two-monitors", doc="two monitors arrive together, leave together, return")
+def s_dock_two(base):
+    float_one()
+    try:
+        with Sampler("dock") as sampler:
+            attach("mon-dock-a", serial=0x57, wait=False)
+            attach("mon-dock-b", width=2560, height=1440, serial=0x58, wait=False)
+            if not wait_for_displays(3, 15):
+                raise Violation("the dock's two monitors never both attached")
+            settle(8)
+            ids = [i for i in display_ids() if i != 1]
+            a = snapshot("docked")
+            safari = [i for i, r in a["windows"].items() if r[1] == "Safari"]
+            for ident, target in zip(safari, ids):
+                send_to_display(ident, target, a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("docked, a Safari on each monitor")
+            check_full(a, a, "docked")
+            for label in ("mon-dock-a", "mon-dock-b"):
+                detach(label, wait=False)
+            if not wait_for_displays(1, 15):
+                raise Violation("the dock's monitors never both detached")
+            settle(8)
+            check_full(a, snapshot("undocked"), "undocked")
+            attach("mon-dock-a", serial=0x57, wait=False)
+            attach("mon-dock-b", width=2560, height=1440, serial=0x58, wait=False)
+            if not wait_for_displays(3, 15):
+                raise Violation("the dock's two monitors never both came back")
+            settle(10)
+            check_full(a, snapshot("docked again"), "docked again")
+        check_sampler(sampler, "dock-two-monitors")
+    finally:
+        restore_arrangement()
+
+
+@scenario("one-of-two-drops", doc="one of two monitors drops out and comes back")
+def s_one_of_two(base):
+    float_one()
+    try:
+        with Sampler("one-of-two") as sampler:
+            first = attach("mon-pair-a", serial=0x59); settle(4)
+            second = attach("mon-pair-b", width=2560, height=1440, serial=0x5a); settle(8)
+            a = snapshot("both")
+            safari = [i for i, r in a["windows"].items() if r[1] == "Safari"]
+            for ident, target in zip(safari, (first, second)):
+                send_to_display(ident, target, a)
+                time.sleep(1.0)
+            settle(4)
+            a = snapshot("both, a Safari on each")
+            detach("mon-pair-b"); settle(8)
+            check_full(a, snapshot("one dropped"), "one dropped")
+            attach("mon-pair-b", width=2560, height=1440, serial=0x5a); settle(10)
+            check_full(a, snapshot("it came back"), "it came back")
+        check_sampler(sampler, "one-of-two-drops")
+    finally:
+        restore_arrangement()
+
+
+@scenario("mirroring", doc="mirror to a display, as when presenting, then stop")
+def s_mirroring(base):
+    float_one()
+    try:
+        with Sampler("mirroring") as sampler:
+            ext = attach("mon-projector", serial=0x5b); settle(6)
+            a = snapshot("extended")
+            sh(f"{DTOOL} mirror {ext} 1"); settle(8)
+            mirrored = snapshot("mirrored")
+            check_no_limbo("mirrored")
+            check_on_screen(mirrored, "mirrored")
+            check_frames(mirrored, "mirrored")
+            sh(f"{DTOOL} mirror {ext} 0"); settle(8)
+            check_full(a, snapshot("extended again"), "mirroring stopped")
+            detach("mon-projector"); settle(6)
+            check_full(a, snapshot("projector gone"), "projector gone")
+        check_sampler(sampler, "mirroring")
+    finally:
+        sh(f"{DTOOL} mirror {EXTRA_MONITORS.get('mon-projector', 0)} 0")
+        restore_arrangement()
+
+
+def sa_move_space_after(space: int, after: int) -> None:
+    """What a Mission Control drag of a desktop onto another display asks for:
+    the addition's SPACE_MOVE, spoken over its socket. The drag itself cannot
+    be scripted."""
+    import socket, struct
+    body = bytes([0x05]) + struct.pack("=QQQB", space, after, 0, 1)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    sock.connect("/tmp/rift-sa_vm.socket")
+    sock.sendall(struct.pack("=h", len(body)) + body)
+    try:
+        while sock.recv(64):
+            pass
+    except OSError:
+        pass
+    sock.close()
+
+
+@scenario("desktop-to-new-monitor",
+          doc="plug in, move the laptop's desktop onto the monitor (Mission Control "
+              "drag), in both of Eric's arrangements")
+def s_desktop_to_new_monitor(base):
+    """Eric's first seam report: plug the monitor in, drag desktops onto it,
+    and some windows end up "way over the seam". `desktop-move-seam-test.py`
+    did this with the probe to the right and top-aligned, which is neither of
+    his setups, and it passed on the old build too -- so it never reproduced
+    the report. This does it in both: laptop left of and lower than a 2560
+    monitor, and laptop below an ultrawide, each made main.
+    """
+    for label, spec, laptop_at in (("mon-home", HOME_MONITOR, (-1502, 700)),
+                                   ("mon-office", OFFICE, (1000, 1440))):
+        float_one()
+        try:
+            with Sampler(label) as sampler:
+                ext = attach(label, **spec); settle(6)
+                arrange(ext, laptop_at); settle(4)
+                snap = snapshot(f"{label} attached")
+                laptop = rift_display_for(1, snap)
+                monitor = rift_display_for(ext, snap)
+                home_desktop = laptop.get("space")
+                if not any(r[0] == home_desktop for r in snap["windows"].values()):
+                    home_desktop = None
+                if home_desktop is None or len(laptop.get("space_ids") or []) < 2:
+                    raise Violation(f"{label}: the laptop needs a desktop holding the "
+                                    f"windows and another to keep ({laptop.get('space_ids')})")
+                sa_move_space_after(home_desktop, monitor["space"])
+                settle(6)
+                moved = snapshot(f"{label}: desktop moved onto the monitor")
+                if not any(home_desktop in (d.get("space_ids") or []) and
+                           int(d.get("screen_id", -1)) == ext for d in moved["displays"]):
+                    raise Violation(f"{label}: desktop {home_desktop} did not move to the monitor")
+                check_on_screen(moved, f"{label}: desktop moved")
+                check_no_limbo(f"{label}: desktop moved")
+                check_frames(moved, f"{label}: desktop moved")
+                check_windows(snap["windows"], moved["windows"], f"{label}: desktop moved")
+                detach(label); settle(6)
+                gone = snapshot(f"{label}: monitor unplugged")
+                check_on_screen(gone, f"{label}: monitor unplugged")
+                check_no_limbo(f"{label}: monitor unplugged")
+                check_frames(gone, f"{label}: monitor unplugged")
+            check_sampler(sampler, label)
+        finally:
+            restore_arrangement()
+            tile_all()
 
 
 @scenario("native-fullscreen-across-churn",
@@ -2241,7 +2875,13 @@ def main() -> int:
         except Violation as exc:
             res = (name, "FAIL", f"{time.time()-started:.0f}s", str(exc))
         except Exception as exc:
-            res = (name, "ERROR", f"{time.time()-started:.0f}s", f"{type(exc).__name__}: {exc}")
+            # With where it happened: an ERROR is a fault in the harness, and
+            # "TypeError: unhashable type" alone does not say which line.
+            import traceback
+            where = traceback.extract_tb(exc.__traceback__)[-3:]
+            res = (name, "ERROR", f"{time.time()-started:.0f}s",
+                   f"{type(exc).__name__}: {exc} at "
+                   + " <- ".join(f"{f.name}:{f.lineno}" for f in reversed(where)))
         finally:
             # The flight recorder, taken before the cleanup unplug adds its own
             # churn. Every failure's cause used to be unreadable after the

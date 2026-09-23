@@ -40,7 +40,7 @@ PLIST
 launchctl bootstrap gui/\$U ~/Library/LaunchAgents/chaos.plist
 # Delete it the moment it is loaded. The job is already registered, so it runs
 # to completion either way -- but a plist left in ~/Library/LaunchAgents with
-# RunAtLoad is re-run by launchd at the next login, and `vm-ab` reboots the
+# RunAtLoad is re-run by launchd at the next login, and vm-ab reboots the
 # guest as its first act. That phantom battery then races the real one for the
 # same windows, with both writing this same log. It corrupted an unknown number
 # of runs before anyone noticed the scenario names in the log were not the ones

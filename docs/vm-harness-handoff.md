@@ -917,6 +917,47 @@ probe attached it tiled two of five, or untiled one window while "tiling"
 another. It now walks every shown desktop, checks each toggle took, and goes
 round until nothing is left floating.
 
+## Real-world displays: different monitors, arrangements and docks (2026-09-23)
+
+Eric does not replug one monitor into one port. His log for this one day: a
+2560-wide monitor as main with the laptop to its **left and lower**, then an
+ultrawide (3381 wide) as main with the laptop **below** it. The battery only
+ever attached one probe, to the right, top-aligned. So:
+
+- **Several monitors at once.** `attach(label, width, height, serial, hidpi)`
+  runs one more `vdisp` job per monitor -- the guest holds two virtual
+  displays at once without complaint -- each with its own serial, so macOS
+  keeps an arrangement and rift a record per monitor. Their plists live in
+  /tmp, not LaunchAgents, so a crashed run cannot trip vm-ab's stray-agent
+  refusal. `MONITOR_SPECS` names every one, and the reset fetches windows back
+  from any of them (macOS keeps an absent monitor's desktops and their windows,
+  listed under no display).
+- **Arrangements.** `arrange(ext, laptop_at)` makes the monitor main and puts
+  the laptop where Eric's is, unless macOS already remembers that for the
+  monitor -- which is what a real reconnect relies on.
+- **`check_on_screen`, now part of `check_full`.** Real frames (`dtool
+  frames`), every window on a shown desktop, floating ones included: a tiled
+  window must be inside one display, a floating one at least 97% on one. The
+  old `check_frames_within_display` read rift's record, allowed 40 px of
+  overhang and skipped floats -- and Eric's config floats by default, so most
+  of his windows are ones macOS moves on its own. Every new scenario floats a
+  window for that reason, and samples frames throughout.
+
+| Scenario | What it is |
+|---|---|
+| `commute` | office ultrawide (laptop below), Safari on it -> laptop alone -> home 2560 (laptop left, lower), a TextEdit on it -> laptop -> office again: Safari must come back to the ultrawide |
+| `hot-swap` | monitor A out, monitor B in 0.3 s later, and back |
+| `monitor-moved` | the same monitor returns on the other side of the laptop, bottom-aligned |
+| `rearranged-while-attached` | the monitor dragged left, above, and back in Settings -- no plug at all |
+| `scale-change` | the same monitor returns at 2x |
+| `dock-two-monitors` | two monitors arrive together, leave together, return |
+| `one-of-two-drops` | one of two monitors drops out and comes back |
+| `mirroring` | mirror to a projector, then stop, then unplug it |
+| `desktop-to-new-monitor` | plug in and move the laptop's desktop onto the monitor (Mission Control's drag, via SPACE_MOVE), in both of Eric's arrangements -- his first seam report |
+
+Not reachable from the guest: sleep across a change, and a real lid (its
+pseudo display). See below.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in

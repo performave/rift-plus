@@ -183,6 +183,42 @@ int main(int argc, const char **argv) { @autoreleasepool {
         return e == kCGErrorSuccess ? 0 : 3;
     }
 
+    if (!strcmp(cmd, "mirror") && argc > 3) {
+        // mirror <display> <of>: make <display> show what <of> shows, as a
+        // projector does when presenting; `of` 0 stops mirroring. Session only.
+        CGDirectDisplayID target = (CGDirectDisplayID)strtoul(argv[2], NULL, 0);
+        CGDirectDisplayID of = (CGDirectDisplayID)strtoul(argv[3], NULL, 0);
+        CGDisplayConfigRef cfg;
+        if (CGBeginDisplayConfiguration(&cfg) != kCGErrorSuccess) {
+            fprintf(stderr, "CGBeginDisplayConfiguration failed\n"); return 2;
+        }
+        CGConfigureDisplayMirrorOfDisplay(cfg, target, of ? of : kCGNullDirectDisplay);
+        CGError e = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+        printf("mirror %u of %u -> %s\n", target, of, e == kCGErrorSuccess ? "ok" : "failed");
+        return e == kCGErrorSuccess ? 0 : 3;
+    }
+
+    if (!strcmp(cmd, "winfs") && argc > 2) {
+        // winfs <window-server-id>: 1 if the window sits on a fullscreen
+        // space, else 0. Per window, from the window server. Asking whether
+        // a display shows a fullscreen space answers for whatever the app put
+        // in front: with two Safari windows, fronting Safari brought up the
+        // one that was not fullscreen and a stuck window read as cleared.
+        extern int CGSMainConnectionID(void);
+        extern CFArrayRef CGSCopySpacesForWindows(int cid, int mask, CFArrayRef windows);
+        extern int CGSSpaceGetType(int cid, uint64_t sid);
+        int cid = CGSMainConnectionID();
+        NSArray *wins = @[@((uint32_t)strtoul(argv[2], NULL, 0))];
+        CFArrayRef spaces = CGSCopySpacesForWindows(cid, 0x7, (__bridge CFArrayRef)wins);
+        int fs = 0;
+        for (NSNumber *sid in (__bridge NSArray *)spaces) {
+            if (CGSSpaceGetType(cid, [sid unsignedLongLongValue]) == 4) fs = 1;
+        }
+        if (spaces) CFRelease(spaces);
+        printf("%d\n", fs);
+        return 0;
+    }
+
     if (!strcmp(cmd, "fullscreen")) {
         // Ctrl-Cmd-F, posted straight to the event stream. Apple Events are
         // the obvious way to do this and hang indefinitely inside a LaunchAgent
