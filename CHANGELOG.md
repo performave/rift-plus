@@ -34,6 +34,18 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Unplugging soon after plugging in keeps the desktops' order.** A
+  departure records the layout from a snapshot taken as the first window
+  leaves, and that snapshot was treated as current for ten seconds -- so an
+  unplug a few seconds after a plug recorded the trees the plug's own late
+  window moves had left, and the return had no order to put back. A window
+  leaving after three quiet seconds now starts a fresh snapshot.
+- **A window moved between displays is not given a false minimum size.**
+  macOS resizes a window it carries to another display, and rift took the
+  reply to its own resize, arriving mid-move, for the app refusing to go
+  smaller. It learnt that size as the window's minimum and would not lay the
+  window out narrower. Sizes answered within five seconds of the window server
+  moving windows for a display change are no longer learnt.
 - **A window sent home after a display returns stays tiled.** The window
   server can report a window leaving the desktop it has just arrived on while
   answering, in the same breath, that it is on that desktop and drawn. rift

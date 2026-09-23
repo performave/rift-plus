@@ -1312,6 +1312,80 @@ fn a_refusal_to_a_real_arrange_is_learnt() {
     );
 }
 
+/// A window the window server is moving for a display change reports sizes
+/// macOS gave it, not ones its app insists on. Learnt as a refusal, the size
+/// became a minimum: in the VM, a TextEdit asked for 536 wide mid-unplug
+/// answered 673 -- the width it had on the other display -- and rift would not
+/// lay it out narrower until it happened to be seen smaller.
+#[test]
+fn a_size_answered_while_the_window_server_moves_windows_is_not_learnt() {
+    // macOS resizes a window it moves to another display, so a reply wider
+    // than asked is its doing, not the app refusing.
+    crate::sys::display_churn::set_since_windows_last_moved(Some(
+        std::time::Duration::from_millis(200),
+    ));
+    let (mut reactor, wid, wsid, space1, _space2, screen) = reactor_with_window_on_space1();
+    let (app_tx, mut app_rx) = crate::actor::channel();
+    reactor.app_manager.apps.get_mut(&wid.pid).unwrap().handle =
+        crate::actor::app::AppThreadHandle::new_for_test(app_tx);
+    reactor.send_layout_event(crate::actor::reactor::LayoutEvent::WindowAdded(space1, wid));
+    // A neighbour, so the slot is half the screen and a refusal can fit on
+    // the display. A lone window is asked for the whole screen, and a reply
+    // wider than that is -- correctly -- not taken for a minimum at all.
+    let neighbour = WindowId::new(wid.pid, 2);
+    reactor.add_test_window(neighbour, WindowServerId::new(102), Some(space1), screen);
+    let workspace = reactor.test_workspace(space1, 0);
+    assert!(reactor.assign_test_window_to_workspace(space1, neighbour, workspace));
+    reactor.send_layout_event(crate::actor::reactor::LayoutEvent::WindowAdded(
+        space1, neighbour,
+    ));
+    // Somewhere the layout will not already have it, so the arrange writes.
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic =
+        CGRect::new(CGPoint::new(300., 300.), CGSize::new(200., 200.));
+    let _ = LayoutManager::update_layout(&mut reactor, false, false, Some(space1));
+
+    let sent: Vec<(CGRect, TransactionId)> = std::iter::from_fn(|| app_rx.try_recv().ok())
+        .filter_map(|(_, request)| match request {
+            Request::SetWindowFrame(w, frame, txid, _) if w == wid => Some((frame, txid)),
+            Request::SetBatchWindowFrame(frames, txid, _) => {
+                frames.into_iter().find(|(w, _)| *w == wid).map(|(_, frame)| (frame, txid))
+            }
+            _ => None,
+        })
+        .collect();
+    let Some(&(asked, txid)) = sent.last() else {
+        panic!("the arrange must write the window, or there is nothing to refuse");
+    };
+    let _ = (screen, wsid);
+    let got = CGRect::new(
+        asked.origin,
+        CGSize::new(asked.size.width + 88.0, asked.size.height),
+    );
+
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(true),
+        None,
+    ));
+    reactor.handle_event(Event::WindowFrameChanged(
+        wid,
+        got,
+        Some(txid),
+        Requested(false),
+        Some(MouseState::Up),
+    ));
+
+    crate::sys::display_churn::set_since_windows_last_moved(None);
+    let learnt = reactor.layout_manager.layout_engine.observed_min_size(wid);
+    assert_eq!(
+        learnt, None,
+        "a size answered mid-churn ({} for {}) was taken for the app's minimum",
+        got.size.width, asked.size.width
+    );
+}
+
 /// A window aftercare sends home must be taken to have arrived there.
 ///
 /// Aftercare runs after the return pass, for a window the window server put on
@@ -10303,6 +10377,53 @@ mod display_archive {
             "a desktop being retired was recorded as the survivor's: {desktops:?}"
         );
         assert_ne!(shown, Some(minted), "nor as the one it shows");
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// A snapshot a window leaving took seconds ago belongs to that churn, not
+    /// to the next. A churn is a burst -- the window server moves a display's
+    /// windows within a few hundred milliseconds -- and the snapshot stayed
+    /// fresh for ten seconds, so an unplug a few seconds after a plug recorded
+    /// the trees the plug's stragglers had left: in the VM, one window of four
+    /// still in a tree, and the return, with no order to put back, reordered
+    /// the desktop (`long-absence`).
+    #[test]
+    fn a_window_leaving_after_a_quiet_spell_takes_a_new_pre_churn_snapshot() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        let first = f.reactor.display_archive.churn_began().expect("a snapshot was taken");
+
+        // A few seconds of nothing, within the snapshot's lifetime.
+        f.reactor.display_archive.backdate_pre_churn(std::time::Duration::from_secs(4));
+        assert!(
+            f.reactor.display_archive.fresh_pre_churn().is_some(),
+            "still inside its lifetime, or this tests nothing"
+        );
+        f.reactor.capture_pre_churn_layout();
+
+        let now = f.reactor.display_archive.churn_began().expect("a snapshot stands");
+        assert!(
+            now.elapsed() < std::time::Duration::from_secs(1),
+            "the next churn reused the last one's snapshot, taken {:?} ago",
+            now.elapsed()
+        );
+        assert!(now > first - std::time::Duration::from_secs(4));
+        spaces_cleanup(&f, &[]);
+    }
+
+    /// Within a burst the first snapshot stands: the windows moved after it
+    /// are the churn, and a snapshot retaken between two of them would record
+    /// a half-moved desktop.
+    #[test]
+    fn a_window_leaving_mid_burst_keeps_the_pre_churn_snapshot() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        f.reactor
+            .display_archive
+            .backdate_pre_churn(std::time::Duration::from_millis(300));
+        let first = f.reactor.display_archive.churn_began().expect("a snapshot was taken");
+        f.reactor.capture_pre_churn_layout();
+        assert_eq!(f.reactor.display_archive.churn_began(), Some(first));
         spaces_cleanup(&f, &[]);
     }
 

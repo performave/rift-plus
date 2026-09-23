@@ -52,6 +52,12 @@ const HOMING_DEADLINE: Duration = Duration::from_secs(3);
 /// within a second or two of the window server starting to move windows.
 const PRE_CHURN_TTL: Duration = Duration::from_secs(10);
 
+/// How long without a window leaving its tree ends a churn. The window server
+/// moves a display's windows within a few hundred milliseconds of each other;
+/// a leave after this long is the start of another churn, and the snapshot the
+/// last one took describes a state that is no longer the one before this one.
+const CHURN_BURST_GAP: Duration = Duration::from_secs(3);
+
 /// How long after the window server last moved windows for a display change
 /// a desktop going missing is still its doing rather than the user's.
 ///
@@ -121,6 +127,10 @@ pub(super) struct PreChurn {
     /// naming the two it had missed.
     pub(super) homes: HashMap<WindowId, SpaceId>,
     taken: Instant,
+    /// When a window last left its tree while this snapshot stood. A churn
+    /// is a burst, and a leave after `CHURN_BURST_GAP` of quiet starts the
+    /// next one, which needs a snapshot of its own.
+    last_leave: Instant,
     /// Kept past the TTL: the display set went incoherent after this was
     /// taken and has not come back whole since, so the display change that
     /// consumes it is still to come — after a sleep, possibly. See
@@ -222,6 +232,7 @@ impl DisplayArchive {
     pub(super) fn backdate_pre_churn(&mut self, by: Duration) {
         if let Some(pre) = self.pre_churn.as_mut() {
             pre.taken -= by;
+            pre.last_leave -= by;
         }
     }
 
@@ -306,9 +317,22 @@ impl Reactor {
                 self.drag_manager.drag_state,
                 super::DragState::Active { .. } | super::DragState::PendingSwap { .. }
             )
-            || self.display_archive.fresh_pre_churn().is_some()
         {
             return;
+        }
+        // Within a burst the first snapshot stands -- the leaves after it are
+        // the churn. After a quiet spell this leave starts another churn: an
+        // unplug seconds after a plug otherwise recorded the trees the plug's
+        // own stragglers had left behind. A pinned snapshot is kept whatever
+        // the gap; it is waiting for the display change that consumes it.
+        if self.display_archive.fresh_pre_churn().is_some()
+            && let Some(pre) = self.display_archive.pre_churn.as_mut()
+        {
+            if pre.pinned || pre.last_leave.elapsed() < CHURN_BURST_GAP {
+                pre.last_leave = crate::sys::trace::now();
+                return;
+            }
+            crate::sys::trace::act("pre_churn_retaken", &pre.taken.elapsed().as_millis());
         }
         let engine = &mut self.layout_manager.layout_engine;
         let spaces = engine.virtual_workspace_manager().initialized_spaces();
@@ -344,6 +368,7 @@ impl Reactor {
             modes,
             homes,
             taken: crate::sys::trace::now(),
+            last_leave: crate::sys::trace::now(),
             pinned: false,
         });
     }

@@ -221,6 +221,11 @@ pub enum SpaceEventKind {
 /// to nothing (or invert it) before the user lets go.
 const MIN_MODIFIER_DRAG_SIZE: f64 = 100.0;
 
+/// How long after the window server last moved windows for a display change a
+/// window answering larger than asked is taken for macOS's resize rather than
+/// its app refusing the size.
+const REFUSAL_AFTER_CHURN: Duration = Duration::from_secs(5);
+
 /// The half of `frame` a window dropped on that side would occupy.
 fn half_of(frame: CGRect, direction: Direction) -> CGRect {
     let half_w = frame.size.width / 2.0;
@@ -2271,6 +2276,14 @@ impl Reactor {
                         // milliseconds after the release. Wait out the same
                         // settling window the echo check below uses.
                         && !self.modifier_drag_is_settling()
+                        // Nor while the window server is moving windows for a
+                        // display change. macOS resizes a window it carries to
+                        // another display, and the reply to rift's write then
+                        // carries macOS's size: a TextEdit asked for 536 wide
+                        // mid-unplug answered the 673 it had on the other
+                        // display, and that became its minimum.
+                        && !crate::sys::display_churn::since_windows_last_moved()
+                            .is_some_and(|since| since < REFUSAL_AFTER_CHURN)
                         && self
                             .layout_manager
                             .layout_engine
