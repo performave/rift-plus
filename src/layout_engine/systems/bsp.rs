@@ -196,10 +196,17 @@ impl BspLayoutSystem {
         direction: Direction,
         new_window: WindowId,
     ) {
-        if let Some(NodeKind::Leaf { window, .. }) = self.kind.get(leaf).cloned() {
+        if let Some(NodeKind::Leaf {
+            window,
+            fullscreen,
+            fullscreen_within_gaps,
+            ..
+        }) = self.kind.get(leaf).cloned()
+        {
             let orientation = direction.orientation();
 
             let existing_node = self.make_leaf(window);
+            self.keep_fullscreen(existing_node, fullscreen, fullscreen_within_gaps);
             let new_node = self.make_leaf(Some(new_window));
 
             if let Some(w) = window {
@@ -318,6 +325,23 @@ impl BspLayoutSystem {
         } else {
             self.unindex_window(wid);
             None
+        }
+    }
+
+    /// A window's leaf is rebuilt when a neighbour is split in beside it, and
+    /// a fresh leaf is not fullscreen: a window rejoining the layout while
+    /// another was fullscreen took the fullscreen away. In the VM a TextEdit
+    /// coming back after a replug knocked Safari out of fullscreen, and the
+    /// next toggle turned it on again instead of off. The window keeps it.
+    fn keep_fullscreen(&mut self, node: NodeId, fullscreen: bool, within_gaps: bool) {
+        if let Some(NodeKind::Leaf {
+            fullscreen: f,
+            fullscreen_within_gaps: g,
+            ..
+        }) = self.kind.get_mut(node)
+        {
+            *f = fullscreen;
+            *g = within_gaps;
         }
     }
 
@@ -506,7 +530,9 @@ impl BspLayoutSystem {
                     self.index_window(wid, sel);
                 } else {
                     let existing = *window;
+                    let (was_fullscreen, was_within_gaps) = (*fullscreen, *fullscreen_within_gaps);
                     let left = self.make_leaf(existing);
+                    self.keep_fullscreen(left, was_fullscreen, was_within_gaps);
                     let right = self.make_leaf(Some(wid));
                     self.index_window(wid, right);
                     if let Some(w) = existing {

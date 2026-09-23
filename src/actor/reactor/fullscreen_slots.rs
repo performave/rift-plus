@@ -291,6 +291,29 @@ impl Reactor {
             return false;
         }
 
+        // A snapshot from before the user's last layout command would undo
+        // that command: a slot recorded at a plug, restored after Safari had
+        // been made fullscreen, put Safari back in its tile. Put the window
+        // back beside its old neighbour instead, and leave the rest alone.
+        let older_than_a_command =
+            self.last_layout_command.is_some_and(|commanded| commanded > slot.taken);
+        if older_than_a_command {
+            crate::sys::trace::act(
+                "fullscreen_slot",
+                &(
+                    window.idx.get(),
+                    "snapshot predates a layout command; re-anchoring",
+                ),
+            );
+            if let Some(anchor) = slot.anchor
+                && anchor.anchor != window
+                && self.layout_manager.layout_engine.restore_slot(space, anchor, window)
+            {
+                crate::sys::trace::act("fullscreen_slot", &(window.idx.get(), "re-anchored"));
+                return true;
+            }
+            return false;
+        }
         let request = RestoreRequest {
             scope: RestoreScope::Workspace,
             active_space: space,

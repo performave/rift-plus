@@ -9266,6 +9266,64 @@ mod fullscreen_slots {
         );
     }
 
+    /// A slot's snapshot taken before a layout command is not restored whole:
+    /// it would undo the command. In the VM a TextEdit's slot, recorded at a
+    /// plug, was restored a few seconds after Safari had been made fullscreen,
+    /// and put Safari back in its tile; the next toggle then made it
+    /// fullscreen again instead of ending it (`fullscreen-across-churn`).
+    #[test]
+    fn a_slot_older_than_a_layout_command_does_not_undo_it() {
+        let (mut reactor, screen, space, wids, _wsids) = bsp_reactor_with_three_tiled();
+        let (away, other) = (wids[0], wids[1]);
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(away));
+        assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(
+            away, space
+        )]);
+
+        reactor.send_layout_event(LayoutEvent::WindowFocused(space, other));
+        reactor.handle_test_layout_command(LayoutCommand::ToggleFullscreen);
+        let fullscreen = |reactor: &mut Reactor| {
+            test_layout(reactor, space, screen)
+                .into_iter()
+                .find(|(w, _)| *w == other)
+                .is_some_and(|(_, frame)| frame.size.width >= screen.size.width - 1.0)
+        };
+        assert!(
+            fullscreen(&mut reactor),
+            "the command must take, or this tests nothing"
+        );
+
+        let _ = reactor.reinstate_fullscreen_slot(away, space);
+
+        assert!(
+            fullscreen(&mut reactor),
+            "restoring an older slot undid the fullscreen made since"
+        );
+    }
+
+    /// A window joining the layout beside a fullscreen one leaves it
+    /// fullscreen. The split rebuilt the fullscreen window's leaf as a fresh,
+    /// unfullscreened one, so any window arriving while another was
+    /// fullscreen -- a new one, or one coming back after a replug -- took the
+    /// fullscreen away.
+    #[test]
+    fn a_window_joining_beside_a_fullscreen_one_leaves_it_fullscreen() {
+        let (mut reactor, screen, space, wids, _wsids) = bsp_reactor_with_three_tiled();
+        let (away, other) = (wids[0], wids[1]);
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(away));
+        reactor.fullscreen_slots.forget(away);
+        reactor.send_layout_event(LayoutEvent::WindowFocused(space, other));
+        reactor.handle_test_layout_command(LayoutCommand::ToggleFullscreen);
+
+        reactor.send_layout_event(LayoutEvent::WindowAdded(space, away));
+
+        let frame = test_layout(&mut reactor, space, screen)
+            .into_iter()
+            .find(|(w, _)| *w == other)
+            .map(|(_, frame)| frame);
+        assert_eq!(frame, Some(screen), "the fullscreen window lost its fullscreen");
+    }
+
     /// A slot is used up only by a restore that put the window back. The
     /// "ordered in" report can come while the window is still in another
     /// desktop's tree -- aftercare has sent it home and it has not arrived --

@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A fullscreen window stays fullscreen when another window joins the
+  layout.** Splitting a new window in rebuilt the fullscreen window's place as
+  an ordinary one, so any window arriving while another was fullscreen --
+  opened, or coming back after a replug -- took the fullscreen away, and the
+  next toggle turned it on again rather than off. Separately, putting a window
+  back after native fullscreen no longer restores a layout from before a
+  layout command you have given since.
 - **A window that will not shrink to its slot is noticed every time.** A
   resize rift had asked for was taken off its books whenever the window
   server confirmed the window was on the desktop it had always been on, which

@@ -646,6 +646,9 @@ pub struct Reactor {
     /// A window's first refusal of a size, by the transaction it answered,
     /// waiting for a second write to confirm it. See `confirm_refusal`.
     refusal_candidates: HashMap<WindowId, TransactionId>,
+    /// When the user last gave a layout command. A fullscreen slot's snapshot
+    /// from before it would undo it; see `reinstate_fullscreen_slot`.
+    pub(super) last_layout_command: Option<std::time::Instant>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -822,6 +825,7 @@ impl Reactor {
             modifier_drag_at_x: 0.0,
             destroyed_on_command: None,
             refusal_candidates: HashMap::default(),
+            last_layout_command: None,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -3275,6 +3279,7 @@ impl Reactor {
                 let commanded: Vec<SpaceId> =
                     command_space.into_iter().chain(visible_spaces.iter().copied()).collect();
                 self.note_user_layout_command(&commanded);
+                self.last_layout_command = Some(crate::sys::trace::now());
                 return command_workflow::handle_command_layout(
                     &mut self.state,
                     &mut self.layout_manager,
