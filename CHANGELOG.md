@@ -94,6 +94,13 @@ Entries describe this fork's changes relative to
   that ran slow. It is now kept and looked at again on every space change,
   exactly as a desktop a display is still showing already was.
 
+- **Deleting a desktop no longer shuffles the one you land on.** rift took the
+  desktop you deleted for one macOS had renumbered, and carried its layout
+  onto the desktop you ended up on -- overwriting that desktop's own
+  arrangement, which is why its tiles swapped. A renumbered desktop is always a
+  new one; the one you land on after a delete never is, and rift now tells
+  them apart that way.
+
 - **Plugging the display in no longer scrambles the one already there, even
   when rift has no record of it leaving.** rift remembers where everything was
   when a display is unplugged, and puts it back when it returns. But a display
