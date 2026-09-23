@@ -85,6 +85,11 @@ if [[ "$WANT" != "$GOT" ]]; then
 fi
 # Twice: the first pass opens the apps, the second tiles them once they have
 # all settled onto the shown desktop.
+# macOS keeps desktops across the reboot above, and every churn scenario leaves
+# some behind: one night of batteries left the guest with about three hundred,
+# and the same build's score drifted as the pile grew. Destroy the empty ones so
+# every side starts from the same few.
+GX_TIMEOUT=600 "$SC/vm-run1" "/usr/bin/python3 /Users/vm/rift-harness/prune.py" 2>&1 | grep '^prune' || true
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 "$SC/vm-ssh" "killall Safari TextEdit 2>/dev/null; sleep 4"
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
