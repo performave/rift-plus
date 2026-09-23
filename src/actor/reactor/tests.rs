@@ -10067,6 +10067,104 @@ mod display_archive {
         sa::set_available(false);
     }
 
+    /// After an arrival, a desktop the arriving display is showing stays with
+    /// it. macOS can hand the arriving display the old display's desktop --
+    /// in the guest, what making the new display main does -- and the arrival
+    /// pass, which sends a display's recorded desktops back to it, took it
+    /// straight back, leaving the arriving display with nothing to show.
+    #[test]
+    fn an_arrival_pass_does_not_take_the_desktop_the_new_display_is_showing() {
+        let mut reactor = test_reactor();
+        reactor.config.settings.displaced_windows = crate::common::config::DisplacedWindows::Spaces;
+        sa::set_available(true);
+        let home = space1();
+        managed(vec![("test-display-0", vec![home])]);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(home)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home]);
+                state.last_user_space_by_display.insert("test-display-0".to_string(), home);
+            },
+        ));
+        reactor.add_test_app(1);
+        let wid = WindowId::new(1, 1);
+        let wsid = WindowServerId::new(101);
+        reactor.add_test_window(
+            wid,
+            wsid,
+            Some(home),
+            CGRect::new(CGPoint::new(10., 10.), CGSize::new(400., 400.)),
+        );
+        let workspace = reactor.test_workspace(home, 0);
+        assert!(reactor.assign_test_window_to_workspace(home, wid, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(home, wid));
+        set_window_spaces(&[wsid], home);
+        reactor.capture_pre_churn_layout();
+
+        // The new display arrives, takes `home` and shows it; the old one is
+        // given a fresh desktop.
+        let fresh = SpaceId::new(50);
+        managed(vec![("test-display-0", vec![fresh]), (DISPLAY2, vec![home])]);
+        let space_moves_before = sa::space_moves().len();
+        reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(fresh), Some(home)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.should_force_refresh_layout = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![fresh]);
+                state.display_space_ids.insert(DISPLAY2.to_string(), vec![home]);
+            },
+        ));
+
+        assert!(
+            !sa::space_moves()[space_moves_before..]
+                .iter()
+                .any(|(space, _)| *space == home.get()),
+            "the desktop the arriving display is showing was taken off it: {:?}",
+            &sa::space_moves()[space_moves_before..]
+        );
+        set_window_spaces_override(wsid, None);
+        crate::sys::screen::set_managed_display_spaces_override(None);
+        sa::set_available(false);
+    }
+
+    /// An arrival's record is a repair in progress, and must not stand in the
+    /// way of a departure that comes before the repair has finished --
+    /// `become-main` and `clamshell` unplug within seconds of plugging in. A
+    /// departure that found any record standing kept the old one, so the
+    /// display's return then had nothing to put back.
+    #[test]
+    fn a_departure_is_recorded_even_while_an_arrival_is_being_repaired() {
+        let mut f = spaces_fixture();
+        // The fixture's two displays are the whole set. Take an arrival record
+        // against it by hand, as though a third display had just arrived and
+        // the first two were all that was here.
+        f.reactor.capture_pre_churn_layout();
+        let whole = f.reactor.display_archive.whole_displays.clone().expect("a whole set");
+        f.reactor.display_archive.whole_displays = Some(vec![whole[0].clone()]);
+        f.reactor
+            .record_arrival(&[whole[0].uuid.clone(), "test-display-arrived".to_string()]);
+        assert!(
+            f.reactor.display_archive.record.as_ref().is_some_and(|r| r.is_arrival()),
+            "the arrival must be recorded for this to test anything"
+        );
+        f.reactor.display_archive.whole_displays = Some(whole);
+
+        unplug(&mut f);
+
+        let record = f.reactor.display_archive.record.as_ref().expect("the departure is recorded");
+        assert!(
+            !record.is_arrival(),
+            "the arrival's record stood in the way and the departure went unrecorded"
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// A window on a desktop rift has never shown must still come home.
     ///
     /// The departure record was built from the layout trees, and the trees

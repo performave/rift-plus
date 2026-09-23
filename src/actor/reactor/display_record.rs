@@ -203,6 +203,12 @@ pub(super) struct DisplayRecord {
     /// So rift records the commands it ran instead of trying to infer them
     /// afterwards. The window server issues none.
     user_commanded: HashSet<SpaceId>,
+    /// Taken for an arrival rather than a departure: nothing left, and the
+    /// record only describes the display that was already present. Such a
+    /// record is a repair in progress, not a memory to keep -- it must not
+    /// stand in a departure's way, and its pass must not take a desktop from
+    /// the display that arrived. See `record_arrival`.
+    arrival: bool,
     pass: Option<Pass>,
 }
 
@@ -299,6 +305,9 @@ impl DisplayRecord {
 
     /// Whether no pass is in flight, so a settle can run.
     pub(super) fn destination_free(&self) -> bool { self.pass.is_none() }
+
+    #[cfg(test)]
+    pub(super) fn is_arrival(&self) -> bool { self.arrival }
 
     /// Where the record wants `wid`: where the user put it while away, else
     /// where it was at departure.
@@ -503,6 +512,21 @@ impl Reactor {
     /// state from before the first departure is the one to go back to, and
     /// the record waits for its own displays, whichever else come and go.
     pub(super) fn record_departure(&mut self, departed: Vec<String>, active_displays: &[String]) {
+        // An arrival's record is a repair in progress. A display that leaves
+        // again before that repair has finished -- `become-main` and
+        // `clamshell` both do it within seconds -- must still be recorded,
+        // or its return has nothing to put back.
+        if self.display_archive.record.as_ref().is_some_and(|record| record.arrival) {
+            info!(
+                ?departed,
+                "A display departed while an arrival was being repaired; recording the departure instead"
+            );
+            crate::sys::trace::act(
+                "record_arrival",
+                &serde_json::json!({ "superseded_by_departure": true }),
+            );
+            self.display_archive.record = None;
+        }
         if self.display_archive.record.is_some() {
             debug!(
                 ?departed,
@@ -686,6 +710,7 @@ impl Reactor {
             settled: false,
             stopgaps: Vec::new(),
             own_moves: HashSet::default(),
+            arrival: false,
             pass: None,
         });
     }
@@ -825,6 +850,7 @@ impl Reactor {
             settled: false,
             stopgaps: Vec::new(),
             own_moves: HashSet::default(),
+            arrival: true,
             pass: None,
         });
     }
@@ -1625,6 +1651,19 @@ impl Reactor {
                 }
                 if on_d.contains(&space) {
                     anchor = Some(space);
+                    continue;
+                }
+                // After an arrival, a desktop the arriving display is showing
+                // stays with it, whoever it used to belong to: taking a
+                // display's shown -- and possibly only -- desktop off it
+                // leaves that display with nothing to show.
+                if record.arrival
+                    && self
+                        .space_state
+                        .screens
+                        .iter()
+                        .any(|screen| screen.space == Some(space) && screen.display_uuid != d.uuid)
+                {
                     continue;
                 }
                 let Some(after) = anchor.or_else(|| shown_now(&d.uuid)) else {
