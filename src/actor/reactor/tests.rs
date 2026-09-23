@@ -1356,6 +1356,74 @@ fn a_window_aftercare_sends_home_is_taken_to_have_arrived_there() {
     sa::set_available(false);
 }
 
+/// Deleting a desktop with the keybind must not rewrite the desktop landed on.
+///
+/// From the snapshot a destroy looks like a replacement, so the spaces actor
+/// emits a remap from the destroyed desktop onto the one now shown -- which, for
+/// a destroy, is a desktop that already had its own tree. Applying it
+/// overwrote that tree. A first fix refused remaps onto any desktop listed
+/// before, which the churn battery showed also refuses genuine replacements
+/// (macOS lists one a snapshot before it shows it); rift instead declines the
+/// remap only for a desktop it destroyed itself.
+#[test]
+fn a_desktop_destroyed_on_command_is_not_remapped_onto_the_one_landed_on() {
+    use crate::sys::scripting_addition::test_hooks as sa;
+    let (mut apps, mut reactor) = test_context();
+    // Aim the destroy at the desktop on screen: pointer targeting, with the
+    // pointer pinned on the test screen. Left to itself the command asks the
+    // live window server, which under test is the developer's own desktop --
+    // one rift never laid out, so remapping it changed nothing and this passed
+    // without the fix.
+    reactor.config.settings.space_target = crate::common::config::SpaceCommandTarget::Pointer;
+    crate::sys::window_server::set_cursor_location_override(Some(CGPoint::new(500., 500.)));
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let landed = SpaceId::new(1);
+    let doomed = SpaceId::new(2);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(landed)]));
+    make_active_app(
+        &mut apps,
+        &mut reactor,
+        1,
+        make_windows(3),
+        Some(WindowId::new(1, 1)),
+    );
+    let order = |reactor: &Reactor| {
+        reactor.layout_manager.layout_engine.windows_on_space_in_layout_order(landed)
+    };
+    let arranged = order(&reactor);
+    assert_eq!(arranged.len(), 3, "the landing desktop needs a tree to lose");
+
+    // Over to the desktop about to be deleted, and delete it.
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(doomed)]));
+    sa::set_available(true);
+    let destroys_before = sa::space_destroys().len();
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::DestroySpace)));
+    assert_eq!(
+        sa::space_destroys()[destroys_before..].last().copied(),
+        Some(doomed.get()),
+        "the destroy must be aimed at the desktop on screen"
+    );
+
+    // The display lands back where the windows are, and the snapshot says
+    // what the spaces actor says for a destroy: remap the dead one here.
+    reactor.handle_event(space_state_event_with(
+        vec![frame],
+        vec![Some(landed)],
+        |state| {
+            state.space_remaps = vec![(doomed, landed)];
+        },
+    ));
+
+    assert_eq!(
+        order(&reactor),
+        arranged,
+        "the destroyed desktop's layout was carried over the one landed on"
+    );
+    crate::sys::window_server::set_cursor_location_override(None);
+    sa::set_available(false);
+}
+
 #[test]
 fn frame_acknowledgements_and_unchanged_frames_do_not_invalidate_layout() {
     let (mut reactor, wid, wsid, _space1, _space2, frame) = reactor_with_window_on_space1();

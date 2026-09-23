@@ -620,6 +620,15 @@ pub struct Reactor {
     modifier_drag_final: bool,
     /// Where the pointer was when the update being handled was generated.
     modifier_drag_at_x: f64,
+    /// The desktop rift last destroyed on command, and when. A destroy looks
+    /// like macOS replacing a desktop -- the one the display showed is listed
+    /// nowhere, and it shows another -- and the spaces actor answers that with
+    /// a remap onto the desktop now shown. For a destroy that desktop is the
+    /// one landed on, which has a tree of its own, and the remap overwrote it:
+    /// "deleting a space swaps the tiles on the one you land on". The spaces
+    /// actor cannot tell the two apart from what it sees; rift knows which
+    /// desktops it destroyed itself.
+    destroyed_on_command: Option<(SpaceId, std::time::Instant)>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -794,6 +803,7 @@ impl Reactor {
             modifier_drag_left_at: None,
             modifier_drag_final: false,
             modifier_drag_at_x: 0.0,
+            destroyed_on_command: None,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -3045,7 +3055,9 @@ impl Reactor {
             }
             Event::Command(Command::Reactor(ReactorCommand::DestroySpace)) => {
                 let target = self.space_command_target();
-                if !crate::sys::scripting_addition::destroy_space(target.get()) {
+                if crate::sys::scripting_addition::destroy_space(target.get()) {
+                    self.destroyed_on_command = Some((target, crate::sys::trace::now()));
+                } else {
                     self.fail_command(SA_REQUIRED_DESTROY);
                 }
                 return Ok(EventOutcome::default());
@@ -4187,6 +4199,27 @@ impl Reactor {
             return Ok(outcome);
         }
         for (previous_space, space) in space_remaps {
+            // Not a replacement: rift destroyed this desktop itself, and the
+            // display simply landed on one it already had. A guard on what the
+            // snapshot lists could not make this distinction -- during a churn
+            // macOS lists a real replacement a snapshot before it shows it --
+            // and it cost the battery genuine remaps in three scenarios.
+            if self.destroyed_on_command.is_some_and(|(destroyed, at)| {
+                destroyed == previous_space
+                    && crate::sys::trace::now().saturating_duration_since(at)
+                        < std::time::Duration::from_secs(10)
+            }) {
+                info!(
+                    destroyed = previous_space.get(),
+                    landed = space.get(),
+                    "Not remapping a desktop rift destroyed onto the one the display landed on"
+                );
+                crate::sys::trace::act(
+                    "remap_skipped_destroyed",
+                    &(previous_space.get(), space.get()),
+                );
+                continue;
+            }
             self.layout_manager.layout_engine.remap_space(
                 &mut self.state.windows,
                 previous_space,

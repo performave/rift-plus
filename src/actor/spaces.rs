@@ -623,11 +623,6 @@ impl SpacesActor {
                 .filter_map(|screen| screen.space)
                 .any(|space| !unique_spaces.insert(space))
         };
-        // Every desktop any display listed before this snapshot: a desktop
-        // that replaces another is never among them, and one a destroy lands
-        // on always is. See `compute_space_remaps`.
-        let previously_listed: HashSet<SpaceId> =
-            self.state.display_space_ids.values().flatten().copied().collect();
         // Without a list, a display owns exactly the desktop it is showing.
         self.state.display_space_ids = managed_display_space_ids_opt().unwrap_or_else(|| {
             let mut derived: HashMap<String, Vec<SpaceId>> = HashMap::default();
@@ -642,12 +637,8 @@ impl SpacesActor {
         let snapshot_is_coherent =
             !has_duplicate_spaces && screens.iter().all(|screen| screen.space.is_some());
         let allow_space_remap = should_force_refresh_layout && snapshot_is_coherent;
-        let space_remaps = self.compute_space_remaps(
-            &screens,
-            allow_space_remap,
-            snapshot_is_coherent,
-            &previously_listed,
-        );
+        let space_remaps =
+            self.compute_space_remaps(&screens, allow_space_remap, snapshot_is_coherent);
         let menu_bar_space = self.resolve_menu_bar_space(&screens);
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
         let command_space = self.resolve_command_space(&screens, active_display_uuid.as_deref());
@@ -780,7 +771,6 @@ impl SpacesActor {
         screens: &[ScreenInfo],
         allow_space_remap: bool,
         snapshot_is_coherent: bool,
-        previously_listed: &HashSet<SpaceId>,
     ) -> Vec<(SpaceId, SpaceId)> {
         let mut remaps = Vec::new();
         let mut seen_displays: HashSet<String> = HashSet::default();
@@ -863,16 +853,7 @@ impl SpacesActor {
                     // still listed.
                     continue;
                 }
-                // A replacement is a desktop macOS has just made, so nothing
-                // listed it before. The desktop a user lands on after
-                // destroying the one they were on was listed all along, and
-                // has a tree of its own: carrying the destroyed desktop's
-                // layout onto it overwrote that tree, and the windows were
-                // put back in whatever order they were found in -- which is
-                // "deleting a space swaps the tiles on the one you land on".
-                let target_is_new = !previously_listed.contains(&space);
-                if !source_is_now_owned_by_another_display && !source_still_exists && target_is_new
-                {
+                if !source_is_now_owned_by_another_display && !source_still_exists {
                     remaps.push((previous_space, space));
                 }
             }
