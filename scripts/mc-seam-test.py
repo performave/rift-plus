@@ -15,6 +15,7 @@ both as dragged and after it is later shown there -- a desktop moved while
 hidden is laid out only when it is next shown.
 
     mc-seam-test.py calibrate [hidpi] [left]   screenshot Mission Control and exit
+    mc-seam-test.py plug [hidpi] [left]        plug only, sampling for windows over the seam
     mc-seam-test.py run [hidpi] [left] [shown] drag and check
 
 `shown` drags the desktop the main display is showing; the default drags a
@@ -258,6 +259,27 @@ def main():
     main_d = next(d for d in ds if d["uuid"] != probe["uuid"])
     print(f"  main {span(main_d)} desktops={main_d.get('space_ids')}")
     print(f"  probe {span(probe)} hidpi={hidpi} desktops={probe.get('space_ids')}")
+
+    if mode == "plug":
+        # Just the plug, watched. As a display arrives macOS moves windows to
+        # where they last were on it -- partly across the seam -- and rift
+        # used to read those frames as tile edges being dragged, moving
+        # splits past the edge of the screen. Sample every shown desktop for
+        # a while and report any tiled window mostly off its display.
+        bad = []
+        for i in range(10):
+            for d in displays():
+                if d.get("space") is not None:
+                    bad += [(i,) + b for b in report(f"sample {i}", d["space"])
+                            if b[1] == "tiled"]
+            time.sleep(1)
+        unplug()
+        settle(6)
+        if bad:
+            print(f"FAIL  tiled window(s) left over the seam after the plug: {bad[:6]}")
+            return 1
+        print("PASS  every tiled window stayed on its display through the plug")
+        return 0
 
     if mode == "calibrate":
         mission_control(True)
