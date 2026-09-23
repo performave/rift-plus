@@ -4692,7 +4692,7 @@ mod tests {
         );
 
         let observe = |engine: &mut LayoutEngine, store: &mut WindowStore, window: WindowId| {
-            engine.handle_event(
+            let _ = engine.handle_event(
                 store,
                 LayoutEvent::windows_observed(
                     space,
@@ -5343,7 +5343,7 @@ mod tests {
             LayoutEvent::SpaceExposed(space, CGSize::new(1920.0, 1080.0)),
         );
 
-        engine.handle_virtual_workspace_command(
+        let _ = engine.handle_virtual_workspace_command(
             &mut window_store,
             space,
             &LayoutCommand::SetWorkspaceLayout {
