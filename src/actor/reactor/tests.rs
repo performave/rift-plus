@@ -9453,6 +9453,44 @@ mod fullscreen_slots {
         assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(w, space)]);
     }
 
+    /// Nor does an arrival's record, once its pass is done, stop it: macOS
+    /// carried a laptop window onto the external a beat after the arrival's
+    /// repair, and with the record standing nothing sent it back
+    /// (`plain-replug`).
+    #[test]
+    fn a_window_carried_onto_an_arriving_display_after_its_repair_is_sent_back() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let (w, wsid) = (wids[1], wsids[1]);
+        let elsewhere = SpaceId::new(48);
+        reactor.handle_event(space_state_event(
+            vec![
+                CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.)),
+                CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1440., 900.)),
+            ],
+            vec![Some(space), Some(elsewhere)],
+        ));
+        reactor.display_archive.record =
+            Some(super::display_record::DisplayRecord::settled_arrival_for_test());
+        crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![elsewhere.get()]));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(300),
+        ));
+        sa::set_available(true);
+        let moves_before = sa::window_moves().len();
+
+        reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(w));
+
+        let moves = sa::window_moves()[moves_before..].to_vec();
+        sa::set_available(false);
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_window_spaces_override(wsid, None);
+        assert!(
+            moves.contains(&(wsid.as_u32(), space.get())),
+            "the window was left on the arriving display: {moves:?}"
+        );
+    }
+
     /// But not a window the user moved after the change: a drop or a command
     /// since then may have put it on the other display on purpose.
     #[test]

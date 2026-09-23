@@ -239,11 +239,22 @@ impl Reactor {
         if self.last_user_input.is_some_and(|input| input.elapsed() < since_churn) {
             return;
         }
-        // Not while a display record stands, nor for a window rift itself is
-        // moving: a plug or an unplug moves windows between displays on
-        // purpose, and the record's passes own those. What is left is a change
-        // of arrangement -- a display made main -- which no record covers.
-        if self.display_archive.record.is_some()
+        // Not for a window rift itself is moving, nor while a departure's
+        // record stands or any record's pass runs: an unplug and the return
+        // after it move windows between displays on purpose, and those passes
+        // own them. An arrival's record once its pass is done is different --
+        // it is the repair of what the arrival scrambled, and macOS carrying a
+        // window it remembers onto the new display a beat after that pass is
+        // more of the same scramble (`plain-replug`: a laptop window moved to
+        // the external at the first plug, and every unplug after made it a
+        // stand-in desktop of its own). A desktop macOS handed the new display
+        // whole goes with its windows, so the slot is on that display too and
+        // nothing is sent.
+        if self
+            .display_archive
+            .record
+            .as_ref()
+            .is_some_and(|record| !record.is_arrival() || !record.destination_free())
             || self.display_archive.homing_destination(window).is_some()
         {
             return;

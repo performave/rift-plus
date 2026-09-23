@@ -306,11 +306,35 @@ impl DisplayRecord {
     /// Whether no pass is in flight, so a settle can run.
     pub(super) fn destination_free(&self) -> bool { self.pass.is_none() }
 
-    #[cfg(test)]
     pub(super) fn is_arrival(&self) -> bool { self.arrival }
 
     #[cfg(test)]
     pub(super) fn mark_arrival_for_test(&mut self) { self.arrival = true; }
+
+    /// An arrival's record with nothing in it and its pass done.
+    #[cfg(test)]
+    pub(super) fn settled_arrival_for_test() -> Self {
+        DisplayRecord {
+            layout: String::new(),
+            members: HashMap::default(),
+            modes: HashMap::default(),
+            windows: HashMap::default(),
+            placed: HashMap::default(),
+            user_commanded: HashSet::default(),
+            displays: Vec::new(),
+            survivor: String::new(),
+            met: HashSet::default(),
+            seen: HashSet::default(),
+            absent: HashMap::default(),
+            minted: HashSet::default(),
+            churn_seen: crate::sys::trace::now(),
+            settled: true,
+            stopgaps: Vec::new(),
+            own_moves: HashSet::default(),
+            arrival: true,
+            pass: None,
+        }
+    }
 
     #[cfg(test)]
     pub(super) fn stand_in_for(&self, lost: SpaceId) -> Option<SpaceId> { self.stopgap_for(lost) }

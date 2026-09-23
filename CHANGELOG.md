@@ -34,6 +34,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Plugging in a display no longer takes a window off the laptop for good.**
+  macOS moves a window it remembers on the arriving display there a moment
+  after rift has repaired the arrival. rift left it there, took the external
+  as its home from then on, and gave it a desktop of its own on the laptop at
+  every unplug. It now sends the window back to where it was.
 - **Making another display main no longer sends a window over to the old
   one.** When the arrangement changes, macOS moves a window whose position now
   falls in the other display's part of it to that display's desktop. rift knew
