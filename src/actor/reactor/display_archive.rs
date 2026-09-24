@@ -235,6 +235,9 @@ impl DisplayArchive {
     /// the plug's own window moves: Safari back in the slot it had left. A
     /// pinned snapshot is kept regardless; it is waiting for the display
     /// change that consumes it.
+    #[cfg(test)]
+    pub(super) fn clear_pre_churn_for_test(&mut self) { self.pre_churn = None; }
+
     pub(super) fn fresh_pre_churn(&self) -> Option<&PreChurn> {
         self.pre_churn.as_ref().filter(|pre| {
             pre.pinned

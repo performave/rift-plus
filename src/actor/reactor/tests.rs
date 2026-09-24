@@ -11351,6 +11351,72 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A commute: the office monitor leaves, a home monitor the record has
+    /// never seen arrives and leaves in its turn. The record stays the
+    /// office's -- coming back to the office must not wait on the home
+    /// monitor -- but its picture of the laptop is taken again: settling from
+    /// the one from when the office left moved every laptop window onto
+    /// desktop ids from then, out of their trees (`commute`: three TextEdits
+    /// came back floating). The office's windows keep their home.
+    #[test]
+    fn a_monitor_the_record_never_saw_leaving_refreshes_the_laptop_not_the_office() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        if let Some(record) = f.reactor.display_archive.record.as_mut() {
+            record.clear_pass_for_test();
+        }
+        assert_eq!(
+            f.reactor.display_archive.record.as_ref().unwrap().recorded_desktop(f.exiled[0]),
+            Some(space2())
+        );
+
+        // The record's picture of the laptop is out of date: it has the
+        // laptop's window on a desktop id from when the office left.
+        let stale = SpaceId::new(26);
+        if let Some(record) = f.reactor.display_archive.record.as_mut() {
+            record.file_window_for_test(f.survivor, stale);
+        }
+        let laptop_now = space1();
+
+        let home_desktop = SpaceId::new(70);
+        f.reactor.display_archive.whole_displays = Some(vec![
+            super::super::display_record::RecordedDisplay {
+                uuid: "test-display-0".to_string(),
+                desktops: vec![laptop_now],
+                shown: Some(laptop_now),
+            },
+            super::super::display_record::RecordedDisplay {
+                uuid: "test-display-home".to_string(),
+                desktops: vec![home_desktop],
+                shown: Some(home_desktop),
+            },
+        ]);
+        f.reactor.display_archive.clear_pre_churn_for_test();
+        f.reactor.record_departure(vec!["test-display-home".to_string()], &[
+            "test-display-0".to_string()
+        ]);
+
+        let record = f.reactor.display_archive.record.as_ref().expect("the record stands");
+        assert_eq!(
+            record.display_uuids(),
+            vec!["test-display-0", DISPLAY2],
+            "the home monitor is no part of the record"
+        );
+        assert_eq!(
+            record.recorded_desktop(f.survivor),
+            Some(laptop_now),
+            "the laptop's window is filed where it is now, not where it was when the office left"
+        );
+        assert_eq!(
+            record.recorded_desktop(f.exiled[0]),
+            Some(space2()),
+            "an office window waiting on the laptop still belongs on the office desktop"
+        );
+        assert_eq!(record.recorded_desktops("test-display-0"), vec![laptop_now]);
+        spaces_cleanup(&f, &[]);
+    }
+
     /// An arrival's record is left to its own pass. Its "unknown" display is
     /// the one arriving, and macOS handing it the desktop the laptop was
     /// showing is exactly what that pass has its own rule for; taking the

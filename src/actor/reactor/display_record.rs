@@ -138,6 +138,10 @@ const AFTERCARE: Duration = Duration::from_secs(5);
 pub(super) struct DisplayRecord {
     /// Every desktop's tree at departure, keyed by the desktop ids of then.
     layout: String,
+    /// Trees taken after `layout`, for the desktops they cover: the
+    /// survivor's, taken again when a display the record never knew left.
+    /// See `refresh_record_survivor`.
+    carried_layouts: HashMap<SpaceId, String>,
     /// Every desktop's windows at departure, in layout order: what tells
     /// a desktop the user rearranged while away from one they did not.
     members: HashMap<SpaceId, Vec<WindowId>>,
@@ -311,11 +315,20 @@ impl DisplayRecord {
     #[cfg(test)]
     pub(super) fn mark_arrival_for_test(&mut self) { self.arrival = true; }
 
+    #[cfg(test)]
+    pub(super) fn clear_pass_for_test(&mut self) { self.pass = None; }
+
+    #[cfg(test)]
+    pub(super) fn file_window_for_test(&mut self, wid: WindowId, space: SpaceId) {
+        self.windows.insert(wid, space);
+    }
+
     /// An arrival's record with nothing in it and its pass done.
     #[cfg(test)]
     pub(super) fn settled_arrival_for_test() -> Self {
         DisplayRecord {
             layout: String::new(),
+            carried_layouts: HashMap::default(),
             members: HashMap::default(),
             modes: HashMap::default(),
             windows: HashMap::default(),
@@ -345,6 +358,51 @@ impl DisplayRecord {
             .iter()
             .find(|d| d.uuid == uuid)
             .map(|d| (d.desktops.clone(), d.shown))
+    }
+
+    /// Takes the survivor's part again from `now`: its desktops, which
+    /// windows are on each and in what order, their layout modes, and the
+    /// trees to restore them from. A window the record wants on a display
+    /// that is still away keeps that home -- it is only waiting on the
+    /// survivor. Returns how many windows were re-filed.
+    pub(super) fn refresh_survivor(
+        &mut self,
+        desktops: Vec<SpaceId>,
+        members: HashMap<SpaceId, Vec<WindowId>>,
+        modes: HashMap<SpaceId, Vec<LayoutMode>>,
+        layout: String,
+    ) -> usize {
+        let away: HashSet<SpaceId> = self
+            .displays
+            .iter()
+            .filter(|d| d.uuid != self.survivor)
+            .flat_map(|d| d.desktops.iter().copied())
+            .collect();
+        let mut refiled = 0;
+        for space in &desktops {
+            let wids = members.get(space).cloned().unwrap_or_default();
+            for wid in &wids {
+                if self.desired(*wid).is_some_and(|home| away.contains(&home)) {
+                    continue;
+                }
+                self.placed.remove(wid);
+                if self.windows.insert(*wid, *space) != Some(*space) {
+                    refiled += 1;
+                }
+            }
+            self.members.insert(*space, wids);
+            if let Some(m) = modes.get(space) {
+                self.modes.insert(*space, m.clone());
+            }
+            self.carried_layouts.insert(*space, layout.clone());
+            self.user_commanded.remove(space);
+        }
+        self.seen.extend(desktops.iter().copied());
+        self.met.extend(desktops.iter().copied());
+        if let Some(survivor) = self.displays.iter_mut().find(|d| d.uuid == self.survivor) {
+            survivor.desktops = desktops;
+        }
+        refiled
     }
 
     /// Where the record wants `wid`: where the user put it while away, else
@@ -565,7 +623,22 @@ impl Reactor {
             );
             self.display_archive.record = None;
         }
-        if self.display_archive.record.is_some() {
+        // A display the standing record does not know is one that arrived
+        // after it was taken -- the home monitor of a commute, with the
+        // office's record still waiting for the office. It stays out of the
+        // record: the return waits for every display the record has, and
+        // coming back to the office must not wait on the home monitor too.
+        // But the record's picture of the laptop is from when the office
+        // left, and settling from it for this departure moved every laptop
+        // window onto desktop ids from then, out of the trees they were in;
+        // they came back floating (`commute`). So the laptop's part is taken
+        // again, as it is now.
+        if let Some(record) = self.display_archive.record.as_ref() {
+            let unknown =
+                departed.iter().any(|uuid| !record.displays.iter().any(|d| &d.uuid == uuid));
+            if unknown && record.pass.is_none() {
+                self.refresh_record_survivor(&departed);
+            }
             debug!(
                 ?departed,
                 "A display departed while a record stands; the record stands"
@@ -750,6 +823,7 @@ impl Reactor {
         self.display_archive.aftercare = None;
         self.display_archive.record = Some(DisplayRecord {
             layout,
+            carried_layouts: HashMap::default(),
             members,
             modes,
             windows,
@@ -768,6 +842,61 @@ impl Reactor {
             arrival: false,
             pass: None,
         });
+    }
+
+    /// The standing record's survivor, as it is now. See `record_departure`.
+    fn refresh_record_survivor(&mut self, departed: &[String]) {
+        let Some(survivor) = self.display_archive.record.as_ref().map(|r| r.survivor.clone())
+        else {
+            return;
+        };
+        let desktops: Vec<SpaceId> = self
+            .display_archive
+            .whole_displays
+            .as_ref()
+            .and_then(|whole| whole.iter().find(|d| d.uuid == survivor))
+            .map(|d| d.desktops.clone())
+            .or_else(|| self.space_state.display_space_ids.get(&survivor).cloned())
+            .unwrap_or_default();
+        if desktops.is_empty() {
+            return;
+        }
+        let (layout, members, modes) = match self.display_archive.fresh_pre_churn() {
+            Some(pre) => (pre.layout.clone(), pre.members.clone(), pre.modes.clone()),
+            None => {
+                let engine = &mut self.layout_manager.layout_engine;
+                let members: HashMap<SpaceId, Vec<WindowId>> = desktops
+                    .iter()
+                    .map(|space| (*space, engine.windows_on_space_in_layout_order(*space)))
+                    .collect();
+                let modes: HashMap<SpaceId, Vec<LayoutMode>> = desktops
+                    .iter()
+                    .map(|space| (*space, engine.layout_modes_on_space(*space)))
+                    .collect();
+                match engine.snapshot_current_layout_lightly(&self.state.windows) {
+                    Ok(layout) => (layout, members, modes),
+                    Err(error) => {
+                        warn!(%error, "Could not take the survivor's layout again");
+                        return;
+                    }
+                }
+            }
+        };
+        let Some(record) = self.display_archive.record.as_mut() else {
+            return;
+        };
+        let refiled = record.refresh_survivor(desktops.clone(), members, modes, layout);
+        info!(
+            ?departed,
+            survivor = %survivor,
+            desktops = ?desktops.iter().map(SpaceId::get).collect::<Vec<_>>(),
+            refiled,
+            "A display the record never knew departed; took the survivor's part of the record again"
+        );
+        crate::sys::trace::act(
+            "record_refresh_survivor",
+            &(desktops.iter().map(SpaceId::get).collect::<Vec<_>>(), refiled),
+        );
     }
 
     /// A display arriving with no record standing: record the display that
@@ -897,6 +1026,7 @@ impl Reactor {
         self.display_archive.aftercare = None;
         self.display_archive.record = Some(DisplayRecord {
             layout,
+            carried_layouts: HashMap::default(),
             members,
             modes,
             windows,
@@ -2296,9 +2426,11 @@ impl Reactor {
             return EventOutcome::default();
         };
         let layout = record.layout.clone();
+        let carried_layouts = record.carried_layouts.clone();
         let modes = record.modes.clone();
         let layout_settings = self.config.settings.layout.clone();
         for (from, to) in &pass.restores {
+            let layout = carried_layouts.get(from).unwrap_or(&layout);
             let request = RestoreRequest {
                 scope: RestoreScope::Space,
                 active_space: *to,

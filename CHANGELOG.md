@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Using a second monitor while another is away no longer scrambles the
+  laptop.** Unplug the office monitor, use one at home, unplug that: rift was
+  still going by its record of the laptop from when the office monitor left,
+  moved the laptop's windows back to the desktops of then and out of their
+  layouts, and they came back floating. A monitor the record never knew
+  leaving now brings its picture of the laptop up to date; windows waiting
+  for the office monitor still go back to it.
 - **Unplugging a monitor no longer leaves a window hanging off the laptop's
   screen.** macOS moves windows for a display change a moment before rift
   hears of it, and an arrange in that moment laid the laptop out at its old
