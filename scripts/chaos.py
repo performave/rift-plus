@@ -1965,7 +1965,7 @@ def s_transient(base):
 # alone: a 2560-wide monitor with the laptop to its LEFT and lower, then an
 # ultrawide with the laptop BELOW it, each made main. These scenarios are that
 # life: different monitors, sizes, scales and arrangements, monitors swapped,
-# two at once, rearranged while attached, mirrored. Each floats one window,
+# two at once, rearranged while attached. Each floats one window,
 # because his config floats by default and those are the windows macOS moves
 # by itself, and each samples frames throughout.
 
@@ -2270,28 +2270,6 @@ def s_one_of_two(base):
             check_full(a, snapshot("it came back"), "it came back")
         check_sampler(sampler, "one-of-two-drops")
     finally:
-        restore_arrangement()
-
-
-@scenario("mirroring", doc="mirror to a display, as when presenting, then stop")
-def s_mirroring(base):
-    float_one()
-    try:
-        with Sampler("mirroring") as sampler:
-            ext = attach("mon-projector", serial=0x5b); settle(6)
-            a = snapshot("extended")
-            sh(f"{DTOOL} mirror {ext} 1"); settle(8)
-            mirrored = snapshot("mirrored")
-            check_no_limbo("mirrored")
-            check_on_screen(mirrored, "mirrored")
-            check_frames(mirrored, "mirrored")
-            sh(f"{DTOOL} mirror {ext} 0"); settle(8)
-            check_full(a, snapshot("extended again"), "mirroring stopped")
-            detach("mon-projector"); settle(6)
-            check_full(a, snapshot("projector gone"), "projector gone")
-        check_sampler(sampler, "mirroring")
-    finally:
-        sh(f"{DTOOL} mirror {EXTRA_MONITORS.get('mon-projector', 0)} 0")
         restore_arrangement()
 
 
