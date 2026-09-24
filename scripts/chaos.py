@@ -2342,6 +2342,14 @@ def s_desktop_to_new_monitor(base):
                 if held:
                     want = max(held, key=held.get)
                     if want != laptop.get("space"):
+                        # `space switch-to` acts on the active display, which
+                        # with the monitor as main is not the laptop: put the
+                        # pointer on the laptop first.
+                        f = laptop.get("frame") or {}
+                        o, sz = f.get("origin", {}), f.get("size", {})
+                        sh(f"{BIN}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
+                           f"{o.get('y', 0) + sz.get('height', 0) / 2:.0f}")
+                        time.sleep(0.5)
                         rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
                         settle(2)
                 if len(laptop.get("space_ids") or []) < 2:
