@@ -399,9 +399,10 @@ impl BspLayoutSystem {
         }
     }
 
-    /// A copy of the subtree under `node`; its leaves become the indexed ones
-    /// for their windows, as a fresh insertion's would.
-    fn copy_subtree(&mut self, node: NodeId) -> NodeId {
+    /// A copy of the subtree under `node`, unindexed: `leaves` gets each
+    /// window with the leaf that holds it in the copy.
+    fn copy_subtree(&mut self, node: NodeId, leaves: &mut Vec<(WindowId, NodeId)>) -> NodeId {
+        let id = self.tree.mk_node().into_id();
         match self.kind.get(node).cloned() {
             Some(NodeKind::Leaf {
                 window,
@@ -409,27 +410,34 @@ impl BspLayoutSystem {
                 fullscreen_within_gaps,
                 preselected,
             }) => {
-                let id = self.make_leaf(window);
                 self.kind.insert(id, NodeKind::Leaf {
                     window,
                     fullscreen,
                     fullscreen_within_gaps,
                     preselected,
                 });
-                id
+                if let Some(window) = window {
+                    leaves.push((window, id));
+                }
             }
             Some(NodeKind::Split { orientation, ratio }) => {
-                let id = self.tree.mk_node().into_id();
                 self.kind.insert(id, NodeKind::Split { orientation, ratio });
                 let children: Vec<NodeId> = node.children(&self.tree.map).collect();
                 for child in children {
-                    let copy = self.copy_subtree(child);
+                    let copy = self.copy_subtree(child, leaves);
                     copy.detach(&mut self.tree).push_back(id);
                 }
-                id
             }
-            None => self.make_leaf(None),
+            None => {
+                self.kind.insert(id, NodeKind::Leaf {
+                    window: None,
+                    fullscreen: false,
+                    fullscreen_within_gaps: false,
+                    preselected: None,
+                });
+            }
         }
+        id
     }
 
     fn collect_windows_under(&self, node: NodeId, out: &mut Vec<WindowId>) {
@@ -940,6 +948,29 @@ mod tests {
     use super::*;
 
     fn w(idx: u32) -> WindowId { WindowId::new(1, idx) }
+
+    /// A copy keeps one leaf per window: the copy's. A copy that also left
+    /// them in the source gave every window two leaves, and the clean-up of
+    /// the extra one at the next insert reordered the desktop
+    /// (`resolution-churn`, `become-main`).
+    #[test]
+    fn a_copied_layout_leaves_each_window_one_leaf_in_the_copy() {
+        let mut system = BspLayoutSystem::default();
+        let layout = system.create_layout();
+        for idx in 1..=4 {
+            system.add_window_after_selection(layout, w(idx));
+        }
+        let copy = system.clone_layout(layout);
+        let copy_root = system.layouts[copy].root;
+        for idx in 1..=4 {
+            let leaves = system.leaves_holding(w(idx));
+            assert_eq!(leaves.len(), 1, "window {idx} has {} leaves", leaves.len());
+            assert_eq!(system.find_layout_root(leaves[0]), copy_root);
+            assert_eq!(system.node_for_window(w(idx)), Some(leaves[0]));
+        }
+        assert!(system.windows_for_app(layout, 1).is_empty());
+        assert_eq!(system.windows_for_app(copy, 1).len(), 4);
+    }
 
     /// A leaf the index no longer points at is invisible to every removal,
     /// so the next insert of the same window used to leave two leaves: one
@@ -1955,20 +1986,33 @@ impl LayoutSystem for BspLayoutSystem {
     fn contains_layout(&self, layout: LayoutId) -> bool { self.layouts.contains_key(layout) }
 
     /// The tree as it is: every split with its orientation and ratio, every
-    /// leaf with its window and fullscreen state, in the same order.
+    /// leaf with its window and fullscreen state, in the same order -- and the
+    /// windows then taken out of the source, because a window has exactly one
+    /// leaf in this system (`window_to_node`), whichever layout it is in.
     ///
     /// This used to put the windows into a fresh layout one at a time, which
-    /// is not a copy -- the insertion rules decide where each goes, not the
-    /// tree being copied. A workspace takes a copy of its tree on its first
-    /// visit to a screen size, and a size changes whenever a monitor moves the
-    /// Dock or takes the menu bar: two windows stacked one above the other came
-    /// back side by side (`rearranged-while-attached`, `monitor-moved`).
+    /// moved them (inserting retires every leaf a window has) but did not
+    /// copy anything: the insertion rules decided where each went. A workspace
+    /// takes a copy of its tree on its first visit to a screen size, and a
+    /// size changes whenever a monitor moves the Dock or takes the menu bar:
+    /// two windows stacked one above the other came back side by side
+    /// (`rearranged-while-attached`). Copying the structure but leaving the
+    /// windows in both trees was worse: two leaves per window, and the next
+    /// insert's clean-up of the extra ones reordered the desktop
+    /// (`resolution-churn`, `become-main`).
     fn clone_layout(&mut self, layout: LayoutId) -> LayoutId {
         let Some(state) = self.layouts.get(layout).copied() else {
             return self.create_layout();
         };
         let selected = self.selected_window(layout);
-        let root = self.copy_subtree(state.root);
+        let mut leaves = Vec::new();
+        let root = self.copy_subtree(state.root, &mut leaves);
+        for (window, _) in &leaves {
+            self.remove_window_internal(layout, *window);
+        }
+        for (window, leaf) in leaves {
+            self.index_window(window, leaf);
+        }
         let new_layout = self.layouts.insert(LayoutState { root });
         if let Some(node) = selected.and_then(|w| self.node_for_window(w)) {
             self.tree.data.selection.select(&self.tree.map, node);
