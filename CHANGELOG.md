@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A layout keeps its splits when the screen changes size.** In bsp, the
+  first time a desktop was shown at a new screen size -- a monitor moved to
+  the other side of the laptop takes the Dock with it, one that becomes main
+  takes the menu bar -- rift rebuilt the layout by adding its windows one at a
+  time, so splits came back in whatever direction insertion chose: two windows
+  stacked one above the other came back side by side. The layout is now
+  copied as it is.
 - **Undocking from two monitors puts both monitors' windows aside.** When
   displays leave, macOS destroys the desktop each was showing, and rift makes
   a stand-in desktop for its windows. It did that for the first destroyed

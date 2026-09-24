@@ -4377,6 +4377,69 @@ mod tests {
         );
     }
 
+    fn split_kinds(engine: &mut LayoutEngine, space: SpaceId) -> Vec<String> {
+        let workspace = engine.active_workspace(space).unwrap();
+        let layout = engine.workspace_layouts.active(workspace).unwrap();
+        let tree = engine.workspace_tree(workspace).container_tree(layout);
+        fn walk(n: &rift_protocol::ContainerTreeNode, out: &mut Vec<String>) {
+            if !n.children.is_empty() {
+                out.push(format!("{:?}", n.layout_kind));
+            }
+            for c in &n.children {
+                walk(c, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&tree, &mut out);
+        out
+    }
+
+    /// A split has to survive a first visit to a new screen size. Moving a
+    /// monitor to the other side of the laptop moves the Dock, the laptop's
+    /// usable width changes, and the workspace gets a copy of its tree for the
+    /// new size -- a copy in which two windows stacked one above the other
+    /// came out side by side (`rearranged-while-attached`).
+    #[test]
+    fn a_new_screen_size_copies_the_split_as_it_is() {
+        let mut store = WindowStore::default();
+        let mut engine = LayoutEngine::new(
+            &VirtualWorkspaceSettings::default(),
+            &LayoutSettings {
+                mode: LayoutMode::Bsp,
+                ..LayoutSettings::default()
+            },
+            None,
+        );
+        let space = SpaceId::new(4);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1387.0, 855.0)),
+        );
+        for idx in 1..=4 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+        // H(1, V(2, H(3, 4))): without 1 and 4, 2 stands above 3.
+        for idx in [1, 4] {
+            let _ =
+                engine.handle_event(&mut store, LayoutEvent::WindowRemoved(WindowId::new(1, idx)));
+        }
+        let before = split_kinds(&mut engine, space);
+        assert_eq!(
+            before,
+            vec!["Some(Vertical)".to_string()],
+            "the setup must leave a vertical split"
+        );
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1443.0, 855.0)),
+        );
+        let after = split_kinds(&mut engine, space);
+        assert_eq!(after, before, "the copy for the new size turned the split round");
+    }
+
     /// The other half: per-size memory is meant to keep a size's own ratios,
     /// and it must go on doing that when the arrangement itself is unchanged.
     #[test]

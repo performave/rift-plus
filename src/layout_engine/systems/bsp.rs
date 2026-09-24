@@ -399,6 +399,39 @@ impl BspLayoutSystem {
         }
     }
 
+    /// A copy of the subtree under `node`; its leaves become the indexed ones
+    /// for their windows, as a fresh insertion's would.
+    fn copy_subtree(&mut self, node: NodeId) -> NodeId {
+        match self.kind.get(node).cloned() {
+            Some(NodeKind::Leaf {
+                window,
+                fullscreen,
+                fullscreen_within_gaps,
+                preselected,
+            }) => {
+                let id = self.make_leaf(window);
+                self.kind.insert(id, NodeKind::Leaf {
+                    window,
+                    fullscreen,
+                    fullscreen_within_gaps,
+                    preselected,
+                });
+                id
+            }
+            Some(NodeKind::Split { orientation, ratio }) => {
+                let id = self.tree.mk_node().into_id();
+                self.kind.insert(id, NodeKind::Split { orientation, ratio });
+                let children: Vec<NodeId> = node.children(&self.tree.map).collect();
+                for child in children {
+                    let copy = self.copy_subtree(child);
+                    copy.detach(&mut self.tree).push_back(id);
+                }
+                id
+            }
+            None => self.make_leaf(None),
+        }
+    }
+
     fn collect_windows_under(&self, node: NodeId, out: &mut Vec<WindowId>) {
         match self.kind.get(node) {
             Some(NodeKind::Leaf { window, .. }) => {
@@ -1921,15 +1954,24 @@ impl LayoutSystem for BspLayoutSystem {
 
     fn contains_layout(&self, layout: LayoutId) -> bool { self.layouts.contains_key(layout) }
 
-    /// shallow
+    /// The tree as it is: every split with its orientation and ratio, every
+    /// leaf with its window and fullscreen state, in the same order.
+    ///
+    /// This used to put the windows into a fresh layout one at a time, which
+    /// is not a copy -- the insertion rules decide where each goes, not the
+    /// tree being copied. A workspace takes a copy of its tree on its first
+    /// visit to a screen size, and a size changes whenever a monitor moves the
+    /// Dock or takes the menu bar: two windows stacked one above the other came
+    /// back side by side (`rearranged-while-attached`, `monitor-moved`).
     fn clone_layout(&mut self, layout: LayoutId) -> LayoutId {
-        let mut windows = Vec::new();
-        if let Some(state) = self.layouts.get(layout).copied() {
-            self.collect_windows_under(state.root, &mut windows);
-        }
-        let new_layout = self.create_layout();
-        for w in windows {
-            self.add_window_after_selection(new_layout, w);
+        let Some(state) = self.layouts.get(layout).copied() else {
+            return self.create_layout();
+        };
+        let selected = self.selected_window(layout);
+        let root = self.copy_subtree(state.root);
+        let new_layout = self.layouts.insert(LayoutState { root });
+        if let Some(node) = selected.and_then(|w| self.node_for_window(w)) {
+            self.tree.data.selection.select(&self.tree.map, node);
         }
         new_layout
     }
