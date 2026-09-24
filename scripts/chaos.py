@@ -526,11 +526,17 @@ def reset_between_scenarios() -> str:
     # file goes too, or the restart would restore the same state. macOS keeps
     # its own memory of which display a window was on; that is not cleared,
     # and handling it is part of what is being measured.
-    restart_rift()
-    notes.append("rift restarted")
+    # Fetch before the restart, not after. Plugging a monitor in and out to
+    # fetch its windows leaves rift a display record, and one left standing
+    # into the scenario made the scenario's own monitor a stranger to it: its
+    # return was not restored and a split came back flipped
+    # (`monitor-moved`, `rearranged-while-attached`). The restart below
+    # clears it.
     fetched = fetch_windows_left_on_the_probe() + fetch_windows_left_on_monitors()
     if fetched:
         notes.append(f"fetched {fetched} window(s) back from the probe's desktops")
+    restart_rift()
+    notes.append("rift restarted")
     gathered = gather_test_windows()
     if gathered:
         notes.append(f"gathered {gathered} window(s) onto one desktop")
@@ -1188,10 +1194,14 @@ def check_tiled_stayed_tiled(before: dict, after: dict, phase: str,
     """
     if mode == "float":
         return
-    fell_out = sorted(before[i][1] for i in (set(before) & set(after))
+    fell_out = sorted(i for i in (set(before) & set(after))
                       if before[i][2] and not after[i][2])
     if fell_out:
-        raise Violation(f"{phase}: tiled window(s) came back floating: {', '.join(fell_out)}")
+        # Which, and where: "TextEdit" alone could not say whether rift lost
+        # the window's leaf or the window sits on a desktop nobody shows.
+        raise Violation(f"{phase}: tiled window(s) came back floating: "
+                        + ", ".join(f"{before[i][1]} {i} (desktop {before[i][0]} -> {after[i][0]})"
+                                    for i in fell_out))
 
 
 def check_slot_order(before: dict, after: dict, phase: str) -> None:
