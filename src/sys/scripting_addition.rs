@@ -199,6 +199,9 @@ pub mod test_hooks {
         static AVAILABLE: Cell<bool> = const { Cell::new(false) };
         static SENT: RefCell<Vec<(u8, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
         static NEXT_CREATED: Cell<Option<u64>> = const { Cell::new(None) };
+        /// Ids handed out one per create before `NEXT_CREATED` takes over.
+        static CREATED_QUEUE: std::cell::RefCell<std::collections::VecDeque<u64>> =
+            const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
     }
 
     pub fn available() -> bool { AVAILABLE.with(|available| available.get()) }
@@ -207,12 +210,22 @@ pub mod test_hooks {
         AVAILABLE.with(|cell| cell.set(available));
         SENT.with(|sent| sent.borrow_mut().clear());
         NEXT_CREATED.with(|cell| cell.set(None));
+        CREATED_QUEUE.with(|queue| queue.borrow_mut().clear());
     }
 
     /// The id `create_space_after` reports for the next desktop it creates.
     pub fn set_next_created_space(space: Option<u64>) { NEXT_CREATED.with(|cell| cell.set(space)); }
 
-    pub(super) fn next_created_space() -> Option<u64> { NEXT_CREATED.with(|cell| cell.get()) }
+    /// Several ids, one per desktop created, in order.
+    pub fn set_next_created_spaces(spaces: Vec<u64>) {
+        CREATED_QUEUE.with(|queue| *queue.borrow_mut() = spaces.into());
+    }
+
+    pub(super) fn next_created_space() -> Option<u64> {
+        CREATED_QUEUE
+            .with(|queue| queue.borrow_mut().pop_front())
+            .or_else(|| NEXT_CREATED.with(|cell| cell.get()))
+    }
 
     /// `(space, after)` of every desktop-reorder command sent, in order.
     pub fn space_moves() -> Vec<(u64, u64)> {

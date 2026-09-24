@@ -11381,9 +11381,11 @@ mod display_archive {
 
         let home_desktop = SpaceId::new(70);
         f.reactor.display_archive.whole_displays = Some(vec![
+            // macOS parks the office's desktops on the laptop while it is
+            // away; they are still the office's.
             super::super::display_record::RecordedDisplay {
                 uuid: "test-display-0".to_string(),
-                desktops: vec![laptop_now],
+                desktops: vec![laptop_now, space2(), space2_extra()],
                 shown: Some(laptop_now),
             },
             super::super::display_record::RecordedDisplay {
@@ -11413,7 +11415,15 @@ mod display_archive {
             Some(space2()),
             "an office window waiting on the laptop still belongs on the office desktop"
         );
-        assert_eq!(record.recorded_desktops("test-display-0"), vec![laptop_now]);
+        assert_eq!(
+            record.recorded_desktops("test-display-0"),
+            vec![laptop_now],
+            "the office's desktops parked on the laptop are not taken as the laptop's"
+        );
+        assert_eq!(record.recorded_desktops(DISPLAY2), vec![
+            space2(),
+            space2_extra()
+        ]);
         spaces_cleanup(&f, &[]);
     }
 
@@ -11724,6 +11734,82 @@ mod display_archive {
             "its windows go there rather than staying on the survivor's desktop"
         );
         spaces_cleanup(&f, &[]);
+    }
+
+    /// Every destroyed desktop that had windows gets one, not only the first.
+    /// Undocking from two monitors destroys the desktop each was showing;
+    /// with a stand-in for the first alone, the second's window was left
+    /// merged among the laptop's, out of any tree (`dock-two-monitors`: a
+    /// Safari came back floating).
+    #[test]
+    fn every_destroyed_desktop_with_windows_gets_a_desktop_of_its_own() {
+        let mut f = spaces_fixture();
+        let (first, second) = (SpaceId::new(41), SpaceId::new(42));
+        sa::set_next_created_spaces(vec![first.get(), second.get()]);
+        // One of the departing display's windows lives on its other desktop.
+        let apart = f.exiled[2];
+        let apart_wsid = f.exiled_wsids[2];
+        f.reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(apart));
+        // Its move is the user's, not a fullscreen trip: no slot to go back to.
+        f.reactor.fullscreen_slots.forget(apart);
+        let workspace = f.reactor.test_workspace(space2_extra(), 0);
+        assert!(f.reactor.assign_test_window_to_workspace(space2_extra(), apart, workspace));
+        set_window_spaces(&[apart_wsid], space2_extra());
+        // Taking it out of its tree read as the start of a churn and was
+        // snapshotted; the state to record is the one after the move.
+        f.reactor.display_archive.clear_pre_churn_for_test();
+        f.reactor.capture_pre_churn_layout();
+        // Both of the display's desktops are gone; its windows are on space1.
+        managed(vec![("test-display-0", vec![space1()])]);
+        // As `unplug`, but the window apart comes from the other desktop.
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&f.exiled_wsids, space1());
+        set_space_window_list_for_space_override(
+            space1().get(),
+            Some(
+                std::iter::once(survivor_wsid)
+                    .chain(f.exiled_wsids.iter().copied())
+                    .map(|wsid| wsid.as_u32())
+                    .collect(),
+            ),
+        );
+        let moved = f
+            .exiled_wsids
+            .iter()
+            .map(|wsid| {
+                let from = if *wsid == apart_wsid {
+                    space2_extra()
+                } else {
+                    space2()
+                };
+                (*wsid, from, space1())
+            })
+            .collect();
+        let window_spaces = std::iter::once((survivor_wsid, space1()))
+            .chain(f.exiled_wsids.iter().map(|wsid| (*wsid, space1())))
+            .collect();
+        f.reactor.handle_event(topology_event(
+            vec![screen1()],
+            vec![Some(space1())],
+            moved,
+            window_spaces,
+        ));
+
+        assert_eq!(
+            f.reactor.display_archive.record().expect("the record stands").made_desktops(),
+            vec![first, second],
+            "each destroyed desktop gets one made to stand in for it"
+        );
+        let moves = sorted_moves();
+        assert!(
+            moves.contains(&(apart_wsid.as_u32(), second.get())),
+            "the second desktop's window was left merged among the survivor's: {moves:?}"
+        );
+        assert!(
+            moves.contains(&(f.exiled_wsids[0].as_u32(), first.get())),
+            "the first desktop's windows go to its stand-in: {moves:?}"
+        );
+        spaces_cleanup(&f, &[apart_wsid]);
     }
 
     /// A desktop that keeps its display needs nothing made for it, and one

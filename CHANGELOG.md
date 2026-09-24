@@ -34,6 +34,12 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Undocking from two monitors puts both monitors' windows aside.** When
+  displays leave, macOS destroys the desktop each was showing, and rift makes
+  a stand-in desktop for its windows. It did that for the first destroyed
+  desktop only, so the second monitor's windows were left merged among the
+  laptop's, out of their layout, and came back floating. Every destroyed
+  desktop that held windows now gets its own.
 - **Using a second monitor while another is away no longer scrambles the
   laptop.** Unplug the office monitor, use one at home, unplug that: rift was
   still going by its record of the laptop from when the office monitor left,
