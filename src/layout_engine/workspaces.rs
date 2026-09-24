@@ -174,6 +174,26 @@ impl WorkspaceLayouts {
                     // A different shape means the stored tree is out of date:
                     // carry the current arrangement over instead, the way a
                     // size seen for the first time already does.
+                    // Which tree a size change lands on, and why: a split that
+                    // comes back turned round after the screen changed size
+                    // is decided here, and nothing else in a trace says so.
+                    let differs = previous_layout.filter(|c| *c != stored).map(|current| {
+                        tree.contains_layout(current)
+                            && !same_shape(
+                                &tree.container_tree(current),
+                                &tree.container_tree(stored),
+                            )
+                    });
+                    crate::sys::trace::act(
+                        "layout_size_switch",
+                        &serde_json::json!({
+                            "workspace": format!("{workspace_id:?}"),
+                            "size": [size.width, size.height],
+                            "stored": format!("{stored:?}"),
+                            "current": previous_layout.map(|c| format!("{c:?}")),
+                            "shape_differs": differs,
+                        }),
+                    );
                     let replaced = match previous_layout {
                         Some(current)
                             if current != stored
