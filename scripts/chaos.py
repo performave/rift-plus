@@ -510,6 +510,11 @@ def reset_between_scenarios() -> str:
     that can be undone without one.
     """
     notes = []
+    # Anything else with a window changes the slot sizes every scenario is
+    # measured against.
+    if sh('pgrep -x "System Settings"'):
+        sh('killall "System Settings" 2>/dev/null')
+        notes.append("quit System Settings")
     detach_all_monitors()
     unplug(quiet=True)
     settle(2)
@@ -565,6 +570,24 @@ def reset_between_scenarios() -> str:
     retiled = tile_all()
     if retiled:
         notes.append(f"re-tiled {retiled}")
+    # Checked, not assumed. A scenario that fails can leave windows anywhere
+    # -- floating on a desktop nobody shows, or on a monitor that is gone --
+    # and one failed `commute` took the eight scenarios after it down with
+    # "could not float a window": each reset came back with two of five
+    # tiled and carried on. Short of the full set, start the apps over.
+    tiled_now = sum(1 for w in shown_windows()
+                    if w.get("app_name") in TEST_APPS and is_tiled(w))
+    if tiled_now < 5:
+        sh("killall Safari TextEdit 2>/dev/null")
+        time.sleep(4)
+        spawn_windows()
+        clear_native_fullscreen()
+        for name, was, now in show_the_desktop_holding_the_windows():
+            notes.append(f"{name}: showed empty {was}, switched to {now}")
+        rift_exec("layout balance")
+        settle(1.5)
+        n = tile_all()
+        notes.append(f"only {tiled_now} tiled; relaunched the apps and tiled {n}")
     return "; ".join(notes)
 
 
@@ -872,7 +895,11 @@ def tile_all() -> int:
     # passed, so go round again until nothing is left floating.
     done = set()
     for _pass in range(3):
-        left = [w for w in shown_windows() if w.get("is_floating")]
+        # Test apps only. A System Settings window that turned up during a
+        # run was tiled as a sixth window, and six slots on this screen are
+        # below what the apps accept: every overlap in that run was theirs.
+        left = [w for w in shown_windows()
+                if w.get("is_floating") and w.get("app_name") in TEST_APPS]
         if not left:
             break
         for w in left:

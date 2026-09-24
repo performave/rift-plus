@@ -60,7 +60,7 @@ done
 sleep 55
 
 "$SC/vm-ssh" "U=\$(id -u)
-killall Safari TextEdit 2>/dev/null; sleep 4
+killall Safari TextEdit \"System Settings\" 2>/dev/null; sleep 4
 launchctl bootout gui/\$U/vdisp 2>/dev/null
 launchctl bootout gui/\$U/rift-harness 2>/dev/null; sleep 2
 cp ~/rift-harness/builds/$BIN ~/rift-harness/bin/rift || exit 1
