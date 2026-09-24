@@ -34,6 +34,15 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Switching desktops no longer swaps tiles.** A window that had once left a
+  desktop could keep a fullscreen slot for it after it was tiled somewhere
+  else. Switching desktops makes the window server show the new desktop's
+  windows before rift hears that the desktop changed. So switching to the
+  window's own desktop looked like a return from fullscreen to the old one:
+  rift pulled the window into the old desktop's tree and replayed the
+  arrangement the slot had saved, and two tiles traded places on every
+  `switch_to_space`. The slot is now used only when the window server has the
+  window on the slot's desktop; a slot left over from a move is dropped.
 - **A layout keeps its splits when the screen changes size.** In bsp, the
   first time a desktop was shown at a new screen size -- a monitor moved to
   the other side of the laptop takes the Dock with it, one that becomes main

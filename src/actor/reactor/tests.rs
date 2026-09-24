@@ -2864,6 +2864,82 @@ fn fullscreen_exit_restores_the_slot_when_the_window_is_ordered_in_last() {
     );
 }
 
+/// Switching desktops orders the arriving desktop's windows in before rift
+/// hears that the display changed, so the desktop being left still counts as
+/// active. A window tiled on the arriving desktop, with a slot left over from
+/// the other one, matched that slot, and the order-in replayed its old
+/// snapshot: recorded on the host, Chrome and its neighbour swapped tiles at
+/// every `switch_to_space`.
+#[test]
+fn ordering_in_a_window_on_another_desktop_leaves_its_tiles_alone() {
+    let (mut apps, mut reactor) = test_context();
+
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let home = SpaceId::new(1);
+    let other = SpaceId::new(2);
+    let left = WindowId::new(1, 1);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(other)]));
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(home)]));
+    make_active_app(&mut apps, &mut reactor, 1, make_windows(2), Some(left));
+    let wsid = reactor.state.windows.window(left).unwrap().info.sys_id.unwrap();
+
+    // Leave a slot on the other desktop: the window passed through its tree,
+    // and came home by a path that never consulted the slot.
+    for event in [
+        LayoutEvent::WindowRemoved(left),
+        LayoutEvent::WindowAdded(other, left),
+    ] {
+        reactor
+            .layout_manager
+            .layout_engine
+            .handle_event(&mut reactor.state.windows, event);
+    }
+    reactor.record_fullscreen_slot(left);
+    for event in [
+        LayoutEvent::WindowRemoved(left),
+        LayoutEvent::WindowAdded(home, left),
+    ] {
+        reactor
+            .layout_manager
+            .layout_engine
+            .handle_event(&mut reactor.state.windows, event);
+    }
+    assert_eq!(reactor.fullscreen_slots_awaiting_insertion(), vec![(
+        left, other
+    )]);
+
+    let order = |reactor: &Reactor| {
+        reactor.layout_manager.layout_engine.windows_on_space_in_layout_order(home)
+    };
+    let before = order(&reactor);
+
+    // On the other desktop, switch home: the window server orders the home
+    // desktop's windows in while rift still has the other one showing.
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(other)]));
+    apps.simulate_until_quiet(&mut reactor);
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![home.get()]));
+    reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, true));
+    assert_eq!(
+        order(&reactor),
+        before,
+        "a window ordered in on its own desktop must not be moved into the slot's"
+    );
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(home)]));
+    apps.simulate_until_quiet(&mut reactor);
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+
+    assert_eq!(
+        order(&reactor),
+        before,
+        "switching to a desktop must not rearrange its tiles"
+    );
+    assert!(
+        reactor.fullscreen_slots_awaiting_insertion().is_empty(),
+        "a slot for a desktop the window no longer lives on must be let go"
+    );
+}
+
 #[test]
 fn known_window_server_appearance_restores_same_workspace_after_fullscreen() {
     let (mut apps, mut reactor) = test_context();

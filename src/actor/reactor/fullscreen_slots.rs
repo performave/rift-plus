@@ -351,6 +351,41 @@ impl Reactor {
         if !self.is_space_active(space) {
             return false;
         }
+        // Ask the window server where the window is, not the active spaces.
+        // Switching desktops orders the new desktop's windows in before rift
+        // hears that the display changed, so the desktop being left still
+        // counts as active: switching to a window's own desktop matched a slot
+        // it had left on the other one, inserted it into that tree, and
+        // replayed the slot's old snapshot -- two tiles swapped on every
+        // switch. A window ordered in on another desktop is not coming home
+        // here. If it lives in that desktop's tree and nothing is sending it
+        // home, the slot is left over from a move, and would fire again at
+        // every switch; let it go.
+        if let Some(wsid) = self.state.windows.window(window).and_then(|w| w.info.sys_id)
+            && let Some(now) = crate::sys::window_server::window_space(wsid)
+            && now != space
+            && crate::sys::window_server::space_is_user(now.get())
+        {
+            let stale = self.layout_manager.layout_engine.is_window_tiled(now, window)
+                && self.display_archive.homing_destination(window) != Some(space);
+            if stale {
+                self.fullscreen_slots.forget(window);
+            }
+            crate::sys::trace::act(
+                "fullscreen_slot",
+                &(
+                    window.idx.get(),
+                    if stale {
+                        "ordered in elsewhere; stale slot dropped"
+                    } else {
+                        "ordered in elsewhere; not restoring"
+                    },
+                    space.get(),
+                    now.get(),
+                ),
+            );
+            return false;
+        }
         crate::sys::trace::act(
             "fullscreen_slot",
             &(window.idx.get(), "ordered in; restoring", space.get()),
