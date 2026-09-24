@@ -2029,6 +2029,20 @@ def arrange(ext: int, laptop_at: tuple) -> None:
             break
 
 
+def place_right_of_laptop(ext: int) -> None:
+    """Put a monitor to the laptop's right, top-aligned, before a scenario
+    starts from there. macOS remembers where each monitor was, across runs:
+    one scenario moved a monitor left, and the next run of it started with the
+    monitor already on the left and tested nothing."""
+    for line in sh(f"{DTOOL} list").splitlines():
+        parts = line.split()
+        if parts and parts[0] == "1":
+            width = int(parts[1].split("x")[0])
+            place(ext, width, 0)
+            settle(4)
+            return
+
+
 def on_display(snap: dict, idents, screen_id: int) -> list:
     """Of `idents`, the ones not on a desktop `screen_id` owns."""
     d = rift_display_for(screen_id, snap)
@@ -2154,6 +2168,7 @@ def s_monitor_moved(base):
     try:
         with Sampler("monitor-moved") as sampler:
             ext = attach("mon-moved", serial=0x54); settle(6)
+            place_right_of_laptop(ext)
             a = snapshot("right of the laptop")
             for ident in [i for i, r in a["windows"].items() if r[1] == "Safari"]:
                 send_to_display(ident, ext, a)
@@ -2162,6 +2177,8 @@ def s_monitor_moved(base):
             a = snapshot("right of the laptop, Safari on it")
             detach("mon-moved"); settle(6)
             ext = attach("mon-moved", serial=0x54); settle(4)
+            # Back where it was first, as macOS would put it -- then moved.
+            place_right_of_laptop(ext)
             # Left of the laptop and bottom-aligned with it.
             place(ext, -1920, 886 - 1080); settle(8)
             check_full(a, snapshot("left of the laptop"), "monitor-moved")
@@ -2177,6 +2194,7 @@ def s_rearranged(base):
     try:
         with Sampler("rearranged") as sampler:
             ext = attach("mon-rearrange", serial=0x55); settle(6)
+            place_right_of_laptop(ext)
             a = snapshot("right of the laptop")
             for ident in [i for i, r in a["windows"].items() if r[1] == "Safari"]:
                 send_to_display(ident, ext, a)
@@ -2312,6 +2330,25 @@ def s_desktop_to_new_monitor(base):
                 snap = snapshot(f"{label} attached")
                 laptop = rift_display_for(1, snap)
                 monitor = rift_display_for(ext, snap)
+                home_desktop = laptop.get("space")
+                if not any(r[0] == home_desktop for r in snap["windows"].values()):
+                    home_desktop = None
+                # The laptop must show the desktop holding the windows, and
+                # keep another behind when that one moves away.
+                held = {}
+                for r in snap["windows"].values():
+                    if r[0] in (laptop.get("space_ids") or []):
+                        held[r[0]] = held.get(r[0], 0) + 1
+                if held:
+                    want = max(held, key=held.get)
+                    if want != laptop.get("space"):
+                        rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
+                        settle(2)
+                if len(laptop.get("space_ids") or []) < 2:
+                    rift_exec("space create")
+                    settle(3)
+                snap = snapshot(f"{label} attached, laptop showing the windows")
+                laptop = rift_display_for(1, snap)
                 home_desktop = laptop.get("space")
                 if not any(r[0] == home_desktop for r in snap["windows"].values()):
                     home_desktop = None
