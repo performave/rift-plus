@@ -1589,14 +1589,20 @@ class Sampler:
                         ox = min(ax + aw, bx + bw) - max(ax, bx)
                         oy = min(ay + ah, by + bh) - max(ay, by)
                         if ox > 2 and oy > 2:
-                            seen[tuple(sorted((ia, ib)))] = f"{an} and {bn} overlap by {ox}x{oy}px"
+                            # Ids and frames: "TextEdit and TextEdit" could
+                            # not say which pair, or whether a float was among
+                            # them.
+                            seen[tuple(sorted((ia, ib)))] = (
+                                f"{an} {ia} ({ax},{ay} {aw}x{ah}) and {bn} {ib} "
+                                f"({bx},{by} {bw}x{bh}) overlap by {ox}x{oy}px")
                 for key, text in seen.items():
                     self._note(text)
                     if key not in self._open:
                         self._open[key] = (now, text)
                 for key in [k for k in self._open if k not in seen]:
                     first, text = self._open.pop(key)
-                    self.episodes.append((text, now - first))
+                    # When, from the sampler's start: lines up with a trace.
+                    self.episodes.append((f"{text} from +{first - self._started:.1f}s", now - first))
             except Exception:
                 pass
             time.sleep(self.INTERVAL)
@@ -1622,6 +1628,7 @@ class Sampler:
 
     def __enter__(self):
         import threading
+        self._started = time.time()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         return self
@@ -2339,17 +2346,17 @@ def s_desktop_to_new_monitor(base):
                 for r in snap["windows"].values():
                     if r[0] in (laptop.get("space_ids") or []):
                         held[r[0]] = held.get(r[0], 0) + 1
+                # `space create` and `space switch-to` act on the active
+                # display, which with the monitor as main is not the laptop:
+                # the pointer goes on the laptop first, for both.
+                f = laptop.get("frame") or {}
+                o, sz = f.get("origin", {}), f.get("size", {})
+                sh(f"{BIN}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
+                   f"{o.get('y', 0) + sz.get('height', 0) / 2:.0f}")
+                time.sleep(0.5)
                 if held:
                     want = max(held, key=held.get)
                     if want != laptop.get("space"):
-                        # `space switch-to` acts on the active display, which
-                        # with the monitor as main is not the laptop: put the
-                        # pointer on the laptop first.
-                        f = laptop.get("frame") or {}
-                        o, sz = f.get("origin", {}), f.get("size", {})
-                        sh(f"{BIN}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
-                           f"{o.get('y', 0) + sz.get('height', 0) / 2:.0f}")
-                        time.sleep(0.5)
                         rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
                         settle(2)
                 if len(laptop.get("space_ids") or []) < 2:
@@ -2424,6 +2431,19 @@ def s_native_fullscreen_churn(base):
     # Safari for preference: it has one window, and a posted key goes to
     # whichever window of the app is frontmost, so an app with three of them
     # (TextEdit here) makes the target a guess.
+    # One Safari window, as the scenario was written for. A posted key goes to
+    # the app's front window, and a window in native fullscreen cannot be
+    # focused through rift: with setup's second Safari window open, the exit
+    # key went to that one and put it into fullscreen instead, and the target
+    # never came back (every run since setup opened two). The reset opens it
+    # again for the next scenario.
+    safari = [w for w in shown_windows() if w.get("app_name") == "Safari"]
+    for extra in safari[1:]:
+        if focus(extra):
+            time.sleep(0.6)
+            sh(f"{DTOOL} key 13 cmd")
+            time.sleep(1.5)
+    settle(2)
     a = snapshot("attached, tiled")
     # The target has to sit on a desktop whose tree can be read, and rift only
     # answers `query layout` for a desktop some display is showing right now --
