@@ -9820,6 +9820,49 @@ mod fullscreen_slots {
         assert_ne!(before[1..], after[1..], "the arrange never went ahead");
     }
 
+    /// A desktop the window server has already moved to another display is
+    /// not laid out for the screen it left: written at that screen's
+    /// coordinates, a window landed on the desktop the screen was showing and
+    /// stayed there, left behind by its own desktop (`desktop-to-home-monitor`;
+    /// Eric's first seam report).
+    #[test]
+    fn an_arrange_for_a_desktop_moved_to_another_display_writes_nothing() {
+        use crate::sys::screen::{ManagedDisplaySpaces, set_managed_display_spaces_override};
+        let (mut reactor, _screen, space, wids, wsids) = bsp_reactor_with_three_tiled();
+        let before = reactor.transaction_manager.get_target_frame(wsids[1]);
+        reactor.send_layout_event(LayoutEvent::WindowRemoved(wids[0]));
+
+        set_managed_display_spaces_override(Some(vec![
+            ManagedDisplaySpaces {
+                display_uuid: "test-display-0".into(),
+                spaces: vec![],
+            },
+            ManagedDisplaySpaces {
+                display_uuid: "a-monitor".into(),
+                spaces: vec![space],
+            },
+        ]));
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        let during = reactor.transaction_manager.get_target_frame(wsids[1]);
+
+        set_managed_display_spaces_override(Some(vec![ManagedDisplaySpaces {
+            display_uuid: "test-display-0".into(),
+            spaces: vec![space],
+        }]));
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        let after = reactor.transaction_manager.get_target_frame(wsids[1]);
+        set_managed_display_spaces_override(None);
+
+        assert_eq!(
+            before, during,
+            "frames were written for a desktop that had left the screen"
+        );
+        assert_ne!(
+            before, after,
+            "the arrange never went ahead once the desktop was back"
+        );
+    }
+
     /// A held arrange is run again: the display change does not always bring
     /// one of its own, and a desktop held with nothing else to arrange it
     /// kept two windows on top of a tile for ten seconds

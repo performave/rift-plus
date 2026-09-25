@@ -43,6 +43,12 @@ Entries describe this fork's changes relative to
   arrangement the slot had saved, and two tiles traded places on every
   `switch_to_space`. The slot is now used only when the window server has the
   window on the slot's desktop; a slot left over from a move is dropped.
+- **Moving a desktop onto a monitor takes all its windows with it.** Dragging
+  a desktop onto a monitor in Mission Control moves it before rift hears of
+  the move, and rift went on laying the desktop out for the screen it had
+  left: a window written at that screen's coordinates landed on the desktop
+  the screen was showing and was left behind. rift now holds the layout of a
+  desktop the window server has already moved until it has caught up.
 - **A window alone on a desktop is no longer mistaken for a fullscreen one.**
   In bsp, a report of a window's frame matching the whole tiling area was read
   as the window being made fullscreen within the gaps -- but that is simply

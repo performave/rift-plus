@@ -541,6 +541,9 @@ impl LayoutManager {
         let mut any_frame_changed = false;
 
         let active_space = reactor.workspace_command_space();
+        // Which display the window server has each desktop on, read once for
+        // the pass. See the guard below.
+        let live_listing = crate::sys::screen::managed_display_space_ids_opt();
         for (space, layout) in layout_result {
             // A desktop a display owns but is not showing has no screen *by
             // space*; the display it belongs to is what says where to put it.
@@ -570,7 +573,22 @@ impl LayoutManager {
             // holding every arrange for it would leave the display unmanaged.
             if let Some(screen) = screen {
                 let id = screen.id.as_u32();
-                if crate::sys::screen::display_moved_under(screen.id, screen.frame) {
+                // The same for a desktop the window server has already moved
+                // to another display -- a Mission Control drag onto a monitor
+                // just plugged in. Laid out for the screen it left, its
+                // windows were written at that screen's coordinates, and
+                // macOS moved the one that landed there onto the desktop that
+                // screen was showing: left behind, away from its desktop
+                // (`desktop-to-home-monitor`; Eric's first seam report).
+                let desktop_moved_away = live_listing.as_ref().is_some_and(|listing| {
+                    !listing.get(&screen.display_uuid).is_some_and(|l| l.contains(&space))
+                        && listing
+                            .iter()
+                            .any(|(uuid, l)| *uuid != screen.display_uuid && l.contains(&space))
+                });
+                if crate::sys::screen::display_moved_under(screen.id, screen.frame)
+                    || desktop_moved_away
+                {
                     let since = *reactor
                         .display_disagreement
                         .entry(id)
