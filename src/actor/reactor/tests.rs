@@ -2890,7 +2890,7 @@ fn ordering_in_a_window_on_another_desktop_leaves_its_tiles_alone() {
         LayoutEvent::WindowRemoved(left),
         LayoutEvent::WindowAdded(other, left),
     ] {
-        reactor
+        let _ = reactor
             .layout_manager
             .layout_engine
             .handle_event(&mut reactor.state.windows, event);
@@ -2900,7 +2900,7 @@ fn ordering_in_a_window_on_another_desktop_leaves_its_tiles_alone() {
         LayoutEvent::WindowRemoved(left),
         LayoutEvent::WindowAdded(home, left),
     ] {
-        reactor
+        let _ = reactor
             .layout_manager
             .layout_engine
             .handle_event(&mut reactor.state.windows, event);
