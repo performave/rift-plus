@@ -43,6 +43,12 @@ Entries describe this fork's changes relative to
   arrangement the slot had saved, and two tiles traded places on every
   `switch_to_space`. The slot is now used only when the window server has the
   window on the slot's desktop; a slot left over from a move is dropped.
+- **A window alone on a desktop is no longer mistaken for a fullscreen one.**
+  In bsp, a report of a window's frame matching the whole tiling area was read
+  as the window being made fullscreen within the gaps -- but that is simply
+  the tile of a window that has the desktop to itself. The mark outlived a
+  second window joining, and the first went on covering the whole desktop
+  over it. Only a window sharing its desktop is now read that way.
 - **A floating window is no longer left almost off screen by a display
   change.** macOS moves the windows on a monitor that leaves, but not one that
   still has a sliver on a display that stayed -- a float that straddled onto a

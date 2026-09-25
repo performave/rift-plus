@@ -949,6 +949,45 @@ mod tests {
 
     fn w(idx: u32) -> WindowId { WindowId::new(1, idx) }
 
+    /// A lone window's frame is the tiling area because that is its tile. A
+    /// report of it is not the user asking for fullscreen within the gaps --
+    /// read as one, the mark outlived a second window joining and the first
+    /// covered the desktop over it (`commute`).
+    #[test]
+    fn a_lone_window_filling_its_tile_is_not_made_fullscreen() {
+        let mut system = BspLayoutSystem::default();
+        let layout = system.create_layout();
+        system.add_window_after_selection(layout, w(1));
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        // Outer gaps, as Eric has: with none the tiling area is the whole
+        // screen and a different branch reads it.
+        let mut gaps = crate::common::config::GapSettings::default();
+        gaps.outer.top = 5.0;
+        gaps.outer.left = 5.0;
+        gaps.outer.bottom = 5.0;
+        gaps.outer.right = 5.0;
+        let tiling = compute_tiling_area(screen, &gaps);
+        assert_ne!(tiling, screen);
+        // Coming from somewhere else -- a display change, the app -- into
+        // its own tile.
+        let before = CGRect::new(
+            tiling.origin,
+            CGSize::new(tiling.size.width / 2., tiling.size.height),
+        );
+        system.on_window_resized(layout, w(1), before, tiling, screen, &gaps);
+        let node = system.node_for_window(w(1)).unwrap();
+        assert!(
+            !matches!(
+                system.kind.get(node),
+                Some(NodeKind::Leaf {
+                    fullscreen_within_gaps: true,
+                    ..
+                })
+            ),
+            "a lone window's own tile was taken for fullscreen within the gaps"
+        );
+    }
+
     /// A copy keeps one leaf per window: the copy's. A copy that also left
     /// them in the source gave every window two leaves, and the clean-up of
     /// the extra one at the next insert reordered the desktop
@@ -2410,7 +2449,13 @@ impl LayoutSystem for BspLayoutSystem {
                         *fullscreen = false;
                         fullscreen_transition = true;
                     } else {
-                        if new_frame == tiling {
+                        // A window alone in the tree already fills the tiling
+                        // area -- that is its tile, not a request for
+                        // fullscreen. Read as one, any report of a lone
+                        // window's own frame marked it, the mark outlived a
+                        // second window joining, and the first went on
+                        // covering the desktop over it (`commute`).
+                        if new_frame == tiling && node != state.root {
                             *fullscreen_within_gaps = true;
                             *fullscreen = false;
                             fullscreen_transition = true;
