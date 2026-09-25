@@ -982,18 +982,18 @@ without it.
 |---|---|---|
 | `d6a3442`, `e70fd76` | a new screen size copies the tree as it is -- moving the windows into the copy, so each keeps one leaf | `monitor-moved`, `scale-change`: splits re-inserted in window order; the first copy left two leaves per window and reordered desktops |
 | `f6369dd` | a fullscreen slot is left unused when its window is ordered in on another desktop | tiles traded places on a desktop switch after a churn |
-| `86beb34`, `0dc42db` | a float a display change left under 25% on screen is brought back, onto the screen showing *its own* desktop | Eric: "windows spawning nearly outside the viewport when connecting the monitor back in"; `clamshell`: a Finder window 96% off screen |
-| `f14f013` | in bsp, a lone window filling its tile is not a fullscreen request | the mark outlived a second window joining, and the first covered it |
-| `ce24238`, `a069ddf`, `d79f9a6` | an arrange held because the window server has already moved the display (or the desktop) is run again 300 ms later, and a desktop Mission Control moved to another display is held too | `desktop-to-home-monitor`: a window written at the old screen's coordinates landed on the desktop that screen was showing |
-| `944fb03` | a window whose recorded home desktop was replaced goes where that desktop's windows went | `commute`: a floating TextEdit left on the home monitor's desktop, its tiled neighbours on the laptop's |
-| `bbe7277` | for 10 s after the window server moved windows for a display change, "already there" is checked against the window's real frame | `dock-two-monitors`: Safari cascaded over the tiling with no frame report, a TextEdit write undone mid-change -- overlapping 1.1 s past the change |
+| `40701dc`, `230b03c` | a float a display change left under 25% on screen is brought back, onto the screen showing *its own* desktop | Eric: "windows spawning nearly outside the viewport when connecting the monitor back in"; `clamshell`: a Finder window 96% off screen |
+| `13d376b` | in bsp, a lone window filling its tile is not a fullscreen request | the mark outlived a second window joining, and the first covered it |
+| `ce24238`, `9c5d200`, `5baa12b` | an arrange held because the window server has already moved the display (or the desktop) is run again 300 ms later, and a desktop Mission Control moved to another display is held too | `desktop-to-home-monitor`: a window written at the old screen's coordinates landed on the desktop that screen was showing |
+| `c3afc8f` | a window whose recorded home desktop was replaced goes where that desktop's windows went | `commute`: a floating TextEdit left on the home monitor's desktop, its tiled neighbours on the laptop's |
+| `460bd4e` | for 10 s after the window server moved windows for a display change, "already there" is checked against the window's real frame | `dock-two-monitors`: Safari cascaded over the tiling with no frame report, a TextEdit write undone mid-change -- overlapping 1.1 s past the change |
 
 One attempt was reverted, and the reason is worth keeping:
 
-- **Guarding `compute_space_remaps` for commute's float** (`c9dd04a`,
-  `5c89cd3`) scored 3/12 and 6/12 in quiet-guest A/Bs against 8/12 without it.
+- **Guarding `compute_space_remaps` for commute's float** (`72f0669`,
+  `6578688`) scored 3/12 and 6/12 in quiet-guest A/Bs against 8/12 without it.
   The remap is load-bearing for scenarios that never show the symptom. The
-  float was fixed at the record instead (`944fb03`).
+  float was fixed at the record instead (`c3afc8f`).
 
 ### Harness changes
 
