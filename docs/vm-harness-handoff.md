@@ -689,7 +689,7 @@ with a stack on the desktop:
    `pre_churn: false, missing: [1556, 1554]` -- the attach's snapshot had
    expired). From the chair: unplug, and the windows are gone.
 
-**Since built (`9caf64c`), after the real-hardware check came back yes.** The
+**Since built (`2c4e282`), after the real-hardware check came back yes.** The
 recorded clamshell trace from Eric's machine has LG arrivals with no record
 open, and in the first of them two windows changed desktop -- so this is not a
 VZ artifact. It happens whenever the LG arrives without a matching departure in
@@ -801,20 +801,20 @@ Each failure leaves its flight recorder in `~/rift-harness/traces/`
 
 | Commit | Fix | Seen as |
 |---|---|---|
-| `33dd2b3` | saves drop the workspaces of a desktop rift forgot | autosave failing every minute after the first stand-in was destroyed |
-| `106d6a9` | a departure leaves out desktops rift is retiring | one extra desktop per replug |
-| `2c24607` | a stand-in only for a lost desktop that had windows | a stand-in for an empty minted desktop left after the last unplug |
-| `668249f` | a disappearance report for a window still drawn there is ignored | a window sent home left in no tree (`short-unplug`) |
-| `599e154`, `57abf9a` | a pre-churn snapshot lapses 3 quiet seconds after its last leave | an unplug soon after a plug recorded a half-moved layout (reorders) |
-| `599e154` | no minimum size learnt within 5 s of a display change | macOS's resize taught a TextEdit a 673px minimum |
-| `fc80272` | a minimum is learnt only when a second write is refused too | a slow app's old 1306px height became a minimum; neighbours 80px tall |
-| `9596f32`, `a778aa8` | a frame moved as a whole is not a resize (fullscreen checked first) | splits moved to x=2930 on a 2494 screen; 115px slots |
-| `aadfbb5` | a moved frame does not change a window's desktop against the window server | Safari taken out of its tree for good (`fast-churn`: "came back floating") |
-| `832193c`, `810a52e` | fullscreen slots follow a renumbered desktop, and survive a window being sent home | windows returned without their slot, appended at the end |
-| `9952b71` | an arrival seen before any window left a tree is still recorded | `become-main`: nothing undid macOS's scramble |
-| `c76ff68`, `ea5fa7c`, `ea2b064` | a record window macOS carries onto an unknown display is sent back (departure records only) | `different-monitor`: a window tiled alone on the new monitor |
+| `d7e9618` | saves drop the workspaces of a desktop rift forgot | autosave failing every minute after the first stand-in was destroyed |
+| `94a0e44` | a departure leaves out desktops rift is retiring | one extra desktop per replug |
+| `3b54f5d` | a stand-in only for a lost desktop that had windows | a stand-in for an empty minted desktop left after the last unplug |
+| `8bef43d` | a disappearance report for a window still drawn there is ignored | a window sent home left in no tree (`short-unplug`) |
+| `31d138c`, `32f571e` | a pre-churn snapshot lapses 3 quiet seconds after its last leave | an unplug soon after a plug recorded a half-moved layout (reorders) |
+| `31d138c` | no minimum size learnt within 5 s of a display change | macOS's resize taught a TextEdit a 673px minimum |
+| `ebe73fa` | a minimum is learnt only when a second write is refused too | a slow app's old 1306px height became a minimum; neighbours 80px tall |
+| `068da05`, `91df77a` | a frame moved as a whole is not a resize (fullscreen checked first) | splits moved to x=2930 on a 2494 screen; 115px slots |
+| `dd0e80d` | a moved frame does not change a window's desktop against the window server | Safari taken out of its tree for good (`fast-churn`: "came back floating") |
+| `cac979f`, `7ca446b` | fullscreen slots follow a renumbered desktop, and survive a window being sent home | windows returned without their slot, appended at the end |
+| `2e5e9fa` | an arrival seen before any window left a tree is still recorded | `become-main`: nothing undid macOS's scramble |
+| `e45dc2a`, `601898b`, `46e7dff` | a record window macOS carries onto an unknown display is sent back (departure records only) | `different-monitor`: a window tiled alone on the new monitor |
 
-`f0641aa` put a relocated window straight back into its tile; `d4ee368` takes
+`d15c8f9` put a relocated window straight back into its tile; `4851a76` takes
 that back. The relocations come in the same instant as the display change, and
 a write then used geometry about to be wrong: as the external became main it
 wrote a window to coordinates that were the other display's a moment later,
@@ -826,7 +826,7 @@ Same harness, same guest, each side rebooted, addition healthy throughout:
 
 | Build | Runs |
 |---|---|
-| baseline (`a47039c`) | 10/17 on the final harness; 7-12/17 across the day |
+| baseline (`1b2a412`) | 10/17 on the final harness; 7-12/17 across the day |
 | v13 .. v23 (fixes landing) | 13-16/17 |
 | v24 (all) | 12/17, 14/17 |
 
@@ -837,7 +837,7 @@ The baseline's spread between identical runs is two to three scenarios.
 - `transient-glitch`: macOS moves windows to their remembered spots on an
   arriving display a beat before the display change reaches rift, and they sit
   over their neighbours until rift lays them out once it has settled (a few
-  hundred ms). Putting them back at once is exactly what `d4ee368` reverted.
+  hundred ms). Putting them back at once is exactly what `4851a76` reverted.
 - `fast-churn`: a display that leaves 0.3 s after arriving, while the arrival's
   repair is still moving windows, is recorded from the half-moved trees. A fix
   (record the repair's targets) was written and dropped: the unit fixture could
@@ -871,15 +871,15 @@ recorder, and each has a unit test that fails without it.
 
 | Commit | Fix | Seen as |
 |---|---|---|
-| `fe716aa` | a restore that could not place the window keeps its slot | `plain-replug`: the last two windows swapped |
-| `90da556` | the window server wins over a flickering appearance notice mid-churn | a window filed on a desktop it never reached |
-| `c1db1b4` | a resize stays on the books until the window reaches the frame asked for | Safari straddling the seam after a refused write |
-| `4f77e98` | a window sent back off an unknown display counts as on its way home | its slot replaced mid-trip |
-| `36acfef` | a window split in beside a fullscreen one leaves it fullscreen | `fullscreen-across-churn` |
-| `ec411f4`, `b69c16a` | a window a display change carries to another display is sent back to its slot, as the slot is taken -- not if the user moved it since | `become-main`: a window tiled on the old main display |
-| `05ff0ed` | a write unanswered for a second is sent again, not skipped as requested | `fast-churn`: windows stuck mid-cascade |
-| `ed2fba1` | ... including onto an arriving display once the arrival's repair is done | `plain-replug`: a laptop window macOS moved to the external became a stand-in desktop at every unplug (workspace leak 1 -> 2) |
-| `b6a738c` | a modifier-drag press beside the screen edge takes the edge that can move | Eric: "resizes in the opposite direction of my drag" |
+| `8859dac` | a restore that could not place the window keeps its slot | `plain-replug`: the last two windows swapped |
+| `c937ec5` | the window server wins over a flickering appearance notice mid-churn | a window filed on a desktop it never reached |
+| `ea7f2f6` | a resize stays on the books until the window reaches the frame asked for | Safari straddling the seam after a refused write |
+| `bf1da81` | a window sent back off an unknown display counts as on its way home | its slot replaced mid-trip |
+| `9afe8d1` | a window split in beside a fullscreen one leaves it fullscreen | `fullscreen-across-churn` |
+| `a32014d`, `224c17b` | a window a display change carries to another display is sent back to its slot, as the slot is taken -- not if the user moved it since | `become-main`: a window tiled on the old main display |
+| `a3bc59c` | a write unanswered for a second is sent again, not skipped as requested | `fast-churn`: windows stuck mid-cascade |
+| `0820714` | ... including onto an arriving display once the arrival's repair is done | `plain-replug`: a laptop window macOS moved to the external became a stand-in desktop at every unplug (workspace leak 1 -> 2) |
+| `c70ddfe` | a modifier-drag press beside the screen edge takes the edge that can move | Eric: "resizes in the opposite direction of my drag" |
 
 ### Harness changes that move the score
 
@@ -887,7 +887,7 @@ recorder, and each has a unit test that fails without it.
   (`Sampler.PERSIST`) and prints every episode. Measured across five runs,
   every overlap was over within 0.64 s: macOS moving windows to their
   remembered place a beat before rift hears of the display, then apps taking a
-  few hundred ms to apply the layout. Writing sooner is what `d4ee368` reverted.
+  few hundred ms to apply the layout. Writing sooner is what `4851a76` reverted.
 - Windows under a stack, nested splits included, are exempt from the overlap
   check; the reset fetches windows left on the unplugged probe; `normalize`
   puts the menu bar back on the main display before each side.
@@ -971,6 +971,41 @@ pseudo display), and **mirroring**. `CGConfigureDisplayMirrorOfDisplay` on a
 virtual display in this VM never returns and takes every display with it --
 the guest drops to zero displays until it is rebooted. That was the scenario
 that silently hung two batteries. See below.
+
+## The real-world scenarios, closed out (2026-09-24 -- 09-25)
+
+The eight scenarios above failed in ways the old battery never reached. Each
+fix below was read from a battery trace, and each has a unit test that fails
+without it.
+
+| Commit | Fix | Seen as |
+|---|---|---|
+| `d6a3442`, `e70fd76` | a new screen size copies the tree as it is -- moving the windows into the copy, so each keeps one leaf | `monitor-moved`, `scale-change`: splits re-inserted in window order; the first copy left two leaves per window and reordered desktops |
+| `f6369dd` | a fullscreen slot is left unused when its window is ordered in on another desktop | tiles traded places on a desktop switch after a churn |
+| `86beb34`, `0dc42db` | a float a display change left under 25% on screen is brought back, onto the screen showing *its own* desktop | Eric: "windows spawning nearly outside the viewport when connecting the monitor back in"; `clamshell`: a Finder window 96% off screen |
+| `f14f013` | in bsp, a lone window filling its tile is not a fullscreen request | the mark outlived a second window joining, and the first covered it |
+| `ce24238`, `a069ddf`, `d79f9a6` | an arrange held because the window server has already moved the display (or the desktop) is run again 300 ms later, and a desktop Mission Control moved to another display is held too | `desktop-to-home-monitor`: a window written at the old screen's coordinates landed on the desktop that screen was showing |
+| `944fb03` | a window whose recorded home desktop was replaced goes where that desktop's windows went | `commute`: a floating TextEdit left on the home monitor's desktop, its tiled neighbours on the laptop's |
+| `bbe7277` | for 10 s after the window server moved windows for a display change, "already there" is checked against the window's real frame | `dock-two-monitors`: Safari cascaded over the tiling with no frame report, a TextEdit write undone mid-change -- overlapping 1.1 s past the change |
+
+One attempt was reverted, and the reason is worth keeping:
+
+- **Guarding `compute_space_remaps` for commute's float** (`c9dd04a`,
+  `5c89cd3`) scored 3/12 and 6/12 in quiet-guest A/Bs against 8/12 without it.
+  The remap is load-bearing for scenarios that never show the symptom. The
+  float was fixed at the record instead (`944fb03`).
+
+### Harness changes
+
+- Only the harness's own apps count (`TEST_APPS`); the guest's Finder windows
+  ("Recents") are closed before each scenario.
+- The reset: close Finder windows, detach every monitor, fetch windows back
+  from any desktop macOS keeps for an absent one, restart rift, gather,
+  relaunch the apps if fewer than five tiled.
+- An attach that did not happen is retried; a failed reset no longer aborts
+  the battery.
+- `vm-ab` waits for a quiet guest and prints its load: a busy host slowed
+  scenarios by 30-50% and produced overlaps that were not rift's.
 
 ## What this guest cannot test at all
 
