@@ -106,6 +106,17 @@ if [[ "$SA" != *"loaded and healthy"* ]]; then
         exit 2
     fi
 fi
+# Wait for the guest to go quiet. Straight after a reboot it indexes, fetches
+# models and the rest, and a battery run under a load average near thirty
+# took half as long again: layouts landed seconds late and every sampler in
+# the new scenarios failed on overlaps that were only slow. Up to ten minutes,
+# and the load is printed either way, so a loaded run says so.
+for _ in $(seq 1 60); do
+    LOAD="$("$SC/vm-ssh" "sysctl -n vm.loadavg | awk '{print \$2}'")"
+    awk -v l="$LOAD" 'BEGIN { exit !(l < 4.0) }' && break
+    sleep 10
+done
+echo "guest load before the run: $LOAD"
 CHAOS_TIMEOUT=200 "$SC/vm-run" normalize >/dev/null 2>&1
 CHAOS_TIMEOUT=500 "$SC/vm-run" setup >/dev/null 2>&1
 "$SC/vm-ssh" "killall Safari TextEdit 2>/dev/null; sleep 4"
