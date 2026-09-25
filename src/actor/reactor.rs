@@ -430,6 +430,10 @@ pub enum Event {
     /// new space. See `display_archive`.
     #[serde(skip)]
     DisplayHomingDeadline(String),
+    /// An arrange held for a display the window server had moved, run again.
+    /// See `apply_layout`.
+    #[serde(skip)]
+    ArrangeAfterDisplayMoved,
     #[serde(skip)]
     SpaceDestroyed(SpaceId),
     WindowMinimized(WindowId),
@@ -656,6 +660,8 @@ pub struct Reactor {
     /// Displays the window server has moved and rift's record has not caught
     /// up with, by display id, since when. See `apply_layout`.
     pub(super) display_disagreement: HashMap<u32, std::time::Instant>,
+    /// An `ArrangeAfterDisplayMoved` is on its way.
+    pub(super) rearrange_scheduled: bool,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -835,6 +841,7 @@ impl Reactor {
             last_layout_command: None,
             last_user_input: None,
             display_disagreement: HashMap::default(),
+            rearrange_scheduled: false,
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -1863,6 +1870,11 @@ impl Reactor {
             }
             Event::DisplayHomingDeadline(uuid) => {
                 return Ok(self.handle_display_homing_deadline(&uuid));
+            }
+            Event::ArrangeAfterDisplayMoved => {
+                self.rearrange_scheduled = false;
+                let _ = LayoutManager::update_layout(self, false, false, None);
+                return Ok(EventOutcome::default());
             }
             _ => {}
         }

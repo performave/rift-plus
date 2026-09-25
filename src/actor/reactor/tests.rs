@@ -9820,6 +9820,39 @@ mod fullscreen_slots {
         assert_ne!(before[1..], after[1..], "the arrange never went ahead");
     }
 
+    /// A held arrange is run again: the display change does not always bring
+    /// one of its own, and a desktop held with nothing else to arrange it
+    /// kept two windows on top of a tile for ten seconds
+    /// (`rearranged-while-attached`).
+    #[test]
+    fn a_held_arrange_is_run_again() {
+        let (mut reactor, screen, _space, wids, wsids) = bsp_reactor_with_three_tiled();
+        reactor.send_layout_event(LayoutEvent::WindowRemoved(wids[0]));
+        let before = reactor.transaction_manager.get_target_frame(wsids[1]);
+        let mut moved = std::collections::HashMap::default();
+        moved.insert(
+            0u32,
+            CGRect::new(
+                CGPoint::new(1000., 1440.),
+                CGSize::new(screen.size.width, screen.size.height),
+            ),
+        );
+        crate::sys::screen::set_live_display_bounds_override(Some(moved));
+        let _ = LayoutManager::update_layout(&mut reactor, false, false, None);
+        crate::sys::screen::set_live_display_bounds_override(None);
+        assert_eq!(before, reactor.transaction_manager.get_target_frame(wsids[1]));
+
+        // The display is where rift thinks now; nothing else happens but the
+        // retry.
+        reactor.handle_event(Event::ArrangeAfterDisplayMoved);
+        assert_ne!(
+            before,
+            reactor.transaction_manager.get_target_frame(wsids[1]),
+            "the held arrange was never run again"
+        );
+        assert!(!reactor.rearrange_scheduled);
+    }
+
     /// But not for good: a record that never catches up would otherwise leave
     /// the display unmanaged.
     #[test]

@@ -583,6 +583,27 @@ impl LayoutManager {
                                 "skipped": "display moved under this arrange",
                             }),
                         );
+                        // And ask again shortly. The display change does not
+                        // always bring an arrange of its own -- a monitor
+                        // attached beside the laptop leaves the laptop's
+                        // screen as it was -- and a desktop held here then
+                        // waited for whatever arranged it next: two Safari
+                        // windows sat on top of a tile for ten seconds
+                        // (`rearranged-while-attached`).
+                        if !reactor.rearrange_scheduled
+                            && let Some(sender) = reactor.communication_manager.events_tx.clone()
+                        {
+                            use crate::sys::dispatch::DispatchExt;
+                            reactor.rearrange_scheduled = true;
+                            dispatchr::queue::main().after_f_s(
+                                dispatchr::time::Time::new_after(
+                                    dispatchr::time::Time::NOW,
+                                    REARRANGE_AFTER_DISPLAY_MOVED.as_nanos() as i64,
+                                ),
+                                sender,
+                                |sender| sender.send(super::Event::ArrangeAfterDisplayMoved),
+                            );
+                        }
                         continue;
                     }
                     crate::sys::trace::act(
@@ -717,6 +738,9 @@ impl LayoutManager {
 /// How long an arrange waits for rift to catch up with a display the window
 /// server has already moved.
 const DISPLAY_DISAGREEMENT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// When a held arrange is tried again.
+const REARRANGE_AFTER_DISPLAY_MOVED: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Manages pending space changes
 pub struct PendingSpaceChangeManager {
