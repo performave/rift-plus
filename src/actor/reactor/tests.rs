@@ -8860,6 +8860,73 @@ mod floating_placement {
         (reactor, space, wid, wsid, screen)
     }
 
+    fn tiled_window_on_one_screen() -> (Reactor, SpaceId, WindowServerId, CGRect) {
+        let mut reactor = test_reactor();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let space = SpaceId::new(1);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        reactor.add_test_app(1);
+        let wid = WindowId::new(1, 1);
+        let wsid = WindowServerId::new(101);
+        let frame = CGRect::new(CGPoint::new(200., 200.), CGSize::new(600., 400.));
+        reactor.add_test_window(wid, wsid, Some(space), frame);
+        let workspace = reactor.test_workspace(space, 0);
+        assert!(reactor.assign_test_window_to_workspace(space, wid, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        assert!(
+            reactor.transaction_manager.get_target_frame(wsid).is_some(),
+            "laid out"
+        );
+        // Old enough that a write of the same frame is not skipped as one
+        // still awaiting its answer.
+        reactor
+            .transaction_manager
+            .backdate_target(wsid, std::time::Duration::from_secs(5));
+        (reactor, space, wsid, screen)
+    }
+
+    /// macOS moves windows to where they last were on a display as it
+    /// arrives, and does not always report it (`dock-two-monitors`: Safari's
+    /// windows cascaded over the tiling with no frame event, and a TextEdit
+    /// write undone mid-change). The cache still held the tile, so every
+    /// arrange after the change skipped them as "already there".
+    #[test]
+    fn a_tile_moved_unreported_by_a_display_change_is_written_back() {
+        let (mut reactor, space, wsid, screen) = tiled_window_on_one_screen();
+        let tile = reactor.transaction_manager.get_target_frame(wsid).unwrap();
+        let before = reactor.transaction_manager.get_last_sent_txid(wsid);
+        let cascaded = CGRect::new(CGPoint::new(142., 63.), CGSize::new(656., 422.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(cascaded));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+
+        assert_ne!(
+            reactor.transaction_manager.get_last_sent_txid(wsid),
+            before,
+            "the window was left where macOS put it"
+        );
+        assert_eq!(reactor.transaction_manager.get_target_frame(wsid), Some(tile));
+    }
+
+    /// Outside a display change the cache is trusted: no reading of every
+    /// window's frame on every arrange, and no write for a window in place.
+    #[test]
+    fn a_tile_is_not_rewritten_outside_a_display_change() {
+        let (mut reactor, space, wsid, screen) = tiled_window_on_one_screen();
+        let before = reactor.transaction_manager.get_last_sent_txid(wsid);
+        let elsewhere = CGRect::new(CGPoint::new(142., 63.), CGSize::new(656., 422.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(elsewhere));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+        assert_eq!(reactor.transaction_manager.get_last_sent_txid(wsid), before);
+    }
+
     /// A monitor unplugged or moved leaves a float that straddled onto it
     /// where it was, a sliver showing at the laptop's edge (Eric: "windows
     /// nearly outside the viewport when connecting the monitor back in";

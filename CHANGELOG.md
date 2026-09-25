@@ -43,6 +43,14 @@ Entries describe this fork's changes relative to
   arrangement the slot had saved, and two tiles traded places on every
   `switch_to_space`. The slot is now used only when the window server has the
   window on the slot's desktop; a slot left over from a move is dropped.
+- **Tiled windows no longer sit on top of each other after a monitor
+  arrives.** macOS moves windows to where they last were on a display as it
+  arrives, and does not always say so -- Safari's windows moved without a
+  single report, and a write rift made in the middle of it was undone just as
+  silently. rift believed its own record of where it had put them, found them
+  "already there" and left them overlapping until something else made it look.
+  For a few seconds after a display change it now checks each window's real
+  frame before deciding it is in place.
 - **A floating window stays with its desktop when a monitor arrives as main.**
   With another monitor away, plugging one in that takes the menu bar makes
   macOS replace the laptop's desktop: the tiled windows moved to the

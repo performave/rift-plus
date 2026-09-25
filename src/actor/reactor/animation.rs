@@ -18,6 +18,9 @@ use crate::sys::window_server::WindowServerId;
 /// How long a write stays "already requested" without an answer. Apps answer
 /// in well under this; one that has not by then is not going to.
 const UNANSWERED_WRITE: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long after the window server last moved windows for a display change
+/// an arrange checks a window's real frame before deciding it is in place.
+const DISTRUST_CACHE_AFTER_RECONFIGURE: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub type Sender = mpsc::UnboundedSender<Message>;
 pub type Receiver = mpsc::UnboundedReceiver<Message>;
@@ -162,6 +165,17 @@ impl AnimationManager {
         let mut anim = Animation::new(reactor.config.clone());
         let mut animated_count = 0;
         let mut any_frame_changed = false;
+        // In the seconds after a display change the cache is the last thing
+        // to believe. macOS moves windows as a display arrives -- a beat
+        // before rift hears of the display, and again once it has -- and it
+        // does not always say so: Safari's windows went to their remembered
+        // spots without a single frame report, and a write rift made in the
+        // middle of it was undone just as silently. The cache still held the
+        // tile, every arrange once the change had settled found the windows
+        // "already there", and they overlapped until a rediscovery a second
+        // later happened to read their real frames.
+        let reconfigured_lately = crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < DISTRUST_CACHE_AFTER_RECONFIGURE);
 
         for &(wid, target_frame) in layout {
             if skip_wid == Some(wid) {
@@ -181,7 +195,22 @@ impl AnimationManager {
                 let window_store = &mut reactor.state.windows;
                 match window_store.window_mut(wid) {
                     Some(window) => {
-                        let current_frame = window.frame_monotonic;
+                        let mut current_frame = window.frame_monotonic;
+                        if reconfigured_lately
+                            && target_frame.same_as(current_frame)
+                            && let Some(live) = window
+                                .info
+                                .sys_id
+                                .and_then(crate::sys::window_server::live_window_frame)
+                            && !crate::sys::geometry::IsWithin::is_within(&live, 1.0, current_frame)
+                        {
+                            crate::sys::trace::act(
+                                "layout_stale_cache",
+                                &(wid.idx.get(), live.origin.x.round(), live.origin.y.round()),
+                            );
+                            window.frame_monotonic = live;
+                            current_frame = live;
+                        }
                         // "Already there" is rift's own bookkeeping, not a
                         // reading of the window, and a fullscreen exit is
                         // where the two come apart: macOS resizes the window
