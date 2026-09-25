@@ -1349,9 +1349,15 @@ def check_frames(snap: dict, phase: str, tolerance: int = 2) -> None:
                         squeezed.append(f"{name} declares a {mh}px minimum height")
                 why = ("  -- likely the app's own floor, not the layout's doing: "
                        + "; ".join(squeezed)) if squeezed else ""
+                # Ids, the tree's leaves and the floats: two tiled windows
+                # overlapping can be two trees drawn on one desktop, or a
+                # float rift thinks is tiled, and only these tell them apart.
+                lay = rift("layout", "--space-id", str(sid)) or {}
                 raise Violation(
                     f"{phase}: desktop {sid}: tiled windows overlap by {ox}x{oy}px -- "
-                    f"{aa} at ({ax},{ay},{aw},{ah}) vs {ab} at ({bx},{by},{bw},{bh}){why}")
+                    f"{aa} {ia} at ({ax},{ay},{aw},{ah}) vs {ab} {ib} at ({bx},{by},{bw},{bh}){why}\n"
+                    f"      leaves {leaf_order(tree_shape(sid))}, floating "
+                    f"{lay.get('floating_windows') if isinstance(lay, dict) else None}")
 
 
 def check_frames_within_display(snap: dict, phase: str, slack: int = 40) -> None:
