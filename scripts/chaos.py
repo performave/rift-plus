@@ -588,6 +588,12 @@ def reset_between_scenarios() -> str:
         time.sleep(4)
         spawn_windows()
         clear_native_fullscreen()
+        # Safari reopens its windows on the desktops they were on, hidden ones
+        # included: a relaunch left one on a desktop nobody was showing, and
+        # every scenario after started with four windows tiled, not five.
+        gathered = gather_test_windows()
+        if gathered:
+            notes.append(f"gathered {gathered} after the relaunch")
         for name, was, now in show_the_desktop_holding_the_windows():
             notes.append(f"{name}: showed empty {was}, switched to {now}")
         rift_exec("layout balance")
@@ -2152,6 +2158,12 @@ def s_hot_swap(base):
                 time.sleep(1.0)
             settle(4)
             a = snapshot("monitor A, Safari on it")
+            # Only what actually went: a window the move did not reach is not
+            # expected back on A.
+            a_desktops = set(all_space_ids([probe_display(a["displays"], base["displays"])]))
+            ids = [i for i in ids if a["windows"].get(i, (None,))[0] in a_desktops]
+            if not ids:
+                raise Violation("hot-swap: no Safari window made it onto monitor A")
             unplug(quiet=True)
             time.sleep(0.3)
             other = attach("mon-swap", width=2560, height=1440, serial=0x53); settle(8)
@@ -2761,6 +2773,8 @@ def main() -> int:
 
     if cmd == "setup":
         spawn_windows()
+        # Safari reopens windows on their old desktops, hidden ones included.
+        gather_test_windows()
         # Before anything is measured. An app restores its own saved window
         # state, so a fullscreen left behind by an earlier run comes back with
         # the app -- and a display showing a fullscreen space has no desktop to
