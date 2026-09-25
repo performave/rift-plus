@@ -675,6 +675,12 @@ pub struct Reactor {
     /// coming straight back to it is the user finishing with that, not
     /// choosing the window again, and does not move the pointer.
     focus_left_from: Option<WindowId>,
+    /// A warp owed to a window that had focus before rift knew it existed. A
+    /// freshly opened window is reported focused a few milliseconds before
+    /// its discovery lands -- a PDF opened from Finder into Preview -- and
+    /// there is no frame to aim at yet. Paid once the window is known, if it
+    /// still has focus; dropped after `PENDING_FOCUS_WARP_TTL`.
+    pending_focus_warp: Option<(WindowId, std::time::Instant)>,
     menu_manager: managers::MenuManager,
     mission_control_manager: managers::MissionControlManager,
     window_inventory_manager: managers::WindowInventoryManager,
@@ -723,6 +729,11 @@ impl Reactor {
     /// consequence: the app activates on mouse-down, and the reports of it
     /// reach rift up to a few hundred milliseconds later.
     const CLICK_FOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+    /// How long a warp owed to a not-yet-discovered window stays owed.
+    /// Discovery follows the focus report within milliseconds; a second is
+    /// generous, and short enough that a window turning up much later cannot
+    /// yank the pointer.
+    const PENDING_FOCUS_WARP_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 
     pub fn spawn(
         config: Config,
@@ -846,6 +857,7 @@ impl Reactor {
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
             focus_left_from: None,
+            pending_focus_warp: None,
             menu_manager: managers::MenuManager {
                 menu_state: MenuState::Closed,
                 menu_tx: None,
@@ -1781,6 +1793,7 @@ impl Reactor {
                 } else if was_mouse_up && let Some(focused_window) = focused_window {
                     self.follow_dock_click_with_mouse(focused_window, &mut outcome);
                 }
+                self.pay_pending_focus_warp(focused_window, &mut outcome);
                 if let Some(homing) = self.advance_display_homing() {
                     outcome.absorb(homing);
                 }
@@ -3673,6 +3686,17 @@ impl Reactor {
             self.warp_mouse(center);
         }
 
+        // The target frame, not the window server's: the server is still
+        // showing the window where the app opened it until the write lands.
+        if let Some(window) = outcome.post_arrange_focus_warp
+            && self.main_window() == Some(window)
+            && let Some(frame) = self.state.windows.window(window).map(|w| w.frame_monotonic)
+            && self.screen_for_point(frame.mid()).is_some()
+            && !window_server::current_cursor_location().is_ok_and(|cursor| frame.contains(cursor))
+        {
+            self.warp_mouse(frame.mid());
+        }
+
         // Deliberately not gated on `layout_changed`, unlike the warp above.
         // A window that already sat on the frame the layout hands it moves
         // nothing, so arrange writes nothing and reports no change — and that
@@ -4769,11 +4793,49 @@ impl Reactor {
             self.workspace_switch_manager.pending_workspace_mouse_warp = Some(window);
             return;
         }
+        if self.state.windows.window(window).is_none() {
+            self.pending_focus_warp = Some((window, crate::sys::trace::now()));
+            return;
+        }
+        self.pending_focus_warp = None;
         if let Some(center) = self.window_center_on_known_screen(window)
             && !outcome.mouse_warps.contains(&center)
         {
             *outcome = std::mem::take(outcome).with_mouse_warp(center);
         }
+    }
+
+    /// See `pending_focus_warp`. Whether the pointer may move was decided when
+    /// focus arrived -- deciding it now would count the time discovery took
+    /// against the click grace -- so only what can have changed since is
+    /// asked again.
+    fn pay_pending_focus_warp(&mut self, focused: Option<WindowId>, outcome: &mut EventOutcome) {
+        let Some((window, since)) = self.pending_focus_warp else {
+            return;
+        };
+        if focused != Some(window)
+            || crate::sys::trace::now().saturating_duration_since(since)
+                > Self::PENDING_FOCUS_WARP_TTL
+        {
+            self.pending_focus_warp = None;
+            return;
+        }
+        let Some(state) = self.state.windows.window(window) else {
+            return;
+        };
+        self.pending_focus_warp = None;
+        // Only a window rift took on: an app's helper and transient windows
+        // are discovered the same way, and are nowhere to put the pointer.
+        if !state.is_admitted()
+            || self.is_mission_control_active()
+            || !matches!(self.drag_manager.drag_state, DragState::Inactive)
+            || self.modifier_drag.is_some()
+        {
+            return;
+        }
+        // A window this new is still where the app opened it; arrange is about
+        // to place it.
+        outcome.post_arrange_focus_warp = Some(window);
     }
 
     /// A click on the Dock tile of the app that is already in front changes

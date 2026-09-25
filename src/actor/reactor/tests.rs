@@ -8314,6 +8314,43 @@ mod mouse_follows_focus {
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
+    /// A PDF opened from Finder: Preview, running with no windows, activates
+    /// and the window server reports its new window focused a few
+    /// milliseconds before rift has discovered it. There was no frame to aim
+    /// at, the warp was dropped, and nothing tried again. It is paid once the
+    /// window is known.
+    #[test]
+    fn a_window_focused_before_rift_discovers_it_warps_once_it_is_known() {
+        let (mut apps, mut reactor, _a, _b) = two_apps_focused_on_first();
+        reactor.handle_events(apps.make_app_with_opts(3, Vec::new(), None, false, true));
+        apps.simulate_until_quiet(&mut reactor);
+        reactor.handle_event(Event::ApplicationDeactivated(1));
+        reactor.handle_event(Event::ApplicationGloballyActivated(3));
+        reactor.handle_event(Event::ApplicationActivated(3, Quiet::No));
+        assert_eq!(reactor.main_window(), None);
+        reactor.test_mouse_warps.clear();
+
+        let pdf = WindowId::new(3, 1);
+        reactor.handle_event(Event::WindowServerFocusChanged(pdf, SpaceId::new(1)));
+        assert!(reactor.test_mouse_warps.is_empty(), "nothing to aim at yet");
+
+        reactor.handle_event(Event::WindowCreated(
+            pdf,
+            make_window(1),
+            None,
+            Some(MouseState::Up),
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+        assert_eq!(reactor.main_window(), Some(pdf));
+        let center = reactor.live_frame_for(pdf).unwrap().mid();
+        assert_eq!(
+            reactor.test_mouse_warps,
+            vec![center],
+            "the pointer follows once it can"
+        );
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
     /// A window that gains focus by any route — here cmd-tab between apps,
     /// nothing rift did — pulls the pointer with it, floating or not, unless
     /// the pointer is already inside it.

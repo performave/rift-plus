@@ -21,6 +21,12 @@ Entries describe this fork's changes relative to
   in one workbook's Find panel went to whichever sibling came first. Switching
   away and back then raised that other workbook. rift now asks the window
   server for the panel's parent and uses frames only when it does not say.
+- **The pointer follows a window that opens already focused.** Opening a PDF
+  from Finder hands focus to Preview's new window a few milliseconds before
+  rift has discovered it. With `mouse_follows_focus` on, there was no frame to
+  aim at yet, so the warp was dropped and nothing tried again: the pointer
+  stayed on Finder. The warp is now held for up to a second and made once rift
+  has the window and has placed it.
 
 ## [0.5.10-plus.1] - 2026-09-25
 
