@@ -27,6 +27,13 @@ Entries describe this fork's changes relative to
   aim at yet, so the warp was dropped and nothing tried again: the pointer
   stayed on Finder. The warp is now held for up to a second and made once rift
   has the window and has placed it.
+- **Closing an app's last window gives focus back.** Close the PDF and
+  Preview stays in front with nothing to show: macOS moves focus nowhere, so
+  keys go to an empty app and the pointer stays where it was. Focus, and with
+  `mouse_follows_focus` the pointer, now go back to the window you used
+  before, on whichever display it is. This applies only when the window is
+  really gone; hiding, minimising and leaving fullscreen are unaffected, and
+  an app with a window left still gets focus on it from macOS.
 
 ## [0.5.10-plus.1] - 2026-09-25
 

@@ -8351,6 +8351,61 @@ mod mouse_follows_focus {
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
+    /// Preview after its PDF is closed: the app stays in front with nothing to
+    /// show, and macOS moves focus nowhere. Focus, and the pointer, go back to
+    /// the window used before it -- even though a click closed the window.
+    #[test]
+    fn closing_an_apps_last_window_hands_focus_back() {
+        crate::sys::event::set_key_pressed_since_mouse_up_override(Some(false));
+        let (mut apps, mut reactor, a, _b) = two_apps_focused_on_first();
+        let pdf = WindowId::new(3, 1);
+        reactor.handle_events(apps.make_app_with_opts(3, make_windows(1), Some(pdf), false, true));
+        apps.simulate_until_quiet(&mut reactor);
+        reactor.handle_event(Event::ApplicationDeactivated(1));
+        reactor.handle_event(Event::ApplicationGloballyActivated(3));
+        reactor.handle_event(Event::ApplicationActivated(3, Quiet::No));
+        assert_eq!(reactor.main_window(), Some(pdf));
+        reactor.test_mouse_warps.clear();
+
+        reactor.handle_event(Event::MouseUp);
+        reactor.handle_event(Event::WindowDestroyed(pdf));
+
+        assert_eq!(reactor.layout_manager.layout_engine.focused_window(), Some(a));
+        let a_center = reactor.live_frame_for(a).unwrap().mid();
+        assert_eq!(reactor.test_mouse_warps, vec![a_center]);
+        crate::sys::event::set_key_pressed_since_mouse_up_override(None);
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// An app with a window left gets focus on it from macOS; rift stays out.
+    #[test]
+    fn closing_one_of_an_apps_windows_leaves_focus_to_macos() {
+        let (mut apps, mut reactor, _a, _b) = two_apps_focused_on_first();
+        let first = WindowId::new(3, 1);
+        reactor.handle_events(apps.make_app_with_opts(
+            3,
+            make_windows(2),
+            Some(first),
+            false,
+            true,
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+        reactor.handle_event(Event::ApplicationDeactivated(1));
+        reactor.handle_event(Event::ApplicationGloballyActivated(3));
+        reactor.handle_event(Event::ApplicationActivated(3, Quiet::No));
+        assert_eq!(reactor.main_window(), Some(first));
+        reactor.test_mouse_warps.clear();
+
+        reactor.handle_event(Event::WindowDestroyed(first));
+
+        assert!(reactor.test_mouse_warps.is_empty());
+        assert_ne!(
+            reactor.layout_manager.layout_engine.focused_window(),
+            Some(WindowId::new(1, 1))
+        );
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
     /// A window that gains focus by any route — here cmd-tab between apps,
     /// nothing rift did — pulls the pointer with it, floating or not, unless
     /// the pointer is already inside it.

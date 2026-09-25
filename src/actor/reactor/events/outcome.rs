@@ -68,8 +68,9 @@ pub(crate) struct EventOutcome {
     pub(crate) make_key_windows: Vec<(pid_t, WindowServerId)>,
     pub(crate) mouse_warps: Vec<CGPoint>,
     pub(crate) post_arrange_mouse_warp: Option<WindowId>,
-    /// Mouse-follows-focus for a window focused before rift knew it: aimed
-    /// once arrange has placed it, whether or not arrange moved anything.
+    /// Mouse-follows-focus for a window that is about to be (re)placed -- one
+    /// focused before rift knew it, or one rift hands focus back to: aimed
+    /// once arrange is done, whether or not arrange moved anything.
     pub(crate) post_arrange_focus_warp: Option<WindowId>,
     /// A window the float toggle moved into or out of the tiling tree,
     /// to be flashed once arrange has given it its new frame. `true` when

@@ -681,6 +681,10 @@ pub struct Reactor {
     /// there is no frame to aim at yet. Paid once the window is known, if it
     /// still has focus; dropped after `PENDING_FOCUS_WARP_TTL`.
     pending_focus_warp: Option<(WindowId, std::time::Instant)>,
+    /// Windows that have had focus, across every app and display, most recent
+    /// first. What focus goes back to when an app is left in front with its
+    /// last window closed.
+    focus_history: Vec<WindowId>,
     menu_manager: managers::MenuManager,
     mission_control_manager: managers::MissionControlManager,
     window_inventory_manager: managers::WindowInventoryManager,
@@ -733,6 +737,7 @@ impl Reactor {
     /// Discovery follows the focus report within milliseconds; a second is
     /// generous, and short enough that a window turning up much later cannot
     /// yank the pointer.
+    const FOCUS_HISTORY_LEN: usize = 32;
     const PENDING_FOCUS_WARP_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 
     pub fn spawn(
@@ -858,6 +863,7 @@ impl Reactor {
             last_mouse_up: None,
             focus_left_from: None,
             pending_focus_warp: None,
+            focus_history: Vec::new(),
             menu_manager: managers::MenuManager {
                 menu_state: MenuState::Closed,
                 menu_tx: None,
@@ -1769,6 +1775,8 @@ impl Reactor {
     fn handle_event(&mut self, event: Event) {
         let was_dragging = !matches!(self.drag_manager.drag_state, DragState::Inactive);
         let previously_focused_window = self.main_window();
+        let focused_window_was_known = previously_focused_window
+            .is_some_and(|window| self.state.windows.window(window).is_some());
         let was_mouse_up = matches!(event, Event::MouseUp);
         match self.dispatch_workflow(event) {
             Ok(mut outcome) => {
@@ -1777,6 +1785,9 @@ impl Reactor {
                     match focused_window {
                         Some(focused_window) => {
                             outcome = outcome.with_focused_window_broadcast(focused_window);
+                            self.focus_history.retain(|window| *window != focused_window);
+                            self.focus_history.insert(0, focused_window);
+                            self.focus_history.truncate(Self::FOCUS_HISTORY_LEN);
                             let returning = previously_focused_window.is_none()
                                 && self.focus_left_from == Some(focused_window);
                             self.focus_left_from = None;
@@ -1794,6 +1805,12 @@ impl Reactor {
                     self.follow_dock_click_with_mouse(focused_window, &mut outcome);
                 }
                 self.pay_pending_focus_warp(focused_window, &mut outcome);
+                if focused_window_was_known
+                    && let Some(closed) = previously_focused_window
+                    && self.state.windows.window(closed).is_none()
+                {
+                    self.hand_focus_back_after_last_window(closed, &mut outcome);
+                }
                 if let Some(homing) = self.advance_display_homing() {
                     outcome.absorb(homing);
                 }
@@ -3689,7 +3706,6 @@ impl Reactor {
         // The target frame, not the window server's: the server is still
         // showing the window where the app opened it until the write lands.
         if let Some(window) = outcome.post_arrange_focus_warp
-            && self.main_window() == Some(window)
             && let Some(frame) = self.state.windows.window(window).map(|w| w.frame_monotonic)
             && self.screen_for_point(frame.mid()).is_some()
             && !window_server::current_cursor_location().is_ok_and(|cursor| frame.contains(cursor))
@@ -4802,6 +4818,61 @@ impl Reactor {
             && !outcome.mouse_warps.contains(&center)
         {
             *outcome = std::mem::take(outcome).with_mouse_warp(center);
+        }
+    }
+
+    /// Closing an app's last window leaves the app in front with nothing to
+    /// show -- Preview after its PDF is closed -- and macOS moves focus
+    /// nowhere, so the keyboard talks to an empty app and the pointer stays
+    /// put. Focus goes back to the window used before instead, as if the app
+    /// had quit. Only for a window that is gone: hiding, minimising and
+    /// leaving fullscreen keep the window, and an app with a window left is
+    /// given focus on it by macOS.
+    fn hand_focus_back_after_last_window(&mut self, closed: WindowId, outcome: &mut EventOutcome) {
+        self.focus_history.retain(|window| *window != closed);
+        if self.main_window_tracker.global_frontmost() != Some(closed.pid)
+            || self.is_mission_control_active()
+            || !matches!(self.drag_manager.drag_state, DragState::Inactive)
+            || self.modifier_drag.is_some()
+        {
+            return;
+        }
+        let app_has_a_window_left = self.state.windows.iter_windows().any(|(window, state)| {
+            window.pid == closed.pid && state.is_admitted() && !state.info.is_minimized
+        });
+        if app_has_a_window_left {
+            return;
+        }
+        let Some((target, space)) = self.focus_history.iter().find_map(|&window| {
+            let state = self.state.windows.window(window)?;
+            if window.pid == closed.pid || !state.is_admitted() || state.info.is_minimized {
+                return None;
+            }
+            let wsid = state.info.sys_id?;
+            if !self.state.windows.is_window_visible(wsid) {
+                return None;
+            }
+            let space = self.best_space_for_window_id(window)?;
+            self.is_space_active(space).then_some((window, space))
+        }) else {
+            return;
+        };
+        info!(
+            ?closed,
+            ?target,
+            "last window closed; focus goes back to the one before"
+        );
+        outcome.layout_events.push(LayoutEvent::WindowFocused(space, target));
+        outcome.raise_requests.push(command_workflow::focus_window_raise_request(
+            &self.app_manager,
+            target,
+        ));
+        // Rift moved focus, not the pointer, so the click that closed the
+        // window does not hold the pointer back the way a click that focused
+        // something would. Aimed after arrange: the closed window's tile is
+        // given back to its neighbours.
+        if self.mouse_follows_focus_permitted_for_app(target) {
+            outcome.post_arrange_focus_warp = Some(target);
         }
     }
 
