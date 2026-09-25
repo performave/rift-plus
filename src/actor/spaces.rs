@@ -823,24 +823,10 @@ impl SpacesActor {
             // it made -- trees on one desktop, windows on another, and the
             // windows came back floating (`commute`). The stand-in is the
             // replacement; the carried-over desktop keeps its own layout.
-            //
-            // Only a display that has gone. One still here can hand this one
-            // a desktop for reasons a remap is right about, and blocking those
-            // left windows unlaid at the size their app opened them.
-            let carried_from = previous_listing.iter().find(|(owner, listed)| {
-                *owner != display_uuid
-                    && listed.contains(&space)
-                    && !screens.iter().any(|s| s.display_uuid == **owner)
-            });
-            if let Some((owner, _)) = carried_from {
-                crate::sys::trace::act(
-                    "remap_skipped",
-                    &serde_json::json!({
-                        "display": display_uuid,
-                        "shown": space.get(),
-                        "carried_from": owner,
-                    }),
-                );
+            let target_was_another_displays = previous_listing
+                .iter()
+                .any(|(owner, listed)| owner != display_uuid && listed.contains(&space));
+            if target_was_another_displays {
                 continue;
             }
 
