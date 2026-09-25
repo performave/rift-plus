@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.10-plus.3] - 2026-09-25
+
 ### Fixed
 
 - **A floating window you used is the one focus comes back to.** Focusing a
@@ -1587,7 +1589,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.2...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.3...HEAD
+[0.5.10-plus.3]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.2...v0.5.10-plus.3
 [0.5.10-plus.2]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.1...v0.5.10-plus.2
 [0.5.10-plus.1]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.5...v0.5.10-plus.1
 [0.5.5-plus.5]: https://github.com/performave/rift-plus/compare/v0.5.5-plus.4...v0.5.5-plus.5
