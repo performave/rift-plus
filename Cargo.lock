@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "rift-wm"
-version = "0.5.10-plus.3"
+version = "0.5.10-plus.4"
 dependencies = [
  "anyhow",
  "arc-swap",
