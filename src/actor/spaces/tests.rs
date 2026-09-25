@@ -1000,6 +1000,54 @@ fn a_desktop_that_moved_to_the_other_display_is_not_a_replacement() {
     }
 }
 
+/// When a main display leaves, macOS destroys the laptop's own desktop and
+/// hands the laptop one of the departed display's -- not necessarily the one
+/// it was showing. Taking that for the destroyed desktop's replacement moved
+/// the laptop's layout onto it, while the display record sent the windows to
+/// the stand-in it made for the destroyed one: trees on one desktop, windows
+/// on another, and they came back floating (`commute`).
+#[test]
+fn a_departed_displays_desktop_is_not_the_laptops_replacement() {
+    let (mut actor, mut wm_rx, _reactor_rx) = build_actor();
+    let laptop_own = SpaceId::new(4);
+    let laptop_other = SpaceId::new(29);
+    let carried = SpaceId::new(141);
+    let home_shown = SpaceId::new(142);
+
+    seed_display_desktops(&[
+        ("builtin", &[laptop_own, laptop_other]),
+        ("home", &[carried, home_shown]),
+    ]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![
+            make_screen_with(1, "builtin", 0.0, 1000.0, Some(laptop_own)),
+            make_screen_with(2, "home", 1000.0, 1000.0, Some(home_shown)),
+        ],
+        CoordinateConverter::from_height(800.0),
+    ));
+    let _ = recv_wm(&mut wm_rx);
+
+    // The home monitor leaves: the laptop's own desktop is gone, and the
+    // laptop shows one of the home monitor's instead.
+    seed_display_desktops(&[("builtin", &[carried, laptop_other, home_shown])]);
+    actor.handle_event(Event::ScreenParametersChanged(
+        vec![make_screen_with(1, "builtin", 0.0, 1000.0, Some(carried))],
+        CoordinateConverter::from_height(800.0),
+    ));
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.space_remaps,
+                vec![],
+                "a desktop carried over from the departed display was taken for the \
+                 laptop's destroyed one, and the laptop's layout moved onto it"
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
 /// The same move, caught at the moment the other display is *showing* it.
 ///
 /// This is the case `source_is_now_owned_by_another_display` is for, and it is

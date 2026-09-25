@@ -623,6 +623,10 @@ impl SpacesActor {
                 .filter_map(|screen| screen.space)
                 .any(|space| !unique_spaces.insert(space))
         };
+        // Who owned which desktop before this report: the remap below must
+        // not take a desktop carried over from another display for this one's
+        // replacement.
+        let previous_listing = self.state.display_space_ids.clone();
         // Without a list, a display owns exactly the desktop it is showing.
         self.state.display_space_ids = managed_display_space_ids_opt().unwrap_or_else(|| {
             let mut derived: HashMap<String, Vec<SpaceId>> = HashMap::default();
@@ -637,8 +641,12 @@ impl SpacesActor {
         let snapshot_is_coherent =
             !has_duplicate_spaces && screens.iter().all(|screen| screen.space.is_some());
         let allow_space_remap = should_force_refresh_layout && snapshot_is_coherent;
-        let space_remaps =
-            self.compute_space_remaps(&screens, allow_space_remap, snapshot_is_coherent);
+        let space_remaps = self.compute_space_remaps(
+            &screens,
+            allow_space_remap,
+            snapshot_is_coherent,
+            &previous_listing,
+        );
         let menu_bar_space = self.resolve_menu_bar_space(&screens);
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
         let command_space = self.resolve_command_space(&screens, active_display_uuid.as_deref());
@@ -771,6 +779,7 @@ impl SpacesActor {
         screens: &[ScreenInfo],
         allow_space_remap: bool,
         snapshot_is_coherent: bool,
+        previous_listing: &HashMap<String, Vec<SpaceId>>,
     ) -> Vec<(SpaceId, SpaceId)> {
         let mut remaps = Vec::new();
         let mut seen_displays: HashSet<String> = HashSet::default();
@@ -804,6 +813,20 @@ impl SpacesActor {
             let target_belongs_to_another_display =
                 historical_space_owners.get(&space).is_some_and(|owner| *owner != display_uuid);
             if target_belongs_to_another_display {
+                continue;
+            }
+            // Nor one another display listed a moment ago, shown or not. When
+            // a main display leaves, macOS destroys the laptop's own desktop
+            // and hands it one of the departed display's; taking that for the
+            // destroyed desktop's replacement moved the laptop's layout onto
+            // it, while the display record sent the windows to the stand-in
+            // it made -- trees on one desktop, windows on another, and the
+            // windows came back floating (`commute`). The stand-in is the
+            // replacement; the carried-over desktop keeps its own layout.
+            let target_was_another_displays = previous_listing
+                .iter()
+                .any(|(owner, listed)| owner != display_uuid && listed.contains(&space));
+            if target_was_another_displays {
                 continue;
             }
 
