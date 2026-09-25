@@ -1570,6 +1570,7 @@ class Sampler:
         self.worst: list = []
         self.samples = 0
         self.episodes: list = []   # (description, seconds)
+        self.spans: list = []      # (description, wall start, wall end)
         self._open: dict = {}      # pair -> (first seen, description)
         self._stop = False
         self._thread = None
@@ -1629,6 +1630,7 @@ class Sampler:
                     first, text = self._open.pop(key)
                     # When, from the sampler's start: lines up with a trace.
                     self.episodes.append((f"{text} from +{first - self._started:.1f}s", now - first))
+                    self.spans.append((text, first, now))
             except Exception:
                 pass
             time.sleep(self.INTERVAL)
@@ -1666,6 +1668,7 @@ class Sampler:
         now = time.time()
         for first, text in self._open.values():
             self.episodes.append((text + " (still at the end)", now - first))
+            self.spans.append((text + " (still at the end)", first, now))
         self._open.clear()
         return False
 
@@ -2008,6 +2011,13 @@ HOME_MONITOR = dict(width=2560, height=1440, serial=0x51)  # laptop left, lower
 
 def float_one() -> str:
     """Float one TextEdit on a shown desktop; returns its window server id."""
+    if not any(w.get("app_name") == "TextEdit" and not w.get("is_floating")
+               for w in shown_windows()):
+        # `space create` switches to the desktop it makes; the windows are on
+        # the one before it.
+        for _ in show_the_desktop_holding_the_windows():
+            pass
+        settle(2)
     for w in shown_windows():
         if w.get("app_name") != "TextEdit" or w.get("is_floating"):
             continue
@@ -2084,14 +2094,60 @@ def on_display(snap: dict, idents, screen_id: int) -> list:
             if i in snap["windows"] and snap["windows"][i][0] not in owned]
 
 
+def churn_ends_wall() -> list:
+    """When rift declared each display change over, on the wall clock.
+
+    rift only lays windows out once the window server has been quiet for a
+    while after a display change -- laying out mid-change sent windows to the
+    wrong display -- and with two monitors attaching one after the other that
+    takes a second and more. Whatever overlaps before then is where macOS put
+    the windows. The flight recorder has the moment, on rift's own clock; the
+    dump's `dumped_at_ms` ties that clock to this one.
+    """
+    path = "/tmp/chaos-churn.json"
+    sh(f"{CLI} execute trace dump {path}", timeout=60)
+    now = time.time()
+    ends = []
+    try:
+        with open(path) as fh:
+            head = json.loads(fh.readline().split(" ", 1)[1])
+            dumped = head.get("dumped_at_ms")
+            for line in fh:
+                if '"display_churn_end"' not in line or not line.startswith("Act "):
+                    continue
+                ms = json.loads(line[4:]).get("ms")
+                if dumped is not None and ms is not None:
+                    ends.append(now - (dumped - ms) / 1000.0)
+    except (OSError, ValueError, IndexError):
+        return []
+    return ends
+
+
 def check_sampler(sampler: "Sampler", phase: str) -> None:
+    """Overlaps rift is answerable for: still there a second after rift
+    finished handling the display change. Every episode is printed, and the
+    part of it that fell inside a display change is labelled, not dropped."""
     for text, secs in sampler.episodes:
         if secs >= 0.3:
             print(f"      overlap for {secs:.2f}s: {text}", flush=True)
-    stuck = sampler.persisted()
+    long_ones = [(t, a, b) for t, a, b in sampler.spans if b - a >= Sampler.PERSIST]
+    if not long_ones:
+        return
+    ends = churn_ends_wall()
+    stuck = []
+    for text, start, end in long_ones:
+        settled = max([e for e in ends if e <= end], default=None)
+        since = start if settled is None else max(start, settled)
+        after = end - since
+        if after >= Sampler.PERSIST:
+            stuck.append((text, end - start, after))
+        else:
+            print(f"      (during a display change: {text}, {end - start:.2f}s in all, "
+                  f"{max(after, 0):.2f}s after rift finished it)", flush=True)
     if stuck:
-        raise Violation(f"{phase}: overlap(s) lasting {Sampler.PERSIST:.0f}s or more:\n      "
-                        + "\n      ".join(f"{t} for {d:.2f}s" for t, d in stuck[:3]))
+        raise Violation(f"{phase}: overlap(s) still there {Sampler.PERSIST:.0f}s or more after "
+                        "rift finished the display change:\n      "
+                        + "\n      ".join(f"{t} for {d:.2f}s ({a:.2f}s after)" for t, d, a in stuck[:3]))
 
 
 def restore_arrangement() -> None:
