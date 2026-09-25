@@ -980,6 +980,12 @@ def window_map(displays) -> dict:
     located = {}
     for sid in all_space_ids(displays):
         for w in (rift("windows", "--space-id", str(sid)) or []):
+            # The harness's own windows only. Finder windows turn up in the
+            # guest unbidden, float, and follow a departing display to the
+            # stand-in rift makes for it -- correctly -- and were judged
+            # against a baseline taken before they went anywhere (`clamshell`).
+            if w.get("app_name") not in TEST_APPS:
+                continue
             ident = w.get("window_server_id")
             if ident is None:
                 wid = w.get("id") or {}
