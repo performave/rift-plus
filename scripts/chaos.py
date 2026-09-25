@@ -2349,19 +2349,17 @@ def sa_move_space_after(space: int, after: int) -> None:
     sock.close()
 
 
-@scenario("desktop-to-new-monitor",
-          doc="plug in, move the laptop's desktop onto the monitor (Mission Control "
-              "drag), in both of Eric's arrangements")
-def s_desktop_to_new_monitor(base):
+def desktop_to_new_monitor(label: str, spec: dict, laptop_at: tuple) -> None:
     """Eric's first seam report: plug the monitor in, drag desktops onto it,
     and some windows end up "way over the seam". `desktop-move-seam-test.py`
     did this with the probe to the right and top-aligned, which is neither of
     his setups, and it passed on the old build too -- so it never reproduced
-    the report. This does it in both: laptop left of and lower than a 2560
-    monitor, and laptop below an ultrawide, each made main.
+    the report. This does it in each of them, one per scenario so each starts
+    from a full reset: moving a desktop between displays leaves the windows on
+    one nobody is showing, and the second arrangement run straight after the
+    first found nothing to float.
     """
-    for label, spec, laptop_at in (("mon-home", HOME_MONITOR, (-1502, 700)),
-                                   ("mon-office", OFFICE, (1000, 1440))):
+    for label, spec, laptop_at in ((label, spec, laptop_at),):
         # A desktop to keep behind on the laptop, made while the laptop is the
         # only display: `space create` acts on the active display, and once a
         # monitor is main that is not the laptop.
@@ -2410,8 +2408,10 @@ def s_desktop_to_new_monitor(base):
                 if not any(r[0] == home_desktop for r in snap["windows"].values()):
                     home_desktop = None
                 if home_desktop is None or len(laptop.get("space_ids") or []) < 2:
+                    where = {i: (r[1], r[0]) for i, r in snap["windows"].items()}
                     raise Violation(f"{label}: the laptop needs a desktop holding the "
-                                    f"windows and another to keep ({laptop.get('space_ids')})")
+                                    f"windows and another to keep ({laptop.get('space_ids')}); "
+                                    f"it shows {laptop.get('space')}, held {held}, windows {where}")
                 sa_move_space_after(home_desktop, monitor["space"])
                 settle(6)
                 moved = snapshot(f"{label}: desktop moved onto the monitor")
@@ -2431,6 +2431,18 @@ def s_desktop_to_new_monitor(base):
         finally:
             restore_arrangement()
             tile_all()
+
+
+@scenario("desktop-to-home-monitor",
+          doc="plug in, move the laptop's desktop onto the home monitor (laptop left, lower)")
+def s_desktop_to_home_monitor(base):
+    desktop_to_new_monitor("mon-home", HOME_MONITOR, (-1502, 700))
+
+
+@scenario("desktop-to-office-monitor",
+          doc="plug in, move the laptop's desktop onto the office ultrawide (laptop below)")
+def s_desktop_to_office_monitor(base):
+    desktop_to_new_monitor("mon-office", OFFICE, (1000, 1440))
 
 
 @scenario("native-fullscreen-across-churn",

@@ -952,7 +952,7 @@ ever attached one probe, to the right, top-aligned. So:
 | `scale-change` | the same monitor returns at 2x |
 | `dock-two-monitors` | two monitors arrive together, leave together, return |
 | `one-of-two-drops` | one of two monitors drops out and comes back |
-| `desktop-to-new-monitor` | plug in and move the laptop's desktop onto the monitor (Mission Control's drag, via SPACE_MOVE), in both of Eric's arrangements -- his first seam report |
+| `desktop-to-home-monitor`, `desktop-to-office-monitor` | plug in and move the laptop's desktop onto the monitor (Mission Control's drag, via SPACE_MOVE), in each of Eric's arrangements -- his first seam report; one scenario each, so each starts from a full reset |
 
 Not reachable from the guest: sleep across a change, a real lid (its
 pseudo display), and **mirroring**. `CGConfigureDisplayMirrorOfDisplay` on a
