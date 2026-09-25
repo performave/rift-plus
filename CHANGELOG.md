@@ -13,6 +13,11 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A floating window you used is the one focus comes back to.** Focusing a
+  floating window was recorded only in one app-wide slot, never as the window
+  last used on its workspace. On a display where everything floats -- Xcode
+  and the app it runs -- switching away and back landed on whichever window
+  the workspace had recorded long before, not the one just used.
 - **Tiled windows are put back after a monitor is swapped for another.** The
   check added in 0.5.10-plus.1 -- a window's real frame, not rift's record of
   it, for a few seconds after a display change -- was timed from the window

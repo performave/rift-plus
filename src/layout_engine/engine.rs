@@ -894,8 +894,8 @@ impl LayoutEngine {
                 self.floating.set_last_focus(Some(wid));
             } else {
                 let _ = self.workspace_tree_mut(ws_id).select_window(layout, wid);
-                self.virtual_workspace_manager.set_last_focused_window(space, ws_id, Some(wid));
             }
+            self.virtual_workspace_manager.set_last_focused_window(space, ws_id, Some(wid));
         }
     }
 
@@ -2001,6 +2001,23 @@ impl LayoutEngine {
                 if self.floating.is_floating(wid) {
                     self.focused_window = Some(wid);
                     self.floating.set_last_focus(Some(wid));
+                    // A floating window is used on a workspace like any other,
+                    // and returning to that workspace or display goes back to
+                    // the window used there last. Recorded only in the
+                    // single app-wide floating slot, it never was: on a
+                    // display where everything floats, focus came back to
+                    // whichever window the workspace had recorded long before.
+                    if let Some(ws_id) = self.virtual_workspace_manager.workspace_for_window(
+                        window_store,
+                        space,
+                        wid,
+                    ) {
+                        self.virtual_workspace_manager.set_last_focused_window(
+                            space,
+                            ws_id,
+                            Some(wid),
+                        );
+                    }
                 } else if let Some((ws_id, layout)) = self.workspace_and_layout(space) {
                     if !self.workspace_tree(ws_id).contains_window(layout, wid) {
                         warn!(
@@ -6214,6 +6231,30 @@ mod tests {
             );
         }
         (engine, window_store)
+    }
+
+    /// A display where everything floats (Xcode and the app it runs, as
+    /// reported): focusing one floating window after another has to leave the
+    /// workspace remembering the second, or returning to the display goes back
+    /// to whichever window it recorded before.
+    #[test]
+    fn focusing_a_floating_window_is_remembered_by_its_workspace() {
+        let space = SpaceId::new(100);
+        let (mut engine, mut window_store) = three_windows_used_in_order(space, [1, 2]);
+        let workspace = engine.active_workspace(space).unwrap();
+        for idx in 1..=3 {
+            engine.mark_window_floating(WindowId::new(5155, idx));
+        }
+
+        let _ = engine.handle_event(
+            &mut window_store,
+            LayoutEvent::WindowFocused(space, WindowId::new(5155, 3)),
+        );
+
+        assert_eq!(
+            engine.virtual_workspace_manager().last_focused_window(space, workspace),
+            Some(WindowId::new(5155, 3))
+        );
     }
 
     #[test]
