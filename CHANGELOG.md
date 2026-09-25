@@ -54,8 +54,8 @@ Entries describe this fork's changes relative to
   still has a sliver on a display that stayed -- a float that straddled onto a
   monitor or sat at its edge was left with a few pixels showing when the
   monitor was unplugged or moved. rift now brings such a window back onto the
-  display it overlaps most, in the seconds after the change; a window parked
-  off screen at any other time is left where it is.
+  display showing its desktop, in the seconds after the change; a window
+  parked off screen at any other time is left where it is.
 - **A layout keeps its splits when the screen changes size.** In bsp, the
   first time a desktop was shown at a new screen size -- a monitor moved to
   the other side of the laptop takes the Dock with it, one that becomes main

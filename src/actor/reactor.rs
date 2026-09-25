@@ -5290,26 +5290,21 @@ impl Reactor {
                 if area <= 1.0 {
                     continue;
                 }
-                let (best, share) = screens
-                    .iter()
-                    .map(|(screen, _)| {
-                        let overlap = frame.intersection(screen);
-                        (*screen, overlap.size.width * overlap.size.height / area)
-                    })
-                    .fold(
-                        (screens[0].0, -1.0),
-                        |acc, cur| if cur.1 > acc.1 { cur } else { acc },
-                    );
+                // Judged against, and brought back onto, the screen showing
+                // the window's own desktop. Onto whichever display it shared
+                // most with, a frame on the other display carried the window
+                // to that display's desktop, away from the windows it belonged
+                // with (`commute`: a floating TextEdit moved to the home
+                // monitor's desktop).
+                let Some(target_screen) = screens.iter().find(|(_, s)| s == space).map(|(f, _)| *f)
+                else {
+                    continue;
+                };
+                let overlap = frame.intersection(&target_screen);
+                let share = overlap.size.width * overlap.size.height / area;
                 if share >= MOSTLY_GONE {
                     continue;
                 }
-                // The display it shares most with; with nothing shared, the
-                // one showing its desktop.
-                let target_screen = if share > 0.0 {
-                    best
-                } else {
-                    screens.iter().find(|(_, s)| s == space).map(|(f, _)| *f).unwrap_or(best)
-                };
                 let width = frame.size.width.min(target_screen.size.width);
                 let height = frame.size.height.min(target_screen.size.height);
                 let x = frame.origin.x.clamp(target_screen.origin.x, target_screen.max().x - width);

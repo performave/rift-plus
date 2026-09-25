@@ -8888,6 +8888,35 @@ mod floating_placement {
         assert_eq!(target.size, stranded.size);
     }
 
+    /// Brought back onto the screen showing its own desktop, not whichever it
+    /// overlaps most: a frame on the other display carries the window to that
+    /// display's desktop, away from the windows it belongs with (`commute`: a
+    /// floating TextEdit moved to the home monitor's desktop).
+    #[test]
+    fn a_rescued_float_comes_back_to_its_own_desktops_screen() {
+        let (mut reactor, space, _wid, wsid, screen) = floating_window_on_one_screen();
+        let other = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(1920., 1080.));
+        let other_space = SpaceId::new(2);
+        // Mostly over the other screen, a sliver on its own.
+        let stranded = CGRect::new(CGPoint::new(1400., 250.), CGSize::new(920., 436.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(stranded));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        reactor.handle_event(space_state_event(vec![screen, other], vec![
+            Some(space),
+            Some(other_space),
+        ]));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+
+        let target = reactor.transaction_manager.get_target_frame(wsid).expect("a frame written");
+        assert!(
+            target.max().x <= screen.max().x && target.origin.x >= screen.origin.x,
+            "brought onto the other display instead of its own: {target:?}"
+        );
+    }
+
     /// Outside a display change a window off screen is where someone put it.
     #[test]
     fn a_float_parked_off_screen_without_a_display_change_is_left() {
