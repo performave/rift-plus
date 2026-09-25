@@ -9436,6 +9436,43 @@ mod child_window_focus {
         assert!(has_window_in_layout(&mut reactor, space, screen, main));
         assert!(!has_window_in_layout(&mut reactor, space, screen, child));
     }
+
+    /// One app's documents stacked on one frame (Excel, in a stack): a child
+    /// panel sits inside all of them, so the frames cannot say whose it is.
+    /// Focus in one workbook's Find panel was credited to whichever sibling
+    /// iterated first, and returning to the display raised that one. The
+    /// window server names the parent, and that is the answer.
+    #[test]
+    fn focus_on_a_child_of_stacked_siblings_goes_to_its_real_parent() {
+        let mut reactor = test_reactor();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let space = SpaceId::new(1);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        reactor.add_test_app(1);
+        let workspace = reactor.test_workspace(space, 0);
+        let frame = CGRect::new(CGPoint::new(100., 100.), CGSize::new(1200., 700.));
+        let siblings: Vec<(WindowId, WindowServerId)> =
+            (1..=4).map(|i| (WindowId::new(1, i), WindowServerId::new(100 + i))).collect();
+        for &(wid, wsid) in &siblings {
+            reactor.add_test_window(wid, wsid, Some(space), frame);
+            assert!(reactor.assign_test_window_to_workspace(space, wid, workspace));
+            reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));
+        }
+        let find = WindowId::new(1, 9);
+        let find_wsid = WindowServerId::new(109);
+        let find_frame = CGRect::new(CGPoint::new(900., 200.), CGSize::new(375., 80.));
+        reactor.add_test_window_with_manageability(find, find_wsid, Some(space), find_frame, false);
+
+        for &(parent, parent_wsid) in &siblings {
+            crate::sys::window_server::set_window_parent_override(find_wsid, Some(parent_wsid));
+            reactor.handle_event(Event::WindowServerFocusChanged(find, space));
+            assert_eq!(
+                reactor.layout_manager.layout_engine.focused_window(),
+                Some(parent)
+            );
+        }
+        crate::sys::window_server::set_window_parent_override(find_wsid, None);
+    }
 }
 
 mod fullscreen_slots {

@@ -44,6 +44,7 @@ thread_local! {
     static TEST_WINDOW_ORDER_QUERY_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEST_WINDOW_SPACES_OVERRIDE: RefCell<HashMap<u32, Vec<u64>>> = RefCell::new(HashMap::default());
     static TEST_WINDOW_ORDERED_IN_OVERRIDE: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::default());
+    static TEST_WINDOW_PARENT_OVERRIDE: RefCell<HashMap<u32, u32>> = RefCell::new(HashMap::default());
     /// What `app_window_suitability` answers; without an entry it says
     /// unsuitable, the inert answer, which retires any window an inventory
     /// omits.
@@ -433,6 +434,13 @@ fn live_answer<T>(live: impl FnOnce() -> T, inert: impl FnOnce() -> T) -> T {
 }
 
 pub fn window_parent(id: WindowServerId) -> Option<WindowServerId> {
+    #[cfg(test)]
+    if let Some(parent) =
+        TEST_WINDOW_PARENT_OVERRIDE.with(|parents| parents.borrow().get(&id.as_u32()).copied())
+    {
+        return Some(WindowServerId::new(parent));
+    }
+
     trace::observe("window_parent", id.as_u32(), || {
         live_answer(
             || {
@@ -1180,6 +1188,18 @@ pub fn set_window_ordered_in_override(id: WindowServerId, ordered: Option<bool>)
             override_ordered.insert(id.as_u32(), ordered);
         } else {
             override_ordered.remove(&id.as_u32());
+        }
+    });
+}
+
+#[cfg(test)]
+pub fn set_window_parent_override(id: WindowServerId, parent: Option<WindowServerId>) {
+    TEST_WINDOW_PARENT_OVERRIDE.with(|parents| {
+        let mut parents = parents.borrow_mut();
+        if let Some(parent) = parent {
+            parents.insert(id.as_u32(), parent.as_u32());
+        } else {
+            parents.remove(&id.as_u32());
         }
     });
 }

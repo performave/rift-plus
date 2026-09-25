@@ -11,6 +11,17 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Focus in an Excel Find panel belongs to its own workbook.** A child
+  window rift does not manage -- Excel's Find panel, Lightroom's filmstrip --
+  counts as focus on the window around it, and rift told which window that was
+  by frame: the first sibling whose frame contained the panel. One app's
+  documents in a stack share a frame, so all of them contained it, and focus
+  in one workbook's Find panel went to whichever sibling came first. Switching
+  away and back then raised that other workbook. rift now asks the window
+  server for the panel's parent and uses frames only when it does not say.
+
 ## [0.5.10-plus.1] - 2026-09-25
 
 ### Added

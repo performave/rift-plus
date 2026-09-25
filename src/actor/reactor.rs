@@ -5995,6 +5995,29 @@ impl Reactor {
         if !is_possible_child {
             return wid;
         }
+        // The window server knows the parent outright; frames only guess. A
+        // child sits inside every window stacked on the same frame, and a stack
+        // of one app's documents is exactly that: focus in one Excel
+        // workbook's Find panel was credited to whichever sibling iterated
+        // first, so returning to the display raised the wrong workbook.
+        let mut ancestor = wid;
+        for _ in 0..4 {
+            let Some(parent) = self
+                .state
+                .windows
+                .window(ancestor)
+                .and_then(|window| window.info.sys_id)
+                .and_then(window_server::window_parent)
+                .and_then(|parent| self.state.windows.tracked_window_id(parent))
+                .filter(|parent| parent.pid == wid.pid)
+            else {
+                break;
+            };
+            if self.state.windows.window(parent).is_some_and(|window| window.is_admitted()) {
+                return parent;
+            }
+            ancestor = parent;
+        }
         let child = self.live_frame_for(wid);
         let mut candidates: Vec<(WindowId, CGRect)> = self
             .state
