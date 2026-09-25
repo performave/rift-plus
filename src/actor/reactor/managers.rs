@@ -608,20 +608,7 @@ impl LayoutManager {
                         // waited for whatever arranged it next: two Safari
                         // windows sat on top of a tile for ten seconds
                         // (`rearranged-while-attached`).
-                        if !reactor.rearrange_scheduled
-                            && let Some(sender) = reactor.communication_manager.events_tx.clone()
-                        {
-                            use crate::sys::dispatch::DispatchExt;
-                            reactor.rearrange_scheduled = true;
-                            dispatchr::queue::main().after_f_s(
-                                dispatchr::time::Time::new_after(
-                                    dispatchr::time::Time::NOW,
-                                    REARRANGE_AFTER_DISPLAY_MOVED.as_nanos() as i64,
-                                ),
-                                sender,
-                                |sender| sender.send(super::Event::ArrangeAfterDisplayMoved),
-                            );
-                        }
+                        reactor.schedule_rearrange(REARRANGE_AFTER_DISPLAY_MOVED);
                         continue;
                     }
                     crate::sys::trace::act(

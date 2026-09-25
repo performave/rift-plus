@@ -20,12 +20,47 @@ pub fn begin(flags: DisplayReconfigFlags) -> u64 {
 }
 
 pub fn end() -> u64 {
+    if let Ok(mut ended) = LAST_ENDED.lock() {
+        *ended = Some(std::time::Instant::now());
+    }
     DISPLAY_CHURN_ACTIVE.store(false, Ordering::SeqCst);
     DISPLAY_CHURN_FLAGS.store(0, Ordering::SeqCst);
     DISPLAY_CHURN_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
 }
 
 pub fn is_active() -> bool { DISPLAY_CHURN_ACTIVE.load(Ordering::SeqCst) }
+
+static LAST_ENDED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// How long ago a display change was last in progress: zero while one is,
+/// otherwise the nearer of when rift last finished handling one and when the
+/// window server last moved windows for one. Neither alone is enough. The
+/// window server's clock did not move for a monitor swapped for another
+/// (`hot-swap`), and rift's own misses the reshuffling the window server does
+/// after rift has finished.
+pub fn since_display_change() -> Option<Duration> {
+    #[cfg(test)]
+    return since_windows_last_moved();
+    #[allow(unreachable_code)]
+    {
+        let ours = LAST_ENDED.lock().ok().and_then(|ended| ended.map(|at| at.elapsed()));
+        nearest_display_change(is_active(), ours, since_windows_last_moved())
+    }
+}
+
+fn nearest_display_change(
+    active: bool,
+    since_ours: Option<Duration>,
+    since_window_server: Option<Duration>,
+) -> Option<Duration> {
+    if active {
+        return Some(Duration::ZERO);
+    }
+    match (since_ours, since_window_server) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
 
 pub fn epoch() -> u64 { DISPLAY_CHURN_EPOCH.load(Ordering::SeqCst) }
 
@@ -89,6 +124,27 @@ pub fn since_windows_last_moved() -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_display_change_is_as_recent_as_either_clock_says() {
+        let s = Duration::from_secs;
+        assert_eq!(
+            nearest_display_change(true, None, Some(s(60))),
+            Some(Duration::ZERO)
+        );
+        // The window server's clock stood still for a monitor swapped for
+        // another; rift's own end of the change still counts.
+        assert_eq!(
+            nearest_display_change(false, Some(s(1)), Some(s(600))),
+            Some(s(1))
+        );
+        assert_eq!(
+            nearest_display_change(false, Some(s(600)), Some(s(2))),
+            Some(s(2))
+        );
+        assert_eq!(nearest_display_change(false, Some(s(3)), None), Some(s(3)));
+        assert_eq!(nearest_display_change(false, None, None), None);
+    }
 
     #[test]
     fn begin_end_toggles_global_state() {

@@ -174,8 +174,12 @@ impl AnimationManager {
         // tile, every arrange once the change had settled found the windows
         // "already there", and they overlapped until a rediscovery a second
         // later happened to read their real frames.
-        let reconfigured_lately = crate::sys::display_churn::since_windows_last_moved()
+        let reconfigured_lately = crate::sys::display_churn::since_display_change()
             .is_some_and(|since| since < DISTRUST_CACHE_AFTER_RECONFIGURE);
+        // A window found out of place whose write is still awaiting its
+        // answer: the write may yet land, or macOS may have undone it, and
+        // only a look after it has had its second tells which.
+        let mut look_again = false;
 
         for &(wid, target_frame) in layout {
             if skip_wid == Some(wid) {
@@ -196,6 +200,7 @@ impl AnimationManager {
                 match window_store.window_mut(wid) {
                     Some(window) => {
                         let mut current_frame = window.frame_monotonic;
+                        let mut out_of_place = false;
                         if reconfigured_lately
                             && target_frame.same_as(current_frame)
                             && let Some(live) = window
@@ -210,6 +215,7 @@ impl AnimationManager {
                             );
                             window.frame_monotonic = live;
                             current_frame = live;
+                            out_of_place = true;
                         }
                         // "Already there" is rift's own bookkeeping, not a
                         // reading of the window, and a fullscreen exit is
@@ -256,6 +262,7 @@ impl AnimationManager {
                                 .target_sent_within(wsid, UNANSWERED_WRITE)
                         {
                             if pending.same_as(target_frame) {
+                                look_again |= out_of_place;
                                 trace!(?wid, ?target_frame, "Skipping redundant layout request");
                                 crate::sys::trace::act(
                                     "layout_skip",
@@ -322,6 +329,14 @@ impl AnimationManager {
             // for the rest of the session write this window unconditionally,
             // which is the skip's whole purpose undone.
             reactor.state.windows.frame_reasserted(wid);
+        }
+
+        if look_again {
+            // Nothing else is certain to arrange again once the write has had
+            // its second (`fast-churn`: a TextEdit left at macOS's cascade
+            // spot for good, every arrange in the meantime skipping it as
+            // already requested).
+            reactor.schedule_rearrange(UNANSWERED_WRITE + std::time::Duration::from_millis(100));
         }
 
         if animated_count > 0 {

@@ -5401,6 +5401,29 @@ impl Reactor {
     /// they are, so nothing put these right. Only in the seconds after the
     /// window server has moved windows for a display change: at any other
     /// time a window parked off screen is where someone put it.
+    /// Arrange again after `after`, once: one retry on its way covers every
+    /// caller that wants one.
+    pub(super) fn schedule_rearrange(&mut self, after: Duration) {
+        if self.rearrange_scheduled {
+            return;
+        }
+        let Some(sender) = self.communication_manager.events_tx.clone() else {
+            // Tests have no event loop; the flag is what they can see.
+            #[cfg(test)]
+            {
+                self.rearrange_scheduled = true;
+            }
+            return;
+        };
+        use crate::sys::dispatch::DispatchExt;
+        self.rearrange_scheduled = true;
+        dispatchr::queue::main().after_f_s(
+            dispatchr::time::Time::new_after(dispatchr::time::Time::NOW, after.as_nanos() as i64),
+            sender,
+            |sender| sender.send(Event::ArrangeAfterDisplayMoved),
+        );
+    }
+
     fn rescue_floats_left_off_screen(&mut self) {
         const MOSTLY_GONE: f64 = 0.25;
         const AFTER_CHURN: Duration = Duration::from_secs(10);

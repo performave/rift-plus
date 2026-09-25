@@ -11,6 +11,18 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tiled windows are put back after a monitor is swapped for another.** The
+  check added in 0.5.10-plus.1 -- a window's real frame, not rift's record of
+  it, for a few seconds after a display change -- was timed from the window
+  server's own clock, which does not move when one monitor is unplugged and
+  another plugged in straight after. It now also counts from when rift
+  finished handling the change. And a window found out of place while its
+  last write was still unanswered was skipped as "already requested" by every
+  arrange until none came: it is now looked at again once that write has had
+  its second.
+
 ## [0.5.10-plus.2] - 2026-09-25
 
 ### Fixed
