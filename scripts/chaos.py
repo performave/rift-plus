@@ -2161,9 +2161,16 @@ def s_hot_swap(base):
             plug(); settle(8)
             back = snapshot("swapped back to A")
             check_full(a, back, "hot-swap back to A")
-            away = on_display(back, ids, int(probe_display(back["displays"], base["displays"])["screen_id"]))
+            probe = probe_display(back["displays"], base["displays"])
+            away = on_display(back, ids, int(probe["screen_id"]))
             if away:
-                raise Violation(f"hot-swap: {away} did not return to monitor A")
+                where = {i: back["windows"].get(i, (None,))[0] for i in ids}
+                raise Violation(
+                    f"hot-swap: {away} did not return to monitor A\n"
+                    f"      took display {probe.get('screen_id')} {probe.get('uuid')} for A, "
+                    f"desktops {all_space_ids([probe])}\n"
+                    f"      Safari on: {where}\n"
+                    f"      displays: {[(d.get('screen_id'), d.get('uuid'), all_space_ids([d])) for d in back['displays']]}")
         check_sampler(sampler, "hot-swap")
     finally:
         restore_arrangement()
