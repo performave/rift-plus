@@ -8321,9 +8321,13 @@ mod mouse_follows_focus {
     /// window is known.
     #[test]
     fn a_window_focused_before_rift_discovers_it_warps_once_it_is_known() {
+        // The double-click in Finder that opened it: well inside the click
+        // grace, and no reason to keep the pointer on Finder.
+        crate::sys::event::set_key_pressed_since_mouse_up_override(Some(false));
         let (mut apps, mut reactor, _a, _b) = two_apps_focused_on_first();
         reactor.handle_events(apps.make_app_with_opts(3, Vec::new(), None, false, true));
         apps.simulate_until_quiet(&mut reactor);
+        reactor.handle_event(Event::MouseUp);
         reactor.handle_event(Event::ApplicationDeactivated(1));
         reactor.handle_event(Event::ApplicationGloballyActivated(3));
         reactor.handle_event(Event::ApplicationActivated(3, Quiet::No));
@@ -8348,6 +8352,7 @@ mod mouse_follows_focus {
             vec![center],
             "the pointer follows once it can"
         );
+        crate::sys::event::set_key_pressed_since_mouse_up_override(None);
         crate::sys::window_server::set_cursor_location_override(None);
     }
 

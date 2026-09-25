@@ -11,6 +11,16 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Opening a file warps to its window every time, not only sometimes.**
+  0.5.10-plus.2 made the pointer follow a window focused before rift knew of
+  it, but the double-click that opened the file still counted against it: a
+  focus change within half a second of a click is taken to be that click's
+  doing, and Preview usually answers faster than that. A window that did not
+  exist when the click landed cannot have been what it aimed at, so the click
+  no longer holds the pointer back from it.
+
 ## [0.5.10-plus.3] - 2026-09-25
 
 ### Fixed

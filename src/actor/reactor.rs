@@ -4797,7 +4797,23 @@ impl Reactor {
         // filmstrip, a sheet — which is not what the user sees as "the
         // window". Aim at the app's admitted top-level window around it.
         let window = self.admitted_root_for(window);
-        if !self.mouse_follows_focus_allowed_for(window)
+        // A window rift has not discovered yet did not exist when the last
+        // click landed, so that click cannot have been aimed at it: the click
+        // grace is for clicks into a window, onto a menu bar, off a popover,
+        // all of which focus something already there. Double-clicking a PDF
+        // in Finder opens Preview's window elsewhere, often inside the grace --
+        // it warped only when Preview took longer than half a second. The
+        // button still being down is another matter (a file dragged onto an
+        // app), and a pointer already inside the window is checked once it is
+        // placed.
+        let unknown = self.state.windows.window(window).is_none();
+        let allowed = if unknown {
+            self.mouse_follows_focus_permitted_for_app(window)
+                && crate::sys::event::get_mouse_state() != Some(crate::sys::event::MouseState::Down)
+        } else {
+            self.mouse_follows_focus_allowed_for(window)
+        };
+        if !allowed
             || self.refresh_quarantine_manager.suppress_auto_workspace_switch_until_input
             || self.is_mission_control_active()
             || !matches!(self.drag_manager.drag_state, DragState::Inactive)
@@ -4809,7 +4825,7 @@ impl Reactor {
             self.workspace_switch_manager.pending_workspace_mouse_warp = Some(window);
             return;
         }
-        if self.state.windows.window(window).is_none() {
+        if unknown {
             self.pending_focus_warp = Some((window, crate::sys::trace::now()));
             return;
         }
