@@ -522,6 +522,22 @@ def reset_between_scenarios() -> str:
     if sh('pgrep -x "System Settings"'):
         sh('killall "System Settings" 2>/dev/null')
         notes.append("quit System Settings")
+    # Finder "Recents" windows turn up in the guest unbidden. They float, live
+    # wherever macOS last put them -- the probe's desktops included -- and a
+    # window living on a monitor rightly gets a stand-in desktop at every
+    # unplug, which the leak check then counted as a leaked workspace
+    # (`plain-replug`, `different-monitor`). Close them: cmd-W on a Finder
+    # window touches no files.
+    closed = 0
+    for sid in all_space_ids(rift("displays") or []):
+        for w in rift("windows", "--space-id", str(sid)) or []:
+            if w.get("app_name") == "Finder" and focus(w):
+                time.sleep(0.5)
+                sh(f"{DTOOL} key 13 cmd")
+                time.sleep(0.5)
+                closed += 1
+    if closed:
+        notes.append(f"closed {closed} Finder window(s)")
     detach_all_monitors()
     unplug(quiet=True)
     settle(2)
