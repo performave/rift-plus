@@ -43,13 +43,6 @@ Entries describe this fork's changes relative to
   arrangement the slot had saved, and two tiles traded places on every
   `switch_to_space`. The slot is now used only when the window server has the
   window on the slot's desktop; a slot left over from a move is dropped.
-- **Unplugging a main monitor no longer loses the laptop's layout.** When a
-  monitor that holds the menu bar leaves, macOS destroys the laptop's own
-  desktop and hands the laptop one of the monitor's. rift took that desktop
-  for the destroyed one's replacement and moved the laptop's layout onto it,
-  while its windows went to the stand-in desktop rift makes for them -- and
-  they came back floating. A desktop another display owned is no longer taken
-  for a replacement.
 - **A layout keeps its splits when the screen changes size.** In bsp, the
   first time a desktop was shown at a new screen size -- a monitor moved to
   the other side of the laptop takes the Dock with it, one that becomes main
