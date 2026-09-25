@@ -8073,24 +8073,26 @@ impl Reactor {
             return None;
         }
         let active_workspace = self.layout_manager.layout_engine.active_workspace(space)?;
-        let wid = self
-            .layout_manager
-            .layout_engine
-            .virtual_workspace_manager()
-            .last_focused_window(space, active_workspace)?;
-        let window = self.state.windows.window(wid)?;
-
-        if self.best_space_for_window_id(wid)? != space {
-            return None;
-        }
-        if window
-            .info
-            .sys_id
-            .is_some_and(|wsid| !self.state.windows.is_window_visible(wsid))
-        {
-            return None;
-        }
-        Some(wid)
+        let workspaces = self.layout_manager.layout_engine.virtual_workspace_manager();
+        // Past the last-focused window to the ones before it: when the window in
+        // use leaves (moved to another display or workspace), going back should
+        // land on the one used before it, not on the tree's first.
+        workspaces
+            .last_focused_window(space, active_workspace)
+            .into_iter()
+            .chain(workspaces.focus_history(space, active_workspace).iter().copied())
+            .find(|wid| {
+                let Some(window) = self.state.windows.window(*wid) else {
+                    return false;
+                };
+                self.best_space_for_window_id(*wid) == Some(space)
+                    && workspaces.workspace_for_window(&self.state.windows, space, *wid)
+                        == Some(active_workspace)
+                    && window
+                        .info
+                        .sys_id
+                        .is_none_or(|wsid| self.state.windows.is_window_visible(wsid))
+            })
     }
 
     fn visible_focus_candidate_in_active_workspace(

@@ -695,13 +695,7 @@ impl LayoutEngine {
         });
 
         if focus_window.is_none() && self.virtual_workspace_manager.preserve_focus_per_workspace() {
-            focus_window = self
-                .virtual_workspace_manager
-                .last_focused_window(space, workspace_id)
-                .filter(|wid| {
-                    self.virtual_workspace_manager.workspace_for_window(window_store, space, *wid)
-                        == Some(workspace_id)
-                });
+            focus_window = self.recently_focused_member(window_store, space, workspace_id);
         }
 
         if focus_window.is_none() {
@@ -737,6 +731,30 @@ impl LayoutEngine {
         }
 
         focus_window
+    }
+
+    /// The most recently focused window still in the workspace. Past the
+    /// last-focused one, so that when it leaves, focus goes back to the window
+    /// used before it rather than to the tree's first.
+    fn recently_focused_member(
+        &self,
+        window_store: &WindowStore,
+        space: SpaceId,
+        workspace_id: VirtualWorkspaceId,
+    ) -> Option<WindowId> {
+        self.virtual_workspace_manager
+            .last_focused_window(space, workspace_id)
+            .into_iter()
+            .chain(
+                self.virtual_workspace_manager
+                    .focus_history(space, workspace_id)
+                    .iter()
+                    .copied(),
+            )
+            .find(|wid| {
+                self.virtual_workspace_manager.workspace_for_window(window_store, space, *wid)
+                    == Some(workspace_id)
+            })
     }
 
     pub fn commit_workspace_focus(
@@ -3207,10 +3225,15 @@ impl LayoutEngine {
                         None,
                     );
 
-                    let remaining_windows = self
-                        .virtual_workspace_manager
-                        .windows_in_active_workspace(window_store, op_space);
-                    if let Some(&new_focus) = remaining_windows.first() {
+                    let new_focus = self
+                        .recently_focused_member(window_store, op_space, current_workspace_id)
+                        .or_else(|| {
+                            self.virtual_workspace_manager
+                                .windows_in_active_workspace(window_store, op_space)
+                                .first()
+                                .copied()
+                        });
+                    if let Some(new_focus) = new_focus {
                         self.broadcast_windows_changed(window_store, op_space);
                         return EventResponse {
                             changed: true,
@@ -6157,6 +6180,86 @@ mod tests {
             focus_with(false),
             Some(WindowId::new(5154, 1)),
             "off: the workspace's own selection is used instead"
+        );
+    }
+
+    /// Three windows of one app (Excel, as reported), used in `order`. Once the
+    /// last one leaves, focus has to go back to the window used before it, not
+    /// to whichever the tree offers. With a single remembered window it was
+    /// the tree's every time.
+    fn three_windows_used_in_order(space: SpaceId, order: [u32; 2]) -> (LayoutEngine, WindowStore) {
+        let mut window_store = WindowStore::default();
+        let mut engine = test_engine();
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 1000.0));
+        let pid: pid_t = 5155;
+        let _ =
+            engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, screen.size));
+        let _ = engine.handle_event(
+            &mut window_store,
+            LayoutEvent::windows_observed(
+                space,
+                pid,
+                (1..=3)
+                    .map(|idx| {
+                        window_layout_info(WindowId::new(pid, idx), CGSize::new(300.0, 500.0))
+                    })
+                    .collect(),
+                None,
+            ),
+        );
+        for idx in order {
+            let _ = engine.handle_event(
+                &mut window_store,
+                LayoutEvent::WindowFocused(space, WindowId::new(pid, idx)),
+            );
+        }
+        (engine, window_store)
+    }
+
+    #[test]
+    fn window_sent_to_another_workspace_hands_focus_to_the_one_used_before_it() {
+        let space = SpaceId::new(97);
+        let (mut engine, mut window_store) = three_windows_used_in_order(space, [2, 3]);
+        let _ = engine.handle_virtual_workspace_command(
+            &mut window_store,
+            space,
+            &LayoutCommand::CreateWorkspace,
+        );
+
+        let response = engine.handle_virtual_workspace_command(
+            &mut window_store,
+            space,
+            &LayoutCommand::MoveWindowToWorkspace {
+                workspace: WorkspaceSelector::Index(1),
+                follow: false,
+                window_id: None,
+            },
+        );
+
+        assert_eq!(response.focus_window, Some(WindowId::new(5155, 2)));
+    }
+
+    #[test]
+    fn window_sent_to_another_display_leaves_the_one_used_before_it_to_return_to() {
+        let space = SpaceId::new(98);
+        let other = SpaceId::new(99);
+        // The tree hands w3's selection to its neighbour, w2.
+        let (mut engine, mut window_store) = three_windows_used_in_order(space, [1, 3]);
+        let size = CGSize::new(1000.0, 1000.0);
+        let _ = engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(other, size));
+        let workspace = engine.active_workspace(space).unwrap();
+
+        let _ = engine.move_window_to_space(
+            &mut window_store,
+            space,
+            other,
+            size,
+            WindowId::new(5155, 3),
+        );
+
+        assert_eq!(
+            engine.preferred_focus_for_workspace(&window_store, space, workspace, None),
+            Some(WindowId::new(5155, 1))
         );
     }
 

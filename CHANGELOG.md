@@ -34,6 +34,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Focus goes back to the window you were using before.** With several
+  windows of one app on a display, sending the focused one elsewhere --
+  another display (`display move-window`) or another workspace
+  (`move_window_to_space`) -- and then returning landed on whichever window
+  the tree offered, rarely the one that had been in use. A workspace
+  remembered only its last-focused window and forgot it the moment that
+  window left. It now keeps a short history and falls back through it.
 - **Switching desktops no longer swaps tiles.** A window that had once left a
   desktop could keep a fullscreen slot for it after it was tiled somewhere
   else. Switching desktops makes the window server show the new desktop's

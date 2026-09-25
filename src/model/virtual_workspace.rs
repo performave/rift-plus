@@ -55,6 +55,13 @@ pub struct VirtualWorkspace {
     pub name: String,
     pub space: SpaceId,
     last_focused: Option<WindowId>,
+    /// Windows focused here, most recent first. `last_focused` is cleared the
+    /// moment its window leaves the workspace, and without this the fallback
+    /// was whichever window the tree lists first -- with several windows of
+    /// one app, rarely the one that was in use before. Runtime only: after a
+    /// restart the ids would name other windows.
+    #[serde(skip)]
+    focus_history: Vec<WindowId>,
     #[serde(default = "default_layout_system_kind")]
     pub layout_system: LayoutSystemKind,
     #[serde(default)]
@@ -72,6 +79,7 @@ impl VirtualWorkspace {
             name,
             space,
             last_focused: None,
+            focus_history: Vec::new(),
             layout_system,
             layout_mode: mode,
         }
@@ -126,10 +134,21 @@ impl VirtualWorkspace {
 
     pub fn set_last_focused(&mut self, window_id: Option<WindowId>) {
         self.last_focused = window_id;
+        if let Some(window_id) = window_id {
+            self.focus_history.retain(|wid| *wid != window_id);
+            self.focus_history.insert(0, window_id);
+            self.focus_history.truncate(FOCUS_HISTORY_LEN);
+        }
     }
 
     pub fn last_focused(&self) -> Option<WindowId> { self.last_focused }
+
+    /// Most recent first. May name windows that have since left the
+    /// workspace; callers check membership.
+    pub fn focus_history(&self) -> &[WindowId] { &self.focus_history }
 }
+
+const FOCUS_HISTORY_LEN: usize = 16;
 
 fn preserve_focus_default() -> bool { true }
 
@@ -973,6 +992,15 @@ impl WorkspaceStore {
         }
     }
 
+    /// Windows focused in the workspace, most recent first, including ones
+    /// that have since left it.
+    pub fn focus_history(&self, space: SpaceId, workspace_id: VirtualWorkspaceId) -> &[WindowId] {
+        match self.workspaces.get(workspace_id) {
+            Some(workspace) if workspace.space == space => workspace.focus_history(),
+            _ => &[],
+        }
+    }
+
     pub fn workspace_info(
         &self,
         space: SpaceId,
@@ -997,6 +1025,14 @@ impl WorkspaceStore {
             if contained_from {
                 workspace.set_last_focused(Some(to));
             }
+            if workspace.focus_history.contains(&from) {
+                workspace.focus_history.retain(|wid| *wid != to);
+                for wid in &mut workspace.focus_history {
+                    if *wid == from {
+                        *wid = to;
+                    }
+                }
+            }
         }
     }
 
@@ -1005,6 +1041,7 @@ impl WorkspaceStore {
             if workspace.last_focused() == Some(window) {
                 workspace.set_last_focused(None);
             }
+            workspace.focus_history.retain(|wid| *wid != window);
         }
     }
 
