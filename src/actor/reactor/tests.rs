@@ -11682,6 +11682,50 @@ mod display_archive {
         spaces_cleanup(&f, &[]);
     }
 
+    /// A window carried onto a display the record does not know goes back to
+    /// its home -- and when macOS has replaced that home since, to wherever
+    /// the windows recorded on it went. A display arriving as main replaces
+    /// the laptop's desktop; the tiled windows travel with the replacement,
+    /// and a floating one carried to the arriving display had nowhere to go
+    /// back to (`commute`: a TextEdit alone on the home monitor's desktop).
+    #[test]
+    fn a_window_whose_home_was_replaced_goes_where_its_neighbours_went() {
+        let mut f = spaces_fixture();
+        f.reactor.capture_pre_churn_layout();
+        unplug(&mut f);
+        let gone = SpaceId::new(77);
+        let replacement = space1();
+        if let Some(record) = f.reactor.display_archive.record.as_mut() {
+            record.clear_pass_for_test();
+            record.file_window_for_test(f.survivor, gone);
+            for wid in &f.exiled {
+                record.file_window_for_test(*wid, gone);
+            }
+        }
+        let newcomer = SpaceId::new(90);
+        managed(vec![
+            ("test-display-0", vec![replacement, space2_extra()]),
+            ("test-display-other", vec![newcomer]),
+        ]);
+        set_window_spaces(&f.exiled_wsids, replacement);
+        let survivor_wsid = f.reactor.test_window_server_id(f.survivor);
+        set_window_spaces(&[survivor_wsid], newcomer);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_millis(200),
+        ));
+        let moves_before = sa::window_moves().len();
+
+        f.reactor.keep_record_window_off_an_unknown_display(f.survivor, newcomer);
+
+        assert!(
+            sa::window_moves()[moves_before..]
+                .contains(&(survivor_wsid.as_u32(), replacement.get())),
+            "the window was left on the unknown display: {:?}",
+            &sa::window_moves()[moves_before..]
+        );
+        spaces_cleanup(&f, &[]);
+    }
+
     /// An arrival's record is left to its own pass. Its "unknown" display is
     /// the one arriving, and macOS handing it the desktop the laptop was
     /// showing is exactly what that pass has its own rule for; taking the

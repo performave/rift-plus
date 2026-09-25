@@ -43,6 +43,12 @@ Entries describe this fork's changes relative to
   arrangement the slot had saved, and two tiles traded places on every
   `switch_to_space`. The slot is now used only when the window server has the
   window on the slot's desktop; a slot left over from a move is dropped.
+- **A floating window stays with its desktop when a monitor arrives as main.**
+  With another monitor away, plugging one in that takes the menu bar makes
+  macOS replace the laptop's desktop: the tiled windows moved to the
+  replacement, but a floating one could land on the new monitor, and rift --
+  looking for the desktop it had recorded, which no longer existed -- left it
+  there. It now follows the windows recorded beside it.
 - **Moving a desktop onto a monitor takes all its windows with it.** Dragging
   a desktop onto a monitor in Mission Control moves it before rift hears of
   the move, and rift went on laying the desktop out for the screen it had

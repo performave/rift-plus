@@ -2401,10 +2401,40 @@ impl Reactor {
         if record.displays.iter().any(|d| d.uuid == owner) {
             return;
         }
-        let Some(home) = record.desired(wid) else {
+        let Some(recorded_home) = record.desired(wid) else {
             return;
         };
-        if home == space || !now.values().flatten().any(|s| *s == home) {
+        // A home macOS has since replaced -- a display arriving as main
+        // replaces the laptop's desktop -- is wherever the windows recorded on
+        // it went: the tiled ones travel with the replacement, and a floating
+        // window carried to the arriving display instead had nowhere to go
+        // back to (`commute`: a TextEdit alone on the home monitor's desktop).
+        let listed = |s: SpaceId| now.values().flatten().any(|l| *l == s);
+        let home = if listed(recorded_home) {
+            recorded_home
+        } else {
+            let mut counts: HashMap<SpaceId, usize> = HashMap::default();
+            for other in record.windows_desired_on(recorded_home) {
+                if other == wid {
+                    continue;
+                }
+                if let Some(at) = self
+                    .state
+                    .windows
+                    .window(other)
+                    .and_then(|state| state.info.sys_id)
+                    .and_then(crate::sys::window_server::window_space)
+                    .filter(|at| listed(*at) && *at != space)
+                {
+                    *counts.entry(at).or_default() += 1;
+                }
+            }
+            let Some((replacement, _)) = counts.into_iter().max_by_key(|(_, n)| *n) else {
+                return;
+            };
+            replacement
+        };
+        if home == space {
             return;
         }
         let Some(wsid) = self.state.windows.window(wid).and_then(|state| state.info.sys_id) else {
