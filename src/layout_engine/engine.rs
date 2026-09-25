@@ -670,7 +670,7 @@ impl LayoutEngine {
         }
     }
 
-    fn active_floating_windows_in_workspace(
+    pub(crate) fn active_floating_windows_in_workspace(
         &self,
         window_store: &WindowStore,
         space: SpaceId,

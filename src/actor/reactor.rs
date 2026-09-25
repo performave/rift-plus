@@ -2555,6 +2555,7 @@ impl Reactor {
                     self.abandon_window_inventories_from_instability();
                 }
                 let mut outcome = self.handle_authoritative_space_snapshot(space_state)?;
+                self.rescue_floats_left_off_screen();
                 if releases_lifecycle_refresh_quarantine {
                     self.release_post_instability_quarantine_after_authoritative_snapshot();
                 }
@@ -5241,6 +5242,116 @@ impl Reactor {
             attempts: finish.attempts + 1,
             ..finish
         });
+    }
+
+    /// Floating windows a display change left almost entirely off screen,
+    /// brought back onto the display they overlap most.
+    ///
+    /// macOS moves the windows that were on a display when it goes, but not
+    /// one that still has a sliver on a display that stayed: a float that
+    /// straddled onto a monitor, or sat at its edge, is left where it was when
+    /// the monitor is unplugged or moved, with a few pixels showing -- Eric's
+    /// "windows nearly outside the viewport when connecting the monitor back
+    /// in". rift lays out tiled windows itself; floating ones it leaves where
+    /// they are, so nothing put these right. Only in the seconds after the
+    /// window server has moved windows for a display change: at any other
+    /// time a window parked off screen is where someone put it.
+    fn rescue_floats_left_off_screen(&mut self) {
+        const MOSTLY_GONE: f64 = 0.25;
+        const AFTER_CHURN: Duration = Duration::from_secs(10);
+        if !crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < AFTER_CHURN)
+        {
+            return;
+        }
+        let screens: Vec<(CGRect, SpaceId)> = self
+            .space_state
+            .screens
+            .iter()
+            .filter_map(|screen| Some((screen.frame, screen.space?)))
+            .collect();
+        if screens.is_empty() {
+            return;
+        }
+        let mut moves: Vec<(WindowId, WindowServerId, CGRect)> = Vec::new();
+        for (_, space) in &screens {
+            for wid in self
+                .layout_manager
+                .layout_engine
+                .active_floating_windows_in_workspace(&self.state.windows, *space)
+            {
+                let Some(wsid) = self.state.windows.window(wid).and_then(|w| w.info.sys_id) else {
+                    continue;
+                };
+                let Some(frame) = window_server::live_window_frame(wsid) else {
+                    continue;
+                };
+                let area = frame.size.width * frame.size.height;
+                if area <= 1.0 {
+                    continue;
+                }
+                let (best, share) = screens
+                    .iter()
+                    .map(|(screen, _)| {
+                        let overlap = frame.intersection(screen);
+                        (*screen, overlap.size.width * overlap.size.height / area)
+                    })
+                    .fold(
+                        (screens[0].0, -1.0),
+                        |acc, cur| if cur.1 > acc.1 { cur } else { acc },
+                    );
+                if share >= MOSTLY_GONE {
+                    continue;
+                }
+                // The display it shares most with; with nothing shared, the
+                // one showing its desktop.
+                let target_screen = if share > 0.0 {
+                    best
+                } else {
+                    screens.iter().find(|(_, s)| s == space).map(|(f, _)| *f).unwrap_or(best)
+                };
+                let width = frame.size.width.min(target_screen.size.width);
+                let height = frame.size.height.min(target_screen.size.height);
+                let x = frame.origin.x.clamp(target_screen.origin.x, target_screen.max().x - width);
+                let y =
+                    frame.origin.y.clamp(target_screen.origin.y, target_screen.max().y - height);
+                moves.push((
+                    wid,
+                    wsid,
+                    CGRect::new(CGPoint::new(x, y), CGSize::new(width, height)),
+                ));
+            }
+        }
+        for (wid, wsid, target) in moves {
+            crate::sys::trace::act(
+                "float_rescued",
+                &serde_json::json!({
+                    "window": wid.idx.get(),
+                    "to": [target.origin.x, target.origin.y, target.size.width, target.size.height],
+                }),
+            );
+            info!(
+                ?wid,
+                ?target,
+                "A display change left a floating window off screen; brought it back"
+            );
+            if let Some(space) = self.best_space_for_window_id(wid)
+                && let Some(workspace) = self
+                    .layout_manager
+                    .layout_engine
+                    .virtual_workspace_manager()
+                    .workspace_for_window(&self.state.windows, space, wid)
+            {
+                self.layout_manager
+                    .layout_engine
+                    .follow_floating_position(space, workspace, wid, target);
+            }
+            let transaction = self.transaction_manager.generate_next_txid(wsid);
+            self.transaction_manager.store_txid(wsid, transaction, target);
+            if let Some(app) = self.app_manager.apps.get(&wid.pid) {
+                _ = app.handle.send(Request::SetWindowFrame(wid, target, transaction, true));
+            }
+        }
     }
 
     /// The pin is released as soon as the window server agrees with it, or

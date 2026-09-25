@@ -8843,6 +8843,80 @@ mod floating_placement {
         );
     }
 
+    fn floating_window_on_one_screen() -> (Reactor, SpaceId, WindowId, WindowServerId, CGRect) {
+        let mut reactor = test_reactor();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let space = SpaceId::new(1);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        reactor.add_test_app(1);
+        let wid = WindowId::new(1, 1);
+        let wsid = WindowServerId::new(101);
+        let frame = CGRect::new(CGPoint::new(200., 200.), CGSize::new(600., 400.));
+        reactor.add_test_window(wid, wsid, Some(space), frame);
+        let workspace = reactor.test_workspace(space, 0);
+        assert!(reactor.assign_test_window_to_workspace(space, wid, workspace));
+        reactor.layout_manager.layout_engine.mark_window_floating(wid);
+        reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));
+        (reactor, space, wid, wsid, screen)
+    }
+
+    /// A monitor unplugged or moved leaves a float that straddled onto it
+    /// where it was, a sliver showing at the laptop's edge (Eric: "windows
+    /// nearly outside the viewport when connecting the monitor back in";
+    /// `clamshell`: a Finder window 96% off screen). rift brings it back onto
+    /// the display it overlaps most.
+    #[test]
+    fn a_float_a_display_change_left_off_screen_is_brought_back() {
+        let (mut reactor, space, _wid, wsid, screen) = floating_window_on_one_screen();
+        let stranded = CGRect::new(CGPoint::new(1400., 250.), CGSize::new(920., 436.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(stranded));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+
+        let target = reactor.transaction_manager.get_target_frame(wsid).expect("a frame written");
+        assert!(
+            target.origin.x >= screen.origin.x
+                && target.max().x <= screen.max().x
+                && target.origin.y >= screen.origin.y
+                && target.max().y <= screen.max().y,
+            "not brought fully onto the screen: {target:?}"
+        );
+        assert_eq!(target.size, stranded.size);
+    }
+
+    /// Outside a display change a window off screen is where someone put it.
+    #[test]
+    fn a_float_parked_off_screen_without_a_display_change_is_left() {
+        let (mut reactor, space, _wid, wsid, screen) = floating_window_on_one_screen();
+        let parked = CGRect::new(CGPoint::new(1400., 250.), CGSize::new(920., 436.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(parked));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        let before = reactor.transaction_manager.get_target_frame(wsid);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+        assert_eq!(reactor.transaction_manager.get_target_frame(wsid), before);
+    }
+
+    /// A float mostly on screen after a display change is left where it is.
+    #[test]
+    fn a_float_still_mostly_on_screen_is_left() {
+        let (mut reactor, space, _wid, wsid, screen) = floating_window_on_one_screen();
+        let mostly = CGRect::new(CGPoint::new(1000., 250.), CGSize::new(600., 400.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(mostly));
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        let before = reactor.transaction_manager.get_target_frame(wsid);
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+        assert_eq!(reactor.transaction_manager.get_target_frame(wsid), before);
+    }
+
     /// A float moved by something other than a drag keeps its new place:
     /// the stored frame follows the move instead of pulling it back.
     #[test]
