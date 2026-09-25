@@ -253,11 +253,18 @@ def write_vdisp_plist(width: int, height: int, serial: int, hidpi: bool = False,
 
 
 def plug(width: int = 1920, height: int = 1080, serial: int = 1, hidpi: bool = False) -> None:
-    unplug(quiet=True)
-    write_vdisp_plist(width, height, serial, hidpi)
-    sh(f"launchctl bootstrap gui/{UID} {VDISP_PLIST} 2>/dev/null; true")
-    if not wait_for_displays(2):
-        raise Violation(f"virtual display never attached ({sh('cat /tmp/vdisp.err')})")
+    # Twice. The attach occasionally does not happen at all, with nothing in
+    # vdisp's log, and once was enough to abort a whole battery from inside a
+    # reset; a second bootstrap has always taken.
+    for attempt in range(2):
+        unplug(quiet=True)
+        write_vdisp_plist(width, height, serial, hidpi)
+        sh(f"launchctl bootstrap gui/{UID} {VDISP_PLIST} 2>/dev/null; true")
+        if wait_for_displays(2 + len(EXTRA_MONITORS)):
+            return
+        sh(f"launchctl bootout gui/{UID}/vdisp 2>/dev/null; true")
+        time.sleep(2)
+    raise Violation(f"virtual display never attached ({sh('cat /tmp/vdisp.err')})")
 
 
 def unplug(quiet: bool = False) -> None:
@@ -532,7 +539,14 @@ def reset_between_scenarios() -> str:
     # return was not restored and a split came back flipped
     # (`monitor-moved`, `rearranged-while-attached`). The restart below
     # clears it.
-    fetched = fetch_windows_left_on_the_probe() + fetch_windows_left_on_monitors()
+    # A failure here is the reset's, and must not abort every scenario after.
+    try:
+        fetched = fetch_windows_left_on_the_probe() + fetch_windows_left_on_monitors()
+    except Violation as exc:
+        fetched = 0
+        notes.append(f"could not fetch windows back: {exc}")
+        detach_all_monitors()
+        unplug(quiet=True)
     if fetched:
         notes.append(f"fetched {fetched} window(s) back from the probe's desktops")
     restart_rift()
@@ -2348,6 +2362,15 @@ def s_desktop_to_new_monitor(base):
     """
     for label, spec, laptop_at in (("mon-home", HOME_MONITOR, (-1502, 700)),
                                    ("mon-office", OFFICE, (1000, 1440))):
+        # A desktop to keep behind on the laptop, made while the laptop is the
+        # only display: `space create` acts on the active display, and once a
+        # monitor is main that is not the laptop.
+        alone = rift_display_for(1)
+        if alone and len(alone.get("space_ids") or []) < 2:
+            rift_exec("space create")
+            settle(3)
+            for name, was, now in show_the_desktop_holding_the_windows():
+                pass
         float_one()
         try:
             with Sampler(label) as sampler:
