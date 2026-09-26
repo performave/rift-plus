@@ -13,6 +13,16 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A monitor unplugged for more than two minutes gets its desktops back
+  when it returns.** While a monitor is away rift keeps a record of where
+  everything was, and lets the monitor go after two minutes of display
+  reports without it, so that a lid shut for the rest of the day does not
+  hold everything else up. Using the laptop meanwhile is what keeps those
+  reports coming: an LG unplugged for eight minutes was let go, and when it
+  came back its desktops stayed on the laptop -- the laptop showing the LG's
+  desktop with its windows squeezed onto it, and the LG an empty one. rift now
+  remembers a display it let go, and treats that display coming back as the
+  return it is.
 - **A monitor that arrives as main no longer takes the laptop's windows with
   it.** macOS hands the arriving monitor the desktop the laptop was showing
   -- sometimes only its id, the windows left behind on a new desktop, and

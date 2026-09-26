@@ -100,6 +100,11 @@ pub(super) struct DisplayArchive {
     /// taken from this, never from a report like that. See
     /// `note_display_set`.
     pub(super) whole_displays: Option<Vec<super::display_record::RecordedDisplay>>,
+    /// Displays a record gave up waiting for, as they were recorded, by
+    /// uuid. The record lets them go so the rest can be put back; the display
+    /// coming back after all is then a return, not an arrival. See
+    /// `revive_given_up_display`.
+    pub(super) given_up: HashMap<String, super::display_record::RecordedDisplay>,
     /// The Mac has woken since the record was last settled: Dock may have
     /// gone to sleep before carrying the settle out, so the first whole
     /// display report after a wake runs it again.

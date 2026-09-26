@@ -519,11 +519,11 @@ impl DisplayRecord {
     /// listing that too, the record has nothing left to be about, and the
     /// answer is not to dismantle it one display at a time.
     ///
-    /// Returns the displays dropped, with the desktops each took with it.
+    /// Returns the displays dropped, as recorded.
     pub(super) fn give_up_on_displays_gone_for_good(
         &mut self,
         listed: &HashSet<String>,
-    ) -> Vec<(String, Vec<SpaceId>)> {
+    ) -> Vec<RecordedDisplay> {
         let now = crate::sys::trace::now();
         for d in &self.displays {
             if listed.contains(&d.uuid) {
@@ -551,7 +551,7 @@ impl DisplayRecord {
                 self.forget_destroyed_desktop(*desktop);
             }
             self.absent.remove(&uuid);
-            dropped.push((uuid, gone.desktops));
+            dropped.push(gone);
         }
         dropped
     }
@@ -846,8 +846,12 @@ impl Reactor {
         crate::sys::trace::act("record", &(windows.len(), displays.len()));
         let now = crate::sys::trace::now();
         // A fresh departure supersedes whatever the last return was still
-        // watching for.
+        // watching for, and any memory of a display it records: that display
+        // is known again, as it is now.
         self.display_archive.aftercare = None;
+        for d in &displays {
+            self.display_archive.given_up.remove(&d.uuid);
+        }
         self.display_archive.record = Some(DisplayRecord {
             layout,
             carried_layouts: HashMap::default(),
@@ -1025,11 +1029,25 @@ impl Reactor {
         // makes a desktop in the second a reconfiguration takes -- and one left
         // empty is litter the pass may retire rather than keep.
         let now = self.display_space_ids_now();
-        let minted: HashSet<SpaceId> = whole
-            .iter()
-            .flat_map(|d| now.get(&d.uuid).cloned().unwrap_or_default())
-            .filter(|space| !recorded.contains(space))
-            .collect();
+        let revived = self.revive_given_up_display(&arrived, &whole, &now);
+        let is_return = revived.is_some();
+        let minted: HashSet<SpaceId> = if is_return {
+            // The returning display's new desktop too: it stands in for
+            // nothing, and the return retires it once the display has its
+            // own back.
+            now.values()
+                .flatten()
+                .copied()
+                .filter(|space| !recorded.contains(space))
+                .collect()
+        } else {
+            whole
+                .iter()
+                .flat_map(|d| now.get(&d.uuid).cloned().unwrap_or_default())
+                .filter(|space| !recorded.contains(space))
+                .collect()
+        };
+        let whole = revived.unwrap_or(whole);
 
         let survivor = whole[0].uuid.clone();
         crate::sys::trace::act(
@@ -1069,9 +1087,71 @@ impl Reactor {
             settled: false,
             stopgaps: Vec::new(),
             own_moves: HashSet::default(),
-            arrival: true,
+            arrival: !is_return,
             pass: None,
         });
+    }
+
+    /// A display a record gave up waiting for, arriving: the return that
+    /// the record would have handled, had it waited. Returns the displays
+    /// to record -- the one that stayed with its own desktops, and the
+    /// returning one with the desktops it had -- or `None` for an ordinary
+    /// arrival.
+    ///
+    /// `GIVE_UP_ON_DISPLAY` lets a display go after two minutes of reports
+    /// without it, so the rest can be put back and a lid shut for the rest of
+    /// the session does not hold everything up. But an LG unplugged for eight
+    /// minutes while the laptop was in use came back to a record that no
+    /// longer knew it: macOS had left its desktops on the laptop, the arrival
+    /// was recorded with them as the laptop's, and the laptop was put back
+    /// showing the LG's desktop -- its windows laid out for the laptop and the
+    /// LG left on an empty one.
+    ///
+    /// Only the desktops still listed come back; one destroyed meanwhile is
+    /// gone, and with none left this is an ordinary arrival.
+    fn revive_given_up_display(
+        &mut self,
+        arrived: &[String],
+        whole: &[RecordedDisplay],
+        now: &HashMap<String, Vec<SpaceId>>,
+    ) -> Option<Vec<RecordedDisplay>> {
+        let [uuid] = arrived else {
+            return None;
+        };
+        let given = self.display_archive.given_up.remove(uuid)?;
+        let [stayed] = whole else {
+            return None;
+        };
+        let listed: HashSet<SpaceId> = now.values().flatten().copied().collect();
+        let back: Vec<SpaceId> =
+            given.desktops.iter().copied().filter(|space| listed.contains(space)).collect();
+        if back.is_empty() {
+            return None;
+        }
+        let kept = RecordedDisplay {
+            uuid: stayed.uuid.clone(),
+            desktops: stayed.desktops.iter().copied().filter(|s| !back.contains(s)).collect(),
+            shown: stayed.shown.filter(|s| !back.contains(s)),
+        };
+        let returning = RecordedDisplay {
+            uuid: uuid.clone(),
+            shown: given.shown.filter(|s| back.contains(s)).or(back.first().copied()),
+            desktops: back,
+        };
+        crate::sys::trace::act(
+            "record_revived",
+            &serde_json::json!({
+                "display": uuid,
+                "desktops": returning.desktops.iter().map(|s| s.get()).collect::<Vec<_>>(),
+                "shown": returning.shown.map(|s| s.get()),
+            }),
+        );
+        info!(
+            display = %uuid,
+            desktops = ?returning.desktops,
+            "A display the record gave up on came back; recording its return"
+        );
+        Some(vec![kept, returning])
     }
 
     /// Right after a departure: the survivor gets its own state back as far
@@ -1481,13 +1561,15 @@ impl Reactor {
         // return below waits for every recorded display.
         let listed_displays: HashSet<String> = self.display_space_ids_now().into_keys().collect();
         if let Some(record) = self.display_archive.record.as_mut() {
-            for (uuid, desktops) in record.give_up_on_displays_gone_for_good(&listed_displays) {
+            for gone in record.give_up_on_displays_gone_for_good(&listed_displays) {
                 warn!(
-                    display = %uuid,
-                    desktops = ?desktops.iter().map(SpaceId::get).collect::<Vec<_>>(),
+                    display = %gone.uuid,
+                    desktops = ?gone.desktops.iter().map(SpaceId::get).collect::<Vec<_>>(),
                     "The window server has stopped listing a display of the record; giving up on it so the rest can be put back"
                 );
-                crate::sys::trace::act("record_give_up", &(uuid, desktops.len()));
+                crate::sys::trace::act("record_give_up", &(&gone.uuid, gone.desktops.len()));
+                // Given up on, not forgotten: see `revive_given_up_display`.
+                self.display_archive.given_up.insert(gone.uuid.clone(), gone);
             }
         }
         let Some(record) = self.display_archive.record.as_ref() else {

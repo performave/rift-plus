@@ -11857,6 +11857,89 @@ mod display_archive {
         sa::set_available(false);
     }
 
+    /// A display the record gave up on, coming back, is a return. Eric's LG,
+    /// unplugged eight minutes while the laptop was in use: the record let it
+    /// go after two, macOS kept its desktop on the laptop, and the replug was
+    /// taken for an arrival -- the laptop put back showing the LG's desktop,
+    /// and the LG left on an empty one.
+    #[test]
+    fn a_display_given_up_on_that_comes_back_gets_its_desktops_back() {
+        let mut reactor = test_reactor();
+        reactor.config.settings.displaced_windows = crate::common::config::DisplacedWindows::Spaces;
+        sa::set_available(true);
+        let home = space1();
+        let lgs = SpaceId::new(60);
+        // The laptop alone, still listing the LG's desktop and showing it.
+        managed(vec![("test-display-0", vec![home, lgs])]);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(lgs)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home, lgs]);
+                state.last_user_space_by_display.insert("test-display-0".to_string(), lgs);
+            },
+        ));
+        reactor.add_test_app(1);
+        let wid = WindowId::new(1, 1);
+        let wsid = WindowServerId::new(101);
+        reactor.add_test_window(
+            wid,
+            wsid,
+            Some(lgs),
+            CGRect::new(CGPoint::new(10., 10.), CGSize::new(400., 400.)),
+        );
+        let workspace = reactor.test_workspace(lgs, 0);
+        assert!(reactor.assign_test_window_to_workspace(lgs, wid, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(lgs, wid));
+        set_window_spaces(&[wsid], lgs);
+        reactor.display_archive.given_up.insert(
+            DISPLAY2.to_string(),
+            super::display_record::RecordedDisplay {
+                uuid: DISPLAY2.to_string(),
+                desktops: vec![lgs],
+                shown: Some(lgs),
+            },
+        );
+        reactor.capture_pre_churn_layout();
+
+        // The LG comes back, given a fresh desktop; its own stays listed on
+        // the laptop.
+        let fresh = SpaceId::new(70);
+        managed(vec![
+            ("test-display-0", vec![home, lgs]),
+            (DISPLAY2, vec![fresh]),
+        ]);
+        let space_moves_before = sa::space_moves().len();
+        reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(lgs), Some(fresh)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.should_force_refresh_layout = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home, lgs]);
+                state.display_space_ids.insert(DISPLAY2.to_string(), vec![fresh]);
+            },
+        ));
+
+        assert!(
+            sa::space_moves()[space_moves_before..]
+                .iter()
+                .any(|(space, _)| *space == lgs.get()),
+            "the LG's desktop was not sent back to it: {:?}",
+            &sa::space_moves()[space_moves_before..]
+        );
+        assert!(
+            !reactor.display_archive.given_up.contains_key(DISPLAY2),
+            "the memory is spent once the display is back"
+        );
+        set_window_spaces_override(wsid, None);
+        crate::sys::screen::set_managed_display_spaces_override(None);
+        sa::set_available(false);
+    }
+
     /// An arrival's record is a repair in progress, and must not stand in the
     /// way of a departure that comes before the repair has finished --
     /// `become-main` and `clamshell` unplug within seconds of plugging in. A
@@ -12763,7 +12846,7 @@ mod display_archive {
             .unwrap()
             .give_up_on_displays_gone_for_good(&listed);
         assert_eq!(
-            dropped.iter().map(|(uuid, _)| uuid.as_str()).collect::<Vec<_>>(),
+            dropped.iter().map(|d| d.uuid.as_str()).collect::<Vec<_>>(),
             vec![DISPLAY2],
             "a display gone this long is given up on"
         );
