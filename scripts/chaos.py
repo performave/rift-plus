@@ -2127,8 +2127,12 @@ def churn_ends_wall() -> list:
     dump's `dumped_at_ms` ties that clock to this one.
     """
     path = "/tmp/chaos-churn.json"
-    sh(f"{CLI} execute trace dump {path}", timeout=60)
+    # The wall clock read before asking, not after: rift stamps `dumped_at_ms`
+    # as it starts writing, so a reading taken once the dump is back is late
+    # by the write and the reply. Read before, the error is only the request's
+    # trip to rift, and in the direction that makes the check stricter.
     now = time.time()
+    sh(f"{CLI} execute trace dump {path}", timeout=60)
     ends = []
     try:
         with open(path) as fh:
@@ -2156,6 +2160,7 @@ def check_sampler(sampler: "Sampler", phase: str) -> None:
     if not long_ones:
         return
     ends = churn_ends_wall()
+    started = getattr(sampler, "_started", None)
     stuck = []
     for text, start, end in long_ones:
         settled = max([e for e in ends if e <= end], default=None)
@@ -2167,9 +2172,16 @@ def check_sampler(sampler: "Sampler", phase: str) -> None:
             print(f"      (during a display change: {text}, {end - start:.2f}s in all, "
                   f"{max(after, 0):.2f}s after rift finished it)", flush=True)
     if stuck:
+        # Where the changes ended and the overlaps ran, on the sampler's own
+        # timeline: without it a verdict of "all of it after" cannot be told
+        # from a change end the clock mapping lost.
+        rel = (lambda t: f"+{t - started:.2f}s") if started else (lambda t: f"{t:.2f}")
+        spans = ", ".join(f"{rel(a)}..{rel(b)}" for t, a, b in long_ones[:3])
         raise Violation(f"{phase}: overlap(s) still there {Sampler.PERSIST:.0f}s or more after "
                         "rift finished the display change:\n      "
-                        + "\n      ".join(f"{t} for {d:.2f}s ({a:.2f}s after)" for t, d, a in stuck[:3]))
+                        + "\n      ".join(f"{t} for {d:.2f}s ({a:.2f}s after)" for t, d, a in stuck[:3])
+                        + f"\n      overlaps {spans}; rift's changes ended "
+                        + (", ".join(rel(e) for e in ends) or "(none read)"))
 
 
 def restore_arrangement() -> None:
@@ -2478,14 +2490,20 @@ def desktop_to_new_monitor(label: str, spec: dict, laptop_at: tuple) -> None:
                 sh(f"{BIN}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
                    f"{o.get('y', 0) + sz.get('height', 0) / 2:.0f}")
                 time.sleep(0.5)
-                if held:
-                    want = max(held, key=held.get)
-                    if want != laptop.get("space"):
-                        rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
-                        settle(2)
+                # The spare first: `space create` shows the desktop it makes,
+                # so made after the switch it took the laptop straight back
+                # off the windows. The one made before the monitor came is
+                # not always still there -- macOS reaps an empty desktop in
+                # the seconds after a display change.
                 if len(laptop.get("space_ids") or []) < 2:
                     rift_exec("space create")
                     settle(3)
+                    laptop = rift_display_for(1, snapshot(f"{label} attached, spare made")) or laptop
+                if held:
+                    want = max(held, key=held.get)
+                    if want != laptop.get("space") and want in (laptop.get("space_ids") or []):
+                        rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
+                        settle(2)
                 snap = snapshot(f"{label} attached, laptop showing the windows")
                 laptop = rift_display_for(1, snap)
                 home_desktop = laptop.get("space")
