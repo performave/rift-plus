@@ -1007,6 +1007,31 @@ One attempt was reverted, and the reason is worth keeping:
 - `vm-ab` waits for a quiet guest and prints its load: a busy host slowed
   scenarios by 30-50% and produced overlaps that were not rift's.
 
+### After the VM came back (2026-09-25 -- 09-26)
+
+| Commit | Fix | Seen as |
+|---|---|---|
+| `8fd0634` | the post-change frame check is also timed from rift's own end of the change, and a window out of place with its write still pending is looked at again after that write's second | `hot-swap` (the window server's reconfigure clock never moved), `fast-churn` (skipped as "redundant" until nothing arranged) |
+| `12cd956`, `ea47a9d` | after an arrival, a desktop the arriving monitor is showing stays with it, but the laptop's windows and tree come back to the laptop -- whether macOS handed over only the id (windows left on a minted desktop) or took the windows too | `desktop-to-home-monitor`: the laptop's five windows ended up on the monitor |
+
+Harness faults found on the way, each of which failed a good run:
+
+- **The spare desktop was made after switching to the windows.** `space
+  create` shows the desktop it makes, so the laptop ended up on the empty one.
+  It is now made first. (macOS 27 reaps an empty desktop in the seconds after
+  a display change, so the one made before the attach is not always there.)
+- **`space switch-to N` counts every display's desktops**, in the window
+  server's display order -- not one display's. Indexing into the laptop's own
+  list switched the monitor whenever the monitor was main. `show_desktop`
+  counts across displays and checks the switch took, falling back to
+  focusing a window on the desktop. `all_space_ids` uses `space_ids`
+  (Mission Control order), not the active/inactive split, which puts the
+  shown desktop first.
+- **`churn_ends_wall` reads the wall clock before asking for the dump.**
+  rift stamps `dumped_at_ms` as it starts writing. A failed overlap now
+  prints its span and every change end on the sampler's timeline, so a
+  verdict of "all of it after the change" can be checked.
+
 ## What this guest cannot test at all
 
 Worth knowing before trusting a clean run, because these are not gaps in
