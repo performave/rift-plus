@@ -11,6 +11,15 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **A monitor that arrives as main no longer takes the laptop's windows with
+  it.** macOS can hand the arriving monitor the id of the desktop the laptop
+  was showing while leaving the laptop's windows behind on a new desktop.
+  rift, putting the laptop back as it was, sent every window to that id --
+  and so onto the monitor. The desktop the windows stayed on now stands in
+  for it.
+
 ## [0.5.10-plus.4] - 2026-09-25
 
 ### Fixed
