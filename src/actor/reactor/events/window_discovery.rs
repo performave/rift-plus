@@ -488,7 +488,18 @@ pub(crate) fn emit_layout_events(
     } = payload;
     let mut outcome = crate::actor::reactor::events::EventOutcome::default();
     if !state.windows.iter_windows().any(|(wid, _)| wid.pid == pid) {
-        return outcome;
+        // An app with no windows at all still completes its discovery. Its
+        // saved windows from the last session are waiting on exactly this to
+        // be let go, and an app that hides its window rather than closing it
+        // — Spotify — keeps a live window-server id that passes the startup
+        // check, so nothing else ever removes it. Skipping this left the
+        // hidden window in its stack, where next/prev_window stepped onto it
+        // and raised nothing: every other press seemed not to register.
+        return outcome.with_layout_event(LayoutEvent::WindowDiscoveryCompleted(
+            pid,
+            app_info.as_ref().and_then(|info| info.bundle_id.clone()),
+            active_spaces,
+        ));
     }
 
     let mut app_windows: BTreeMap<SpaceId, Vec<WindowId>> = BTreeMap::new();

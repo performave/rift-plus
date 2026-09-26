@@ -177,6 +177,59 @@ fn inventory_from_an_older_space_topology_is_discarded_and_retried() {
 }
 
 #[test]
+fn a_saved_window_its_app_no_longer_reports_leaves_the_restored_stack() {
+    // Spotify hides its window rather than closing it. The saved layout still
+    // names that window, and it passes the startup check because the window
+    // server still knows the id, so it is restored into its stack and waits
+    // for Spotify's discovery to let it go. Spotify reports no windows at all,
+    // and a windowless app's discovery used to end before saying it was done:
+    // the hidden window stayed in the stack, and next_window stepped onto it
+    // and raised nothing.
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let ghost = WindowId::new(2, 1);
+
+    let saved = {
+        let (mut apps, mut reactor) = (Apps::new(), test_reactor());
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        make_active_app(&mut apps, &mut reactor, 1, make_windows(2), None);
+        make_active_app(&mut apps, &mut reactor, 2, make_windows(1), None);
+        reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
+            workspace: None,
+            mode: LayoutMode::Stack,
+        });
+        apps.simulate_until_quiet(&mut reactor);
+        let engine = &mut reactor.layout_manager.layout_engine;
+        engine.refresh_window_fingerprints(&reactor.state.windows);
+        engine.serialize_to_string()
+    };
+
+    let restored = LayoutEngine::deserialize_from_str(&saved).unwrap();
+    let (mut apps, mut reactor) = (Apps::new(), Reactor::new_for_test(restored));
+    reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .windows_on_space_in_layout_order(space)
+            .contains(&ghost),
+        "the saved window should be restored into the stack before its app reports"
+    );
+
+    make_active_app(&mut apps, &mut reactor, 1, make_windows(2), None);
+    make_active_app(&mut apps, &mut reactor, 2, vec![], None);
+
+    assert!(
+        !reactor
+            .layout_manager
+            .layout_engine
+            .windows_on_space_in_layout_order(space)
+            .contains(&ghost),
+        "a saved window its app does not report must leave the stack"
+    );
+}
+
+#[test]
 fn it_sends_writes_when_stale_read_state_looks_same_as_written_state() {
     let (mut apps, mut reactor) = test_context();
     reactor.handle_event(space_state_event(

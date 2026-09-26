@@ -19,6 +19,11 @@ Entries describe this fork's changes relative to
   rift, putting the laptop back as it was, sent every window to that id --
   and so onto the monitor. The desktop the windows stayed on now stands in
   for it.
+- **Stepping through a stack no longer takes two presses after a restart.**
+  An app that hides its window instead of closing it, like Spotify, left that
+  window in the saved layout. rift put it back into its stack at startup and,
+  because the app reported no windows at all, never took it out again. Next
+  and previous window then stepped onto the hidden window and showed nothing.
 
 ## [0.5.10-plus.4] - 2026-09-25
 
