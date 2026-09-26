@@ -1712,8 +1712,8 @@ impl Reactor {
             paired.insert(now_space);
         }
         // After an arrival, a recorded desktop the arriving display is now
-        // showing stays with it (the desktop walk below) -- but macOS may
-        // have handed over only the id. Plugging in a monitor that becomes
+        // showing stays with it (the desktop walk below) -- but its windows
+        // do not have to. macOS may have handed over only the id. Plugging in a monitor that becomes
         // main gave it the laptop's desktop and left the laptop's windows
         // behind on a desktop minted for the laptop; sending them to the
         // recorded id carried every one of them onto the monitor
@@ -1741,14 +1741,29 @@ impl Reactor {
                         *held.entry(*at).or_default() += 1;
                     }
                 }
-                let Some((now_space, _)) = held
+                let fresh_at_home = |space: &SpaceId| {
+                    record.minted.contains(space)
+                        && !paired.contains(space)
+                        && now.get(home).is_some_and(|listed| listed.contains(space))
+                };
+                // Or macOS took the windows along with the desktop, and gave
+                // the display that was here an empty one to show. They belong
+                // with that display all the same: the record is there to put
+                // it back as it was, and leave the arriving one whatever
+                // macOS gave it -- here, the desktop it is showing.
+                let shown_at_home = self
+                    .space_state
+                    .screens
+                    .iter()
+                    .find(|screen| screen.display_uuid == home)
+                    .and_then(|screen| screen.space)
+                    .filter(|space| fresh_at_home(space));
+                let Some(now_space) = held
                     .into_iter()
-                    .filter(|(space, _)| {
-                        record.minted.contains(space)
-                            && !paired.contains(space)
-                            && now.get(home).is_some_and(|listed| listed.contains(space))
-                    })
+                    .filter(|(space, _)| fresh_at_home(space))
                     .max_by_key(|(space, count)| (*count, std::cmp::Reverse(space.get())))
+                    .map(|(space, _)| space)
+                    .or(shown_at_home)
                 else {
                     continue;
                 };

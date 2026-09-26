@@ -14,11 +14,13 @@ Entries describe this fork's changes relative to
 ### Fixed
 
 - **A monitor that arrives as main no longer takes the laptop's windows with
-  it.** macOS can hand the arriving monitor the id of the desktop the laptop
-  was showing while leaving the laptop's windows behind on a new desktop.
-  rift, putting the laptop back as it was, sent every window to that id --
-  and so onto the monitor. The desktop the windows stayed on now stands in
-  for it.
+  it.** macOS hands the arriving monitor the desktop the laptop was showing
+  -- sometimes only its id, the windows left behind on a new desktop, and
+  sometimes windows and all, the laptop given an empty one. Either way the
+  laptop's windows ended up on the monitor: in the first case rift, putting
+  the laptop back as it was, sent every one of them to that id. The monitor
+  keeps the desktop it is showing, and the laptop's windows and their layout
+  come back to the laptop's.
 - **Stepping through a stack no longer takes two presses after a restart.**
   An app that hides its window instead of closing it, like Spotify, left that
   window in the saved layout. rift put it back into its stack at startup and,

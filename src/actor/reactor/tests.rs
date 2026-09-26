@@ -11780,6 +11780,83 @@ mod display_archive {
         sa::set_available(false);
     }
 
+    /// Or macOS took the windows along with the desktop, onto the arriving
+    /// display, and gave the laptop an empty one to show. The monitor keeps
+    /// the desktop; the windows come back to the laptop's.
+    #[test]
+    fn an_arrival_that_takes_a_desktop_with_its_windows_sends_the_windows_back() {
+        let mut reactor = test_reactor();
+        reactor.config.settings.displaced_windows = crate::common::config::DisplacedWindows::Spaces;
+        sa::set_available(true);
+        let home = space1();
+        managed(vec![("test-display-0", vec![home])]);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(home)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home]);
+                state.last_user_space_by_display.insert("test-display-0".to_string(), home);
+            },
+        ));
+        reactor.add_test_app(1);
+        let mut wsids = Vec::new();
+        for idx in 1..=3u32 {
+            let wid = WindowId::new(1, idx);
+            let wsid = WindowServerId::new(100 + idx);
+            reactor.add_test_window(
+                wid,
+                wsid,
+                Some(home),
+                CGRect::new(CGPoint::new(10., 10.), CGSize::new(400., 400.)),
+            );
+            let workspace = reactor.test_workspace(home, 0);
+            assert!(reactor.assign_test_window_to_workspace(home, wid, workspace));
+            reactor.send_layout_event(LayoutEvent::WindowAdded(home, wid));
+            wsids.push(wsid);
+        }
+        set_window_spaces(&wsids, home);
+        reactor.capture_pre_churn_layout();
+
+        // The monitor arrives as main and takes `home`, windows and all; the
+        // laptop is given an empty desktop.
+        let fresh = SpaceId::new(50);
+        managed(vec![("test-display-0", vec![fresh]), (DISPLAY2, vec![home])]);
+        let moves_before = sa::window_moves().len();
+        let space_moves_before = sa::space_moves().len();
+        reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(fresh), Some(home)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.should_force_refresh_layout = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![fresh]);
+                state.display_space_ids.insert(DISPLAY2.to_string(), vec![home]);
+            },
+        ));
+
+        let moves = &sa::window_moves()[moves_before..];
+        for wsid in &wsids {
+            assert!(
+                moves.contains(&(wsid.as_u32(), fresh.get())),
+                "window {wsid:?} was left on the monitor: {moves:?}"
+            );
+        }
+        assert!(
+            !sa::space_moves()[space_moves_before..]
+                .iter()
+                .any(|(space, _)| *space == home.get()),
+            "the monitor's desktop was taken off it"
+        );
+        for wsid in &wsids {
+            set_window_spaces_override(*wsid, None);
+        }
+        crate::sys::screen::set_managed_display_spaces_override(None);
+        sa::set_available(false);
+    }
+
     /// An arrival's record is a repair in progress, and must not stand in the
     /// way of a departure that comes before the repair has finished --
     /// `become-main` and `clamshell` unplug within seconds of plugging in. A
