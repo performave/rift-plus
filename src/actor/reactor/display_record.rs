@@ -1711,6 +1711,56 @@ impl Reactor {
             subst.insert(lost, now_space);
             paired.insert(now_space);
         }
+        // After an arrival, a recorded desktop the arriving display is now
+        // showing stays with it (the desktop walk below) -- but macOS may
+        // have handed over only the id. Plugging in a monitor that becomes
+        // main gave it the laptop's desktop and left the laptop's windows
+        // behind on a desktop minted for the laptop; sending them to the
+        // recorded id carried every one of them onto the monitor
+        // (`desktop-to-home-monitor`). The minted desktop holding its windows
+        // stands in for it, as a replacement stands in for a destroyed one.
+        if record.arrival {
+            for d in &was {
+                if subst.contains_key(&d.space) {
+                    continue;
+                }
+                let Some(home) = d.display.as_deref() else {
+                    continue;
+                };
+                let taken = self
+                    .space_state
+                    .screens
+                    .iter()
+                    .any(|screen| screen.space == Some(d.space) && screen.display_uuid != home);
+                if !taken {
+                    continue;
+                }
+                let mut held: HashMap<SpaceId, usize> = HashMap::default();
+                for w in record.members.get(&d.space).into_iter().flatten() {
+                    if let Some(at) = where_now.get(w) {
+                        *held.entry(*at).or_default() += 1;
+                    }
+                }
+                let Some((now_space, _)) = held
+                    .into_iter()
+                    .filter(|(space, _)| {
+                        record.minted.contains(space)
+                            && !paired.contains(space)
+                            && now.get(home).is_some_and(|listed| listed.contains(space))
+                    })
+                    .max_by_key(|(space, count)| (*count, std::cmp::Reverse(space.get())))
+                else {
+                    continue;
+                };
+                debug!(
+                    taken = d.space.get(),
+                    now = now_space.get(),
+                    "The arriving display took a desktop's id; its windows stayed on a minted one"
+                );
+                subst.insert(d.space, now_space);
+                paired.insert(now_space);
+            }
+        }
         // A destroyed desktop is represented by its replacement, else by the
         // desktop made for it at departure, which then stays as it is.
         let map = |space: SpaceId| {
