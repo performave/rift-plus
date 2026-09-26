@@ -2950,6 +2950,71 @@ def s_long_absence(base):
     unplug(); settle()
 
 
+def trace_kinds(kind: str) -> int:
+    """How many `kind` actions rift's flight recorder holds."""
+    path = "/tmp/chaos-kinds.json"
+    sh(f"{CLI} execute trace dump {path}", timeout=60)
+    try:
+        with open(path) as fh:
+            return sum(1 for line in fh if line.startswith("Act ") and f'"kind":"{kind}"' in line)
+    except OSError:
+        return 0
+
+
+@scenario("busy-absence",
+          doc="home monitor away past GIVE_UP_ON_DISPLAY while the laptop is in use, then back")
+def s_busy_absence(base):
+    """Eric's LG, unplugged for eight minutes while he worked on the laptop.
+    The record ages a display's absence only while reports arrive -- the idle
+    `long-absence` never reaches the give-up -- so this switches the laptop's
+    desktops throughout, as using it does. The record gave up on the LG,
+    macOS kept its desktop on the laptop, and the replug was taken for an
+    arrival: the LG's desktop stayed on the laptop and the LG came up empty.
+    """
+    floated = float_one()
+    try:
+        home = attach("mon-home", **HOME_MONITOR); settle(6)
+        arrange(home, (-1502, 700)); settle(4)
+        at_home = snapshot("home")
+        safari = [i for i, r in at_home["windows"].items() if r[1] == "Safari"]
+        for ident in safari:
+            send_to_display(ident, home, at_home)
+            time.sleep(1.0)
+        settle(4)
+        at_home = snapshot("home, Safari on the monitor")
+        if on_display(at_home, safari, home):
+            raise Violation("busy-absence: could not put the Safari windows on the monitor")
+        gave_up_before = trace_kinds("record_give_up")
+
+        detach("mon-home"); settle(6)
+        laptop = rift_display_for(1) or {}
+        desktops = laptop.get("space_ids") or []
+        if len(desktops) < 2:
+            raise Violation(f"busy-absence: the laptop has {desktops}, nothing to switch between")
+        deadline = time.time() + 150
+        turn = 0
+        while time.time() < deadline:
+            show_desktop(desktops[turn % len(desktops)])
+            turn += 1
+            time.sleep(4)
+        if trace_kinds("record_give_up") <= gave_up_before:
+            raise Violation("busy-absence: the record never gave up on the monitor, "
+                            "so this tested nothing")
+
+        home = attach("mon-home", **HOME_MONITOR); settle(8)
+        arrange(home, (-1502, 700)); settle(4)
+        back = snapshot("home again")
+        check_on_screen(back, "home again")
+        check_no_limbo("home again")
+        check_frames(back, "home again")
+        check_windows(at_home["windows"], back["windows"], "home again")
+        away = on_display(back, safari, home)
+        if away:
+            raise Violation(f"busy-absence: back home, {away} did not return to the monitor")
+    finally:
+        restore_arrangement()
+
+
 # --------------------------------------------------------------------- main
 
 def main() -> int:
