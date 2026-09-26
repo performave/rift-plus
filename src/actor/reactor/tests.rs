@@ -2020,6 +2020,45 @@ fn a_window_resized_by_one_edge_is_still_a_resize() {
     );
 }
 
+/// But not in the seconds after a display change, when a size report with no
+/// drag behind it is an echo: a late answer to a full-width write, made
+/// while a window was alone on its desktop, arrived after its neighbour came
+/// back and marked it fullscreen-within-gaps over the neighbour (`commute`).
+/// The window goes back in its tile instead.
+#[test]
+fn a_size_report_right_after_a_display_change_is_not_a_resize() {
+    let (mut reactor, wid, _wsid, _space1, _space2, _screen) = reactor_with_window_on_space1();
+    let tile = CGRect::new(CGPoint::new(0., 0.), CGSize::new(720., 900.));
+    reactor.state.windows.window_mut(wid).unwrap().frame_monotonic = tile;
+    let wider = CGRect::new(CGPoint::new(0., 0.), CGSize::new(800., 900.));
+    crate::sys::display_churn::set_since_windows_last_moved(Some(std::time::Duration::from_secs(
+        1,
+    )));
+
+    let outcome = reactor
+        .dispatch_workflow(Event::WindowFrameChanged(
+            wid,
+            wider,
+            None,
+            Requested(false),
+            Some(MouseState::Up),
+        ))
+        .unwrap();
+    crate::sys::display_churn::set_since_windows_last_moved(None);
+
+    assert!(
+        !outcome
+            .layout_events
+            .iter()
+            .any(|e| matches!(e, LayoutEvent::WindowResized { .. })),
+        "an echo after a display change was read as the user resizing"
+    );
+    assert!(
+        outcome.arrange.passes > 0,
+        "and the window was not put back in its tile"
+    );
+}
+
 /// Dropping a dragged window has to lay the space out again even when nothing
 /// was swapped: layout was skipped for the window while it followed the
 /// pointer, so its frame no longer matches the tree and it would otherwise be

@@ -14,6 +14,10 @@ use crate::sys::geometry::SameAs;
 use crate::sys::screen::SpaceId;
 use crate::sys::window_server::WindowServerInfo;
 
+/// How long after a display change a size report with no drag behind it is
+/// taken for an echo rather than the user resizing a window.
+const UNREAD_AFTER_DISPLAY_CHANGE: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug)]
 pub struct WindowCreatedPayload {
     pub window_id: WindowId,
@@ -554,6 +558,23 @@ pub fn handle_window_frame_changed(
             } else if leaving {
                 // Leaving self-fullscreen: snap the window back into its
                 // slot instead of deriving new ratios from the restored frame.
+                outcome = outcome.with_arrange_passes(1);
+            } else if crate::sys::display_churn::since_display_change()
+                .is_some_and(|since| since < UNREAD_AFTER_DISPLAY_CHANGE)
+            {
+                // Not the user's either. In the seconds after a display
+                // change a report of a new size, with no drag behind it, is
+                // an echo -- an app answering a write rift has since taken
+                // back, or catching up with one macOS undid. Read as a
+                // resize, a late answer to a full-width write, made while a
+                // window was briefly alone on its desktop, arrived after its
+                // neighbour was back and marked it fullscreen-within-gaps:
+                // it covered the neighbour for good (`commute`). The arrange
+                // puts it back in its tile instead.
+                crate::sys::trace::act(
+                    "resize_ignored_after_display_change",
+                    &(wid.idx.get(), new_frame.size.width, new_frame.size.height),
+                );
                 outcome = outcome.with_arrange_passes(1);
             } else if relocated {
                 crate::sys::trace::act(

@@ -13,6 +13,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A tiled window no longer covers its neighbour after a monitor comes
+  back.** While the monitor settles, a window can be alone on its desktop for
+  a moment and be written full width; the app's answer to that arrived after
+  its neighbour had come back, and rift took it for the window being made
+  fullscreen within its tile. In the seconds after a display change, a new
+  size with no drag behind it is now put back in its tile instead of being
+  read as a resize.
 - **A window rift moved while monitors were still settling is moved again
   if the move did not take.** macOS can drop a move made in the middle of a
   display change without a word, and rift, which remembers where it sent the
