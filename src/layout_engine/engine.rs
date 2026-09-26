@@ -2688,6 +2688,44 @@ impl LayoutEngine {
 
         let mut positions = HashMap::default();
 
+        /// `rect` moved, not resized, to lie on `screen` when less than
+        /// nearly all of it does; one larger than the screen is put at its
+        /// top left.
+        fn onto_screen(rect: CGRect, screen: &CGRect) -> CGRect {
+            let ix =
+                (rect.max().x.min(screen.max().x) - rect.origin.x.max(screen.origin.x)).max(0.0);
+            let iy =
+                (rect.max().y.min(screen.max().y) - rect.origin.y.max(screen.origin.y)).max(0.0);
+            let area = rect.size.width * rect.size.height;
+            if area <= 0.0 || ix * iy >= area * 0.97 {
+                return rect;
+            }
+            let clamp = |at: f64, len: f64, lo: f64, span: f64| {
+                if len >= span {
+                    lo
+                } else {
+                    at.clamp(lo, lo + span - len)
+                }
+            };
+            CGRect::new(
+                CGPoint::new(
+                    clamp(
+                        rect.origin.x,
+                        rect.size.width,
+                        screen.origin.x,
+                        screen.size.width,
+                    ),
+                    clamp(
+                        rect.origin.y,
+                        rect.size.height,
+                        screen.origin.y,
+                        screen.size.height,
+                    ),
+                ),
+                rect.size,
+            )
+        }
+
         // A float is laid out at a frame rift has a reason to believe in:
         // where the window is, or where it was before rift parked it. There
         // is no third option. Making one up — centring a window whose frame
@@ -2725,10 +2763,18 @@ impl LayoutEngine {
                         all_screens,
                     )
             };
-            let Some(rect) = candidate.filter(usable).or_else(|| existing.filter(usable)) else {
+            let Some(mut rect) = candidate.filter(usable).or_else(|| existing.filter(usable))
+            else {
                 return;
             };
             if emit {
+                // A frame rift writes goes on the screen showing the desktop.
+                // A stored frame is in global coordinates, and those move
+                // whenever the display arrangement does: a float remembered
+                // at x = -2193 beside a monitor that was main was written
+                // back there after the monitor left and the laptop's origin
+                // moved to 0 -- off screen, and macOS kept a 40px sliver.
+                rect = onto_screen(rect, screen);
                 positions.insert(wid, rect);
             }
             if store_if_absent {
@@ -5687,6 +5733,61 @@ mod tests {
         assert!(locked_frame.origin.y >= screen.origin.y - epsilon);
         assert!(locked_frame.origin.x + locked_frame.size.width <= max_x);
         assert!(locked_frame.origin.y + locked_frame.size.height <= max_y);
+    }
+
+    /// A stored float frame is in global coordinates, which move with the
+    /// display arrangement. One remembered beside a monitor that was main
+    /// (x = -2193) was written back after the monitor left and the laptop's
+    /// origin moved to 0: off screen, a sliver left by macOS
+    /// (`busy-absence`). A frame rift writes goes on the screen.
+    #[test]
+    fn a_stored_float_frame_off_the_screen_is_written_onto_it() {
+        let mut window_store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(91);
+        let screen = CGRect::new(CGPoint::new(56.0, 31.0), CGSize::new(1400.0, 850.0));
+        let pid: pid_t = 4343;
+        let float = WindowId::new(pid, 1);
+
+        let _ =
+            engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, screen.size));
+        let _ = engine.handle_event(
+            &mut window_store,
+            LayoutEvent::windows_observed(
+                space,
+                pid,
+                vec![window_layout_info(float, CGSize::new(656.0, 422.0))],
+                None,
+            ),
+        );
+        engine.mark_window_floating(float);
+        let workspace = engine.virtual_workspace_manager().active_workspace(space).unwrap();
+        let stale = CGRect::new(CGPoint::new(-2193.0, 861.0), CGSize::new(656.0, 422.0));
+        engine.store_floating_position(space, workspace, float, stale);
+
+        let gaps = engine.layout_settings.gaps.effective_for_display(None);
+        // No live frame: the window is on a desktop nobody was showing.
+        let positions = engine.calculate_layout_with_virtual_workspaces(
+            &window_store,
+            space,
+            screen,
+            &gaps,
+            0.0,
+            Default::default(),
+            Default::default(),
+            |_| None,
+            &[screen],
+        );
+        let frames: HashMap<WindowId, CGRect> = positions.into_iter().collect();
+        let written = frames.get(&float).copied().expect("the parked float is placed");
+        assert!(
+            written.origin.x >= screen.origin.x
+                && written.max().x <= screen.max().x
+                && written.origin.y >= screen.origin.y
+                && written.max().y <= screen.max().y,
+            "written off the screen: {written:?}"
+        );
+        assert_eq!(written.size, stale.size, "moved, not resized");
     }
 
     #[test]

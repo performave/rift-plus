@@ -13,6 +13,14 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A floating window is no longer put off screen after the displays are
+  rearranged.** rift keeps a float's place in screen coordinates, and those
+  move whenever the arrangement does: unplug a monitor that was main and the
+  laptop's screen moves to where the monitor's was. A float rift restored
+  from its remembered place -- a window on a desktop nobody had been showing
+  -- was written to where the laptop's screen used to be, off it, with macOS
+  leaving a sliver showing. A float rift places now goes on the screen
+  showing its desktop.
 - **A monitor unplugged for more than two minutes gets its desktops back
   when it returns.** While a monitor is away rift keeps a record of where
   everything was, and lets the monitor go after two minutes of display
