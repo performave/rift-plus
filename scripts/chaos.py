@@ -2122,15 +2122,23 @@ def on_display(snap: dict, idents, screen_id: int) -> list:
             if i in snap["windows"] and snap["windows"][i][0] not in owned]
 
 
-def churn_ends_wall() -> list:
-    """When rift declared each display change over, on the wall clock.
+# The reconfiguration flags that make rift treat a report as a display change
+# (`should_begin_display_churn`): MOVED, SET_MAIN, SET_MODE, ADD, REMOVE,
+# ENABLED, DISABLED, MIRROR, UNMIRROR, DESKTOP_SHAPE_CHANGED.
+CHURN_FLAGS = 0x13FE
+
+
+def churn_intervals_wall() -> list:
+    """Each display change rift handled, as (start, end) on the wall clock.
 
     rift only lays windows out once the window server has been quiet for a
     while after a display change -- laying out mid-change sent windows to the
     wrong display -- and with two monitors attaching one after the other that
-    takes a second and more. Whatever overlaps before then is where macOS put
-    the windows. The flight recorder has the moment, on rift's own clock; the
-    dump's `dumped_at_ms` ties that clock to this one.
+    takes a second and more. Whatever overlaps inside one is where macOS put
+    the windows. The flight recorder has both ends on rift's own clock: the
+    first qualifying `display_reconfig`, and the `display_churn_end` that
+    closed it. The dump's `dumped_at_ms` ties that clock to this one. A change
+    still open at the dump runs to the dump.
     """
     path = "/tmp/chaos-churn.json"
     # The wall clock read before asking, not after: rift stamps `dumped_at_ms`
@@ -2139,55 +2147,80 @@ def churn_ends_wall() -> list:
     # trip to rift, and in the direction that makes the check stricter.
     now = time.time()
     sh(f"{CLI} execute trace dump {path}", timeout=60)
-    ends = []
+    spans = []
     try:
         with open(path) as fh:
             head = json.loads(fh.readline().split(" ", 1)[1])
             dumped = head.get("dumped_at_ms")
+            if dumped is None:
+                return []
+            wall = lambda ms: now - (dumped - ms) / 1000.0
+            opened = None
             for line in fh:
-                if '"display_churn_end"' not in line or not line.startswith("Act "):
+                if not line.startswith("Act "):
                     continue
-                ms = json.loads(line[4:]).get("ms")
-                if dumped is not None and ms is not None:
-                    ends.append(now - (dumped - ms) / 1000.0)
-    except (OSError, ValueError, IndexError):
+                if '"display_reconfig"' in line:
+                    act = json.loads(line[4:])
+                    detail = act.get("detail") or [0, 0]
+                    if opened is None and int(detail[1]) & CHURN_FLAGS:
+                        opened = act.get("ms")
+                elif '"display_churn_end"' in line:
+                    act = json.loads(line[4:])
+                    detail = act.get("detail") or []
+                    # [expected epoch, epoch, active]: only the end that
+                    # actually closed the change counts.
+                    if len(detail) == 3 and detail[0] == detail[1] and detail[2]:
+                        end = act.get("ms")
+                        spans.append((wall(opened if opened is not None else end), wall(end)))
+                        opened = None
+            if opened is not None:
+                spans.append((wall(opened), now))
+    except (OSError, ValueError, IndexError, TypeError):
         return []
-    return ends
+    return spans
+
+
+def outside_changes(start: float, end: float, changes: list) -> float:
+    """The longest stretch of [start, end] that no display change covers."""
+    cuts = sorted((max(a, start), min(b, end)) for a, b in changes if b > start and a < end)
+    longest, at = 0.0, start
+    for a, b in cuts:
+        longest = max(longest, a - at)
+        at = max(at, b)
+    return max(longest, end - at)
 
 
 def check_sampler(sampler: "Sampler", phase: str) -> None:
-    """Overlaps rift is answerable for: still there a second after rift
-    finished handling the display change. Every episode is printed, and the
-    part of it that fell inside a display change is labelled, not dropped."""
+    """Overlaps rift is answerable for: a second or more of one with no
+    display change in progress. Every episode is printed, and the part of it
+    that fell inside a display change is labelled, not dropped."""
     for text, secs in sampler.episodes:
         if secs >= 0.3:
             print(f"      overlap for {secs:.2f}s: {text}", flush=True)
     long_ones = [(t, a, b) for t, a, b in sampler.spans if b - a >= Sampler.PERSIST]
     if not long_ones:
         return
-    ends = churn_ends_wall()
+    changes = churn_intervals_wall()
     started = getattr(sampler, "_started", None)
     stuck = []
     for text, start, end in long_ones:
-        settled = max([e for e in ends if e <= end], default=None)
-        since = start if settled is None else max(start, settled)
-        after = end - since
-        if after >= Sampler.PERSIST:
-            stuck.append((text, end - start, after))
+        outside = outside_changes(start, end, changes)
+        if outside >= Sampler.PERSIST:
+            stuck.append((text, end - start, outside))
         else:
             print(f"      (during a display change: {text}, {end - start:.2f}s in all, "
-                  f"{max(after, 0):.2f}s after rift finished it)", flush=True)
+                  f"at most {max(outside, 0):.2f}s at a time outside one)", flush=True)
     if stuck:
-        # Where the changes ended and the overlaps ran, on the sampler's own
-        # timeline: without it a verdict of "all of it after" cannot be told
-        # from a change end the clock mapping lost.
+        # Where the changes and the overlaps ran, on the sampler's own
+        # timeline: a verdict can be checked against it.
         rel = (lambda t: f"+{t - started:.2f}s") if started else (lambda t: f"{t:.2f}")
         spans = ", ".join(f"{rel(a)}..{rel(b)}" for t, a, b in long_ones[:3])
-        raise Violation(f"{phase}: overlap(s) still there {Sampler.PERSIST:.0f}s or more after "
-                        "rift finished the display change:\n      "
-                        + "\n      ".join(f"{t} for {d:.2f}s ({a:.2f}s after)" for t, d, a in stuck[:3])
-                        + f"\n      overlaps {spans}; rift's changes ended "
-                        + (", ".join(rel(e) for e in ends) or "(none read)"))
+        raise Violation(f"{phase}: overlap(s) lasting {Sampler.PERSIST:.0f}s or more with no "
+                        "display change in progress:\n      "
+                        + "\n      ".join(f"{t} for {d:.2f}s ({a:.2f}s outside a change)"
+                                           for t, d, a in stuck[:3])
+                        + f"\n      overlaps {spans}; display changes "
+                        + (", ".join(f"{rel(a)}..{rel(b)}" for a, b in changes) or "(none read)"))
 
 
 def restore_arrangement() -> None:
