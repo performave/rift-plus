@@ -961,9 +961,15 @@ def tile_all() -> int:
 # ----------------------------------------------------------------- snapshots
 
 def all_space_ids(displays) -> list:
+    """Every desktop, in the order `space switch-to` counts them: Mission
+    Control's, which rift reports as `space_ids`. The active/inactive split
+    puts the shown desktop first wherever it sits, and a switch by that
+    position went to the wrong desktop -- after `space create` it switched to
+    the desktop already shown, and `float_one` found no window to float."""
     out = []
     for d in displays or []:
-        for key in ("active_space_ids", "inactive_space_ids"):
+        keys = ("space_ids",) if d.get("space_ids") else ("active_space_ids", "inactive_space_ids")
+        for key in keys:
             for sid in (d.get(key) or []):
                 if sid not in out:
                     out.append(sid)
