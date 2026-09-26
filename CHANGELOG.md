@@ -13,6 +13,13 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **A window rift moved while monitors were still settling is moved again
+  if the move did not take.** macOS can drop a move made in the middle of a
+  display change without a word, and rift, which remembers where it sent the
+  window, went on believing the window was there -- a TextEdit stayed
+  stacked on its neighbour after two monitors were plugged in together. In
+  the seconds after a display change, a move left unanswered is now sent
+  again.
 - **A floating window is no longer put off screen after the displays are
   rearranged.** rift keeps a float's place in screen coordinates, and those
   move whenever the arrangement does: unplug a monitor that was main and the

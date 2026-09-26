@@ -9100,6 +9100,31 @@ mod floating_placement {
         assert_eq!(reactor.transaction_manager.get_target_frame(wsid), Some(tile));
     }
 
+    /// A write made during a display change can go unanswered, and the cache
+    /// holds what was written: "already there" by rift's own word. After the
+    /// change, one left unanswered past its second is sent again
+    /// (`dock-two-monitors`: a TextEdit stayed cascaded over its neighbour).
+    #[test]
+    fn a_write_left_unanswered_after_a_display_change_is_sent_again() {
+        let (mut reactor, space, wsid, screen) = tiled_window_on_one_screen();
+        let tile = reactor.transaction_manager.get_target_frame(wsid).unwrap();
+        reactor
+            .transaction_manager
+            .backdate_target(wsid, std::time::Duration::from_secs(2));
+        let before = reactor.transaction_manager.get_last_sent_txid(wsid);
+        crate::sys::display_churn::set_since_windows_last_moved(Some(
+            std::time::Duration::from_secs(1),
+        ));
+        reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        assert_ne!(
+            reactor.transaction_manager.get_last_sent_txid(wsid),
+            before,
+            "an unanswered write was skipped as already there"
+        );
+        assert_eq!(reactor.transaction_manager.get_target_frame(wsid), Some(tile));
+    }
+
     /// Outside a display change the cache is trusted: no reading of every
     /// window's frame on every arrange, and no write for a window in place.
     #[test]

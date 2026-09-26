@@ -69,6 +69,12 @@ impl TransactionManager {
         self.store.backdate_target(&wsid, by);
     }
 
+    /// How long the pending target for `wsid` has gone unanswered, if one is
+    /// pending.
+    pub fn target_age(&self, wsid: WindowServerId) -> Option<std::time::Duration> {
+        self.store.target_age(&wsid)
+    }
+
     pub fn target_sent_within(&self, wsid: WindowServerId, within: std::time::Duration) -> bool {
         self.store.target_age(&wsid).is_some_and(|age| age <= within)
     }

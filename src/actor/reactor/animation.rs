@@ -235,7 +235,29 @@ impl AnimationManager {
                         // once regardless. A redundant write costs one
                         // message and the app ignores it; a skipped one is
                         // permanent.
-                        if target_frame.same_as(current_frame) && !unverified {
+                        // A write made in the middle of a display change can
+                        // be swallowed without an answer, and the cache holds
+                        // what was written: "already there" by rift's own word
+                        // for good (`dock-two-monitors`: a TextEdit written
+                        // mid-change stayed cascaded over its neighbour a
+                        // second past the change). Once the write has had its
+                        // second, it is sent again -- only in the seconds after
+                        // a change, so an app that never answers is not written
+                        // on every arrange.
+                        let unanswered = reconfigured_lately
+                            && window.info.sys_id.is_some_and(|wsid| {
+                                reactor
+                                    .transaction_manager
+                                    .target_age(wsid)
+                                    .is_some_and(|age| age >= UNANSWERED_WRITE)
+                            });
+                        if unanswered && target_frame.same_as(current_frame) {
+                            crate::sys::trace::act(
+                                "layout_resend_unanswered",
+                                &(wid.idx.get(), target_frame.origin.x.round()),
+                            );
+                        }
+                        if target_frame.same_as(current_frame) && !unverified && !unanswered {
                             crate::sys::trace::act(
                                 "layout_skip",
                                 &(wid.idx.get(), "already there", current_frame.origin.x.round()),
