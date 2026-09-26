@@ -2451,6 +2451,32 @@ def sa_move_space_after(space: int, after: int) -> None:
     sock.close()
 
 
+def show_desktop(space: int) -> bool:
+    """Put `space` on screen on whichever display holds it.
+
+    `space switch-to N` counts every desktop of every display, in the window
+    server's display order -- not the desktops of one display. Counting within
+    the laptop's list switched the monitor instead whenever the monitor was
+    main. The global count is tried first; if the window server orders the
+    displays differently from `query displays`, focusing one of the desktop's
+    windows switches to it just as well.
+    """
+    def shown() -> bool:
+        return any(d.get("space") == space for d in (rift("displays") or []))
+
+    order = all_space_ids(rift("displays") or [])
+    if space in order:
+        rift_exec(f"space switch-to {order.index(space) + 1}")
+        settle(2)
+        if shown():
+            return True
+    for w in rift("windows", "--space-id", str(space)) or []:
+        focus(w)
+        settle(2)
+        return shown()
+    return False
+
+
 def desktop_to_new_monitor(label: str, spec: dict, laptop_at: tuple) -> None:
     """Eric's first seam report: plug the monitor in, drag desktops onto it,
     and some windows end up "way over the seam". `desktop-move-seam-test.py`
@@ -2488,9 +2514,8 @@ def desktop_to_new_monitor(label: str, spec: dict, laptop_at: tuple) -> None:
                 for r in snap["windows"].values():
                     if r[0] in (laptop.get("space_ids") or []):
                         held[r[0]] = held.get(r[0], 0) + 1
-                # `space create` and `space switch-to` act on the active
-                # display, which with the monitor as main is not the laptop:
-                # the pointer goes on the laptop first, for both.
+                # `space create` acts on the desktop under the pointer, so
+                # the pointer goes on the laptop first.
                 f = laptop.get("frame") or {}
                 o, sz = f.get("origin", {}), f.get("size", {})
                 sh(f"{BIN}/mtool move {o.get('x', 0) + sz.get('width', 0) / 2:.0f} "
@@ -2508,8 +2533,7 @@ def desktop_to_new_monitor(label: str, spec: dict, laptop_at: tuple) -> None:
                 if held:
                     want = max(held, key=held.get)
                     if want != laptop.get("space") and want in (laptop.get("space_ids") or []):
-                        rift_exec(f"space switch-to {laptop['space_ids'].index(want) + 1}")
-                        settle(2)
+                        show_desktop(want)
                 snap = snapshot(f"{label} attached, laptop showing the windows")
                 laptop = rift_display_for(1, snap)
                 home_desktop = laptop.get("space")
