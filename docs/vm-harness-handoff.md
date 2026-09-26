@@ -1014,6 +1014,8 @@ One attempt was reverted, and the reason is worth keeping:
 | `8fd0634` | the post-change frame check is also timed from rift's own end of the change, and a window out of place with its write still pending is looked at again after that write's second | `hot-swap` (the window server's reconfigure clock never moved), `fast-churn` (skipped as "redundant" until nothing arranged) |
 | `0c41b03` | a display the record gave up on (`GIVE_UP_ON_DISPLAY`, 120 s of reports without it) is remembered, and its coming back is recorded as the return it is: its desktops go back to it | Eric's LG, unplugged eight minutes while the laptop was in use: its desktop stayed on the laptop, the LG came up empty. `busy-absence` reproduces it (v48 fails, v50 3/3) |
 | `23def02` | a float rift places goes on the screen showing its desktop; stored float frames are global and go stale when the arrangement moves | `busy-absence`: a float written to x = -2193 after the laptop's origin moved to 0, macOS leaving a 40px sliver |
+| `1310f0f` | in the 10 s after a display change, a write left unanswered past its second is sent again instead of skipped as "already there" (the cache holds what was written) | `dock-two-monitors`: a TextEdit written mid-change, the write swallowed, cascaded over its neighbour past the change |
+| `1042cb5` | in the 10 s after a display change, a size report with no drag is an echo, not a resize: the window is arranged back into its tile | `commute`: a late answer to a full-width write (made while the window was briefly alone) marked it fullscreen-within-gaps over its returned neighbour |
 | `12cd956`, `ea47a9d` | after an arrival, a desktop the arriving monitor is showing stays with it, but the laptop's windows and tree come back to the laptop -- whether macOS handed over only the id (windows left on a minted desktop) or took the windows too | `desktop-to-home-monitor`: the laptop's five windows ended up on the monitor |
 
 `long-absence` never reached the give-up: the record ages an absence only
@@ -1021,6 +1023,10 @@ while display reports arrive, and an idle guest sends none. `busy-absence`
 switches the laptop's desktops every four seconds while the monitor is away,
 and fails outright if the flight recorder shows no `record_give_up` -- a pass
 without one would test nothing.
+
+Measured on v52 (`1042cb5`): the full battery, 27 scenarios with
+`busy-absence`, clean on both sides, and `commute` 4/4 and
+`dock-two-monitors` 5/5 on their own.
 
 Harness faults found on the way, each of which failed a good run:
 
