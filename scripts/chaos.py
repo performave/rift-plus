@@ -2990,6 +2990,13 @@ def s_busy_absence(base):
         laptop = rift_display_for(1) or {}
         desktops = laptop.get("space_ids") or []
         if len(desktops) < 2:
+            # macOS merged the monitor's desktop into the laptop's rather
+            # than keeping it: make one to switch to, as using a laptop
+            # with one desktop would not generate the reports otherwise.
+            rift_exec("space create")
+            settle(3)
+            desktops = (rift_display_for(1) or {}).get("space_ids") or []
+        if len(desktops) < 2:
             raise Violation(f"busy-absence: the laptop has {desktops}, nothing to switch between")
         deadline = time.time() + 150
         turn = 0
