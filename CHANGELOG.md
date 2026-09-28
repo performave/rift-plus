@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.10-plus.5] - 2026-09-28
+
 ### Fixed
 
 - **A tiled window no longer covers its neighbour after a monitor comes
@@ -1649,7 +1651,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.4...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.5...HEAD
+[0.5.10-plus.5]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.4...v0.5.10-plus.5
 [0.5.10-plus.4]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.3...v0.5.10-plus.4
 [0.5.10-plus.3]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.2...v0.5.10-plus.3
 [0.5.10-plus.2]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.1...v0.5.10-plus.2
