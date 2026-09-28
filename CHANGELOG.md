@@ -11,6 +11,19 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switching tabs in a tabbed window no longer untiles it or leaves ghost
+  tiles behind.** macOS keeps each tab of a Finder, TextEdit or Preview
+  window as a window of its own, and switching tabs hides one and shows
+  another at the same spot. rift read the hidden tab as a window gone
+  fullscreen and the shown one as a stranger: under a float-everything rule
+  the tab you switched to floated and its neighbour took the whole screen,
+  and switching back could put hidden tabs back in the layout as empty
+  tiles. A tab switch is now recognised as one, and the tab brought forward
+  takes the place, tiled or floating, of the tab it replaces. Closing a tab
+  hands its place to the next one.
+
 ## [0.5.10-plus.5] - 2026-09-28
 
 ### Fixed

@@ -3940,6 +3940,99 @@ impl LayoutEngine {
         restored
     }
 
+    /// The native tab `to` has replaced `from` on screen: give it `from`'s
+    /// place, its leaf in every tree of `from`'s workspace or its float, and
+    /// take `from` out of the trees. `from` keeps its workspace, so it can be
+    /// handed the place back when its tab is shown again.
+    ///
+    /// Not `transfer_persistent_window_identity`: that retires `from` for
+    /// good, persisted identity and all, and a hidden tab is still a window.
+    /// Returns false when `from` has no place to hand over, a tile already
+    /// taken out of its tree included.
+    pub fn hand_off_native_tab(
+        &mut self,
+        window_store: &mut WindowStore,
+        space: SpaceId,
+        from: WindowId,
+        to: WindowId,
+    ) -> bool {
+        if from == to {
+            return false;
+        }
+        let Some(workspace) = self
+            .virtual_workspace_manager
+            .workspace_for_window(window_store, space, from)
+            .or_else(|| self.virtual_workspace_manager.active_workspace(space))
+        else {
+            return false;
+        };
+        let floating = self.floating.is_floating(from);
+        if !floating && !self.workspace_contains_window(workspace, from) {
+            return false;
+        }
+        self.remove_window_from_all_tiling_trees(to);
+        self.floating.remove_active_for_window(to);
+        if !self.virtual_workspace_manager.assign_window_to_workspace(
+            window_store,
+            space,
+            to,
+            workspace,
+        ) {
+            return false;
+        }
+        if floating {
+            self.floating.add_floating(to);
+            self.floating.add_active(space, to.pid, to);
+            if let Some(frame) = self.floating_positions.get(space, workspace, from) {
+                self.floating_positions.remove_window(to);
+                self.floating_positions.store(space, workspace, to, frame);
+            }
+        } else {
+            self.floating.remove_floating(to);
+            self.workspace_tree_mut(workspace).replace_window(from, to);
+        }
+        if self.focused_window == Some(from) {
+            self.focused_window = Some(to);
+        }
+        true
+    }
+
+    /// Put the native tab `window` where a tab already taken out of the tree
+    /// was: beside `slot`'s neighbour, or anywhere if it was alone. The tile
+    /// half of `hand_off_native_tab`, for when the tab that left was taken
+    /// out before the one replacing it was known.
+    pub fn place_native_tab(
+        &mut self,
+        window_store: &mut WindowStore,
+        space: SpaceId,
+        workspace: VirtualWorkspaceId,
+        window: WindowId,
+        slot: Option<Slot>,
+    ) -> bool {
+        if self.virtual_workspace_manager.active_workspace(space) != Some(workspace) {
+            return false;
+        }
+        self.remove_window_from_all_tiling_trees(window);
+        self.floating.remove_floating(window);
+        self.floating.remove_active_for_window(window);
+        if !self.virtual_workspace_manager.assign_window_to_workspace(
+            window_store,
+            space,
+            window,
+            workspace,
+        ) {
+            return false;
+        }
+        if let Some(slot) = slot
+            && slot.anchor != window
+            && self.restore_slot(space, slot, window)
+        {
+            return true;
+        }
+        self.add_window_to_layout(window_store, space, window);
+        self.is_window_tiled(space, window)
+    }
+
     /// A textual rendering of the active layout on `space` that changes iff
     /// the tree does: structure, order and ratios, not selection.
     pub fn tree_digest(&self, space: SpaceId) -> Option<String> {

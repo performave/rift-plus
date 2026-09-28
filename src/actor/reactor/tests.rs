@@ -15598,3 +15598,354 @@ fn a_stack_keeps_its_order_through_the_desktops_a_display_attach_walks_it_over()
 
     assert_eq!(after, before, "the attach must give the stack back as it was");
 }
+
+/// AppKit window tabbing: every tab is a window of its own at one frame, and
+/// switching tabs orders one out and the other in. See `native_tabs`.
+mod native_tabs {
+    use test_log::test;
+
+    use super::*;
+    use crate::sys::window_server::{
+        set_window_ordered_in_override, set_window_spaces_override, set_window_suitability_override,
+    };
+
+    // High pids keep the synthetic window-server ids (pid * 10_000 + n) clear
+    // of real windows, which unbacked queries still reach under test.
+    const TABS: pid_t = 91;
+    const OTHER: pid_t = 92;
+
+    struct Tabs {
+        apps: Apps,
+        reactor: Reactor,
+        screen: CGRect,
+        space: SpaceId,
+        overridden: Vec<WindowServerId>,
+    }
+
+    impl Drop for Tabs {
+        fn drop(&mut self) {
+            for wsid in self.overridden.drain(..) {
+                set_window_ordered_in_override(wsid, None);
+                set_window_spaces_override(wsid, None);
+                set_window_suitability_override(wsid, None);
+            }
+        }
+    }
+
+    impl Tabs {
+        /// A tabbed app's shown tab and another app's window, both tiled.
+        /// `float_by_default` adds a catch-all float rule for the tabbed app,
+        /// with its tab tiled by hand, as a `manage off` config has it.
+        fn new(float_by_default: bool) -> Tabs { Tabs::with_layout(float_by_default, None) }
+
+        fn with_layout(float_by_default: bool, mode: Option<LayoutMode>) -> Tabs {
+            let settings = crate::common::config::VirtualWorkspaceSettings {
+                app_rules: if float_by_default {
+                    vec![crate::common::config::AppWorkspaceRule {
+                        app_id: Some(format!("com.testapp{TABS}")),
+                        floating: true,
+                        ..Default::default()
+                    }]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            };
+            let mut reactor = test_reactor_with_workspace_settings(&settings);
+            reactor.config.virtual_workspaces = settings;
+            let mut tabs = Tabs {
+                apps: Apps::new(),
+                reactor,
+                screen: CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.)),
+                space: SpaceId::new(1),
+                overridden: vec![],
+            };
+            let (screen, space) = (tabs.screen, tabs.space);
+            tabs.reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+            if let Some(mode) = mode {
+                tabs.reactor.handle_test_layout_command(LayoutCommand::SetWorkspaceLayout {
+                    workspace: None,
+                    mode,
+                });
+            }
+            tabs.apps.make_app_and_settle(&mut tabs.reactor, TABS, make_windows(1));
+            tabs.apps.make_app_and_settle(&mut tabs.reactor, OTHER, make_windows(1));
+            let first = WindowId::new(TABS, 1);
+            if float_by_default {
+                assert!(tabs.reactor.layout_manager.layout_engine.is_window_floating(first));
+                tabs.reactor.send_layout_event(LayoutEvent::WindowFocused(space, first));
+                tabs.reactor.handle_test_layout_command(LayoutCommand::ToggleWindowFloating);
+                tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+            }
+            let wsid = tabs.reactor.test_window_server_id(first);
+            tabs.drawn(wsid, true);
+            assert_eq!(tabs.layout().len(), 2, "both windows start tiled");
+            tabs
+        }
+
+        fn drawn(&mut self, wsid: WindowServerId, drawn: bool) {
+            set_window_ordered_in_override(wsid, Some(drawn));
+            set_window_spaces_override(
+                wsid,
+                Some(if drawn {
+                    vec![self.space.get()]
+                } else {
+                    vec![]
+                }),
+            );
+            set_window_suitability_override(wsid, Some(true));
+            self.overridden.push(wsid);
+        }
+
+        fn layout(&mut self) -> Vec<(WindowId, CGRect)> {
+            test_layout(&mut self.reactor, self.space, self.screen)
+        }
+
+        fn frame(&self, wid: WindowId) -> CGRect {
+            self.reactor.state.windows.window(wid).unwrap().frame_monotonic
+        }
+
+        /// What the window server reports when `from`'s tab is swapped for
+        /// `to`'s, in the order it reports it. `to` is discovered afterwards
+        /// if rift has not seen it before.
+        fn switch(&mut self, from: WindowId, to: WindowId, to_wsid: WindowServerId) {
+            let from_wsid = self.reactor.test_window_server_id(from);
+            let frame = self.frame(from);
+            let known = self.reactor.state.windows.window(to).is_some();
+            self.drawn(from_wsid, false);
+            self.drawn(to_wsid, true);
+            self.reactor.track_test_window_server_info(to_wsid, TABS, frame);
+            let space = self.space;
+            self.reactor.handle_events(vec![
+                Event::WindowServerVisibilityChanged(from_wsid, false),
+                Event::WindowServerVisibilityChanged(to_wsid, true),
+                Event::WindowServerAppeared(to_wsid, space, SpaceEventKind::User),
+                Event::WindowServerDestroyed(from_wsid, space, SpaceEventKind::User),
+            ]);
+            self.apps.simulate_until_quiet(&mut self.reactor);
+            if !known {
+                let mut info = make_window(to.idx.get() as usize);
+                info.frame = frame;
+                info.sys_id = Some(to_wsid);
+                self.apps.windows.insert(to, TestWindowState { frame, ..Default::default() });
+                self.reactor.discover_test_windows(TABS, vec![(to, info)], vec![to]);
+                self.apps.simulate_until_quiet(&mut self.reactor);
+            }
+        }
+    }
+
+    fn assert_holds_the_tile(tabs: &mut Tabs, shown: WindowId, hidden: WindowId, tile: CGRect) {
+        let layout = tabs.layout();
+        assert_eq!(
+            layout.len(),
+            2,
+            "exactly the shown tab and the other app's window are tiled: {layout:?}"
+        );
+        let frame = layout.iter().find(|(w, _)| *w == shown).map(|(_, f)| *f);
+        assert_eq!(
+            frame,
+            Some(tile),
+            "the shown tab holds the tile the other tab had"
+        );
+        assert!(
+            layout.iter().all(|(w, _)| *w != hidden),
+            "a hidden tab must not keep a tile: {layout:?}"
+        );
+    }
+
+    /// The reported bug: under a catch-all float rule, the tab brought forward
+    /// was a stranger to the rules and floated, and the tile collapsed.
+    #[test]
+    fn a_tab_seen_for_the_first_time_takes_the_tile() {
+        let mut tabs = Tabs::new(true);
+        let first = WindowId::new(TABS, 1);
+        let second = WindowId::new(TABS, 2);
+        let tile = tabs.layout().into_iter().find(|(w, _)| *w == first).unwrap().1;
+
+        tabs.switch(first, second, WindowServerId::new(TABS as u32 * 10_000 + 2));
+
+        assert_holds_the_tile(&mut tabs, second, first, tile);
+        assert!(!tabs.reactor.layout_manager.layout_engine.is_window_floating(second));
+    }
+
+    /// Switching back and forth used to replay fullscreen slots whose
+    /// snapshots held the hidden tab, leaving ghosts tiled beside the tab on
+    /// screen.
+    #[test]
+    fn switching_tabs_back_and_forth_leaves_no_ghosts() {
+        let mut tabs = Tabs::new(true);
+        let first = WindowId::new(TABS, 1);
+        let second = WindowId::new(TABS, 2);
+        let third = WindowId::new(TABS, 3);
+        let first_wsid = tabs.reactor.test_window_server_id(first);
+        let second_wsid = WindowServerId::new(TABS as u32 * 10_000 + 2);
+        let third_wsid = WindowServerId::new(TABS as u32 * 10_000 + 3);
+        let tile = tabs.layout().into_iter().find(|(w, _)| *w == first).unwrap().1;
+
+        tabs.switch(first, second, second_wsid);
+        assert_holds_the_tile(&mut tabs, second, first, tile);
+        tabs.switch(second, first, first_wsid);
+        assert_holds_the_tile(&mut tabs, first, second, tile);
+        tabs.switch(first, third, third_wsid);
+        assert_holds_the_tile(&mut tabs, third, first, tile);
+        tabs.switch(third, second, second_wsid);
+        assert_holds_the_tile(&mut tabs, second, third, tile);
+        tabs.switch(second, first, first_wsid);
+        assert_holds_the_tile(&mut tabs, first, second, tile);
+        assert!(
+            tabs.layout().iter().all(|(w, _)| *w != third),
+            "no tab left behind anywhere in the tree"
+        );
+    }
+
+    /// Without any rule the new tab tiled, but was appended beside the
+    /// selection instead of taking the tile of the tab it replaced.
+    #[test]
+    fn a_new_tab_takes_the_tile_under_default_rules() {
+        let mut tabs = Tabs::new(false);
+        let first = WindowId::new(TABS, 1);
+        let second = WindowId::new(TABS, 2);
+        let tile = tabs.layout().into_iter().find(|(w, _)| *w == first).unwrap().1;
+
+        tabs.switch(first, second, WindowServerId::new(TABS as u32 * 10_000 + 2));
+
+        assert_holds_the_tile(&mut tabs, second, first, tile);
+    }
+
+    /// A floating group stays floating: the tab brought forward is floated
+    /// like the one it replaces, whatever the rules would do with it.
+    #[test]
+    fn a_floating_tab_hands_over_its_float() {
+        let mut tabs = Tabs::new(false);
+        let first = WindowId::new(TABS, 1);
+        let second = WindowId::new(TABS, 2);
+        let space = tabs.space;
+        tabs.reactor.send_layout_event(LayoutEvent::WindowFocused(space, first));
+        tabs.reactor.handle_test_layout_command(LayoutCommand::ToggleWindowFloating);
+        tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+        assert!(tabs.reactor.layout_manager.layout_engine.is_window_floating(first));
+
+        tabs.switch(first, second, WindowServerId::new(TABS as u32 * 10_000 + 2));
+
+        let layout = tabs.layout();
+        assert!(tabs.reactor.layout_manager.layout_engine.is_window_floating(second));
+        assert!(
+            layout.iter().all(|(w, _)| *w != second && *w != first),
+            "{layout:?}"
+        );
+        assert_eq!(layout.len(), 1);
+    }
+
+    /// Closing the tab on screen shows the next one: it takes the tile. The
+    /// tab closed is gone, so nothing holds its place in the tree; its old
+    /// neighbour is the way back, which only tree layouts can record.
+    #[test]
+    fn closing_a_tab_hands_its_tile_to_the_next() {
+        let mut tabs = Tabs::with_layout(true, Some(LayoutMode::Bsp));
+        let first = WindowId::new(TABS, 1);
+        let other = WindowId::new(OTHER, 1);
+        let space = tabs.space;
+        // Put the tab on the left, where appending would not land it.
+        if tabs.layout()[0].0 != first {
+            tabs.reactor.send_layout_event(LayoutEvent::WindowFocused(space, first));
+            tabs.reactor
+                .handle_test_layout_command(LayoutCommand::MoveNode(Direction::Left));
+            tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+        }
+        assert_eq!(tabs.layout()[0].0, first);
+        let tile = tabs.layout()[0].1;
+        let first_wsid = tabs.reactor.test_window_server_id(first);
+        let frame = tabs.frame(first);
+        let second = WindowId::new(TABS, 2);
+        let second_wsid = WindowServerId::new(TABS as u32 * 10_000 + 2);
+
+        tabs.drawn(first_wsid, false);
+        crate::sys::window_server::set_window_gone_override(first_wsid, true);
+        tabs.drawn(second_wsid, true);
+        tabs.reactor.track_test_window_server_info(second_wsid, TABS, frame);
+        tabs.reactor.handle_events(vec![
+            Event::WindowServerVisibilityChanged(first_wsid, false),
+            Event::WindowServerAppeared(second_wsid, space, SpaceEventKind::User),
+            Event::WindowServerDestroyed(first_wsid, space, SpaceEventKind::User),
+        ]);
+        tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+        let mut info = make_window(2);
+        info.frame = frame;
+        info.sys_id = Some(second_wsid);
+        tabs.apps
+            .windows
+            .insert(second, TestWindowState { frame, ..Default::default() });
+        tabs.reactor.discover_test_windows(TABS, vec![(second, info)], vec![second]);
+        tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+        crate::sys::window_server::set_window_gone_override(first_wsid, false);
+
+        let layout = tabs.layout();
+        assert_eq!(layout.len(), 2, "{layout:?}");
+        assert_eq!(
+            layout[0],
+            (second, tile),
+            "the next tab takes the closed tab's tile"
+        );
+        assert_eq!(layout[1].0, other);
+    }
+
+    /// A window that appears where a tab left but turns out not to be one
+    /// rift manages must not leave the tab it was held for in the tree.
+    #[test]
+    fn a_hold_nobody_takes_over_is_let_go() {
+        let mut tabs = Tabs::new(false);
+        let first = WindowId::new(TABS, 1);
+        let first_wsid = tabs.reactor.test_window_server_id(first);
+        let frame = tabs.frame(first);
+        let space = tabs.space;
+        let stray = WindowId::new(TABS, 2);
+        let stray_wsid = WindowServerId::new(TABS as u32 * 10_000 + 2);
+
+        tabs.drawn(first_wsid, false);
+        tabs.drawn(stray_wsid, true);
+        tabs.reactor.track_test_window_server_info(stray_wsid, TABS, frame);
+        tabs.reactor.handle_events(vec![
+            Event::WindowServerVisibilityChanged(first_wsid, false),
+            Event::WindowServerAppeared(stray_wsid, space, SpaceEventKind::User),
+            Event::WindowServerDestroyed(first_wsid, space, SpaceEventKind::User),
+        ]);
+        assert!(
+            tabs.layout().iter().any(|(w, _)| *w == first),
+            "the leaving tab is held while the newcomer is unnamed"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut info = make_window(2);
+        info.frame = frame;
+        info.sys_id = Some(stray_wsid);
+        info.is_standard = false;
+        tabs.reactor.discover_test_windows(TABS, vec![(stray, info)], vec![stray]);
+        tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+
+        let layout = tabs.layout();
+        assert!(
+            layout.iter().all(|(w, _)| *w != first && *w != stray),
+            "{layout:?}"
+        );
+        assert_eq!(layout.len(), 1);
+    }
+
+    /// Not a tab switch: a window ordered out and back in, as on a desktop
+    /// switched away from and back, while another window of the app shares
+    /// its frame.
+    #[test]
+    fn a_window_coming_back_is_not_a_tab_switch() {
+        let mut tabs = Tabs::new(false);
+        let first = WindowId::new(TABS, 1);
+        let wsid = tabs.reactor.test_window_server_id(first);
+        let before = tabs.layout();
+
+        tabs.drawn(wsid, false);
+        tabs.reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, false));
+        tabs.drawn(wsid, true);
+        tabs.reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, true));
+        tabs.apps.simulate_until_quiet(&mut tabs.reactor);
+
+        assert_eq!(tabs.layout(), before);
+    }
+}

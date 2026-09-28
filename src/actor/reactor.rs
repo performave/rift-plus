@@ -12,6 +12,7 @@ mod events;
 mod fullscreen_slots;
 mod main_window;
 mod managers;
+mod native_tabs;
 mod query;
 mod replay;
 pub mod transaction_manager;
@@ -30,6 +31,11 @@ mod SpaceEventHandler {
         payload: WindowServerLifecyclePayload,
     ) -> anyhow::Result<super::EventOutcome> {
         let wsid = payload.window_server_id;
+        if matches!(payload.kind, super::SpaceEventKind::User)
+            && reactor.keep_held_native_tab(wsid, payload.space)
+        {
+            return Ok(super::EventOutcome::default());
+        }
         let tracked_window = reactor.state.windows.tracked_window_id(wsid);
         let assigned_space =
             tracked_window.and_then(|window| reactor.assigned_space_for_window_id(window));
@@ -694,6 +700,7 @@ pub struct Reactor {
     active_spaces: HashSet<SpaceId>,
     display_archive: display_archive::DisplayArchive,
     fullscreen_slots: fullscreen_slots::FullscreenSlots,
+    native_tabs: native_tabs::NativeTabs,
     pub animation_tx: Option<AnimationSender>,
     /// Why the command now being handled could not be carried out, if it
     /// could not. Set by `fail_command` and drained by `handle_ipc_command`,
@@ -897,6 +904,7 @@ impl Reactor {
             active_spaces: HashSet::default(),
             display_archive: Default::default(),
             fullscreen_slots: Default::default(),
+            native_tabs: Default::default(),
             #[cfg(test)]
             test_mouse_warps: Vec::new(),
             animation_tx: None,
@@ -2145,6 +2153,9 @@ impl Reactor {
                     .with_window_inventory_request(wid.pid));
             }
             Event::WindowServerDestroyed(wsid, sid, kind) => {
+                if matches!(kind, SpaceEventKind::User) && self.keep_held_native_tab(wsid, sid) {
+                    return Ok(EventOutcome::no_change());
+                }
                 let tracked_window = self.state.windows.tracked_window_id(wsid);
                 let assigned_space =
                     tracked_window.and_then(|window| self.assigned_space_for_window_id(window));
@@ -2207,6 +2218,16 @@ impl Reactor {
                     self.correct_straggler_after_return(wid, sid);
                     self.keep_record_window_off_an_unknown_display(wid, sid);
                     self.note_window_appeared_while_away(wid, sid);
+                }
+                if matches!(kind, SpaceEventKind::User)
+                    && tracked_window.is_none()
+                    && !self.is_mission_control_active()
+                {
+                    self.note_untracked_native_tab(
+                        wsid,
+                        sid,
+                        observations.window_server_info.as_ref(),
+                    );
                 }
                 return topology_workflow::handle_window_server_appeared(
                     &mut self.state,
@@ -2849,9 +2870,18 @@ impl Reactor {
                 if let Some(wid) = self.state.windows.tracked_window_id(wsid) {
                     if visible {
                         self.state.windows.mark_window_visible(wsid);
-                        self.restore_ordered_in_window_after_fullscreen(wid);
+                        // A tab brought forward takes the place of the tab it
+                        // replaces, and has no fullscreen slot left to replay.
+                        if self.note_native_tab_arrival(wid) {
+                            outcome = EventOutcome::layout_changed(false);
+                        } else {
+                            self.restore_ordered_in_window_after_fullscreen(wid);
+                        }
                     } else {
                         self.state.windows.mark_window_hidden(wsid);
+                        if self.note_native_tab_departure(wid) {
+                            outcome = EventOutcome::layout_changed(false);
+                        }
                         // Being ordered out is not proof of anything on its own:
                         // it is also what every window on a space does when you
                         // switch away from it. Ask the app whether the window's
@@ -4698,7 +4728,23 @@ impl Reactor {
             observed_windows,
         );
         outcome.absorb(process_outcome);
+        let discovered: Vec<WindowId> = new_windows.iter().map(|(wid, _)| *wid).collect();
         window_discovery::update_window_states(&mut self.state, new_windows);
+        // A tab rift has never seen can only be recognised here, once it is in
+        // the store; placing it now, before the app rules see it, keeps a
+        // catch-all float from claiming it. See `native_tabs`.
+        let mut tab_handed_off = false;
+        for wid in discovered {
+            if self
+                .state
+                .windows
+                .window(wid)
+                .and_then(|window| window.info.sys_id)
+                .is_some_and(|wsid| self.state.windows.is_window_visible(wsid))
+            {
+                tab_handed_off |= self.note_native_tab_arrival(wid);
+            }
+        }
 
         let candidate_windows: HashSet<WindowId> = self
             .state
@@ -4741,6 +4787,9 @@ impl Reactor {
                 focused_window,
             },
         ));
+        if self.after_native_tab_discovery(pid) || tab_handed_off {
+            outcome.absorb(EventOutcome::layout_changed(false));
+        }
         self.apply_event_outcome(outcome);
     }
 
