@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.10-plus.6] - 2026-09-28
+
 ### Fixed
 
 - **Switching tabs in a tabbed window no longer untiles it or leaves ghost
@@ -1664,7 +1666,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.5...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.6...HEAD
+[0.5.10-plus.6]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.5...v0.5.10-plus.6
 [0.5.10-plus.5]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.4...v0.5.10-plus.5
 [0.5.10-plus.4]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.3...v0.5.10-plus.4
 [0.5.10-plus.3]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.2...v0.5.10-plus.3
