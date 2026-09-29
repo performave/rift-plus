@@ -6747,6 +6747,7 @@ fn stale_cleanup_observes_only_eligible_omitted_windows() {
                 suitable: Some(true),
                 ordered_in: Some(false),
                 still_known: false,
+                ax_destroyed: false,
             }
         },
     );
@@ -6850,6 +6851,7 @@ fn stale_cleanup_uses_ordered_state_instead_of_cached_visibility() {
                 suitable,
                 ordered_in,
                 still_known,
+                ax_destroyed: false,
             })]
             .into_iter()
             .collect(),
@@ -15947,5 +15949,101 @@ mod native_tabs {
         tabs.apps.simulate_until_quiet(&mut tabs.reactor);
 
         assert_eq!(tabs.layout(), before);
+    }
+}
+
+/// Preview closes a window and leaves its window-server window behind,
+/// ordered out but still listed on its desktop, for up to a minute. rift keeps
+/// any window the window server still knows, so the closed window's tile stood
+/// empty beside its neighbour until the id finally went.
+mod closed_but_left_behind {
+    use test_log::test;
+
+    use super::*;
+    use crate::sys::window_server::{
+        set_window_ordered_in_override, set_window_spaces_override, set_window_suitability_override,
+    };
+
+    const APP: pid_t = 93;
+
+    fn two_tiled() -> (Apps, Reactor, CGRect, SpaceId, WindowId, WindowServerId) {
+        let (mut apps, mut reactor) = test_context();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let space = SpaceId::new(1);
+        apps.make_app_and_settle_on_screen(&mut reactor, screen, space, APP, make_windows(2));
+        let closed = WindowId::new(APP, 2);
+        let wsid = reactor.test_window_server_id(closed);
+        assert_eq!(test_layout(&mut reactor, space, screen).len(), 2);
+        set_window_spaces_override(wsid, Some(vec![space.get()]));
+        set_window_suitability_override(wsid, Some(true));
+        (apps, reactor, screen, space, closed, wsid)
+    }
+
+    fn clear(wsid: WindowServerId) {
+        set_window_ordered_in_override(wsid, None);
+        set_window_spaces_override(wsid, None);
+        set_window_suitability_override(wsid, None);
+    }
+
+    #[test]
+    fn a_destroyed_window_ordered_out_leaves_the_layout_at_once() {
+        let (mut apps, mut reactor, screen, space, closed, wsid) = two_tiled();
+
+        // The close animation: destroyed, still drawn for a moment, and gone
+        // from the app's own list of windows.
+        apps.windows.remove(&closed);
+        set_window_ordered_in_override(wsid, Some(true));
+        reactor.handle_event(Event::WindowInvalidated(
+            closed,
+            super::super::WindowInvalidationSource::AxDestroyedNotification,
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+        assert!(has_window_in_layout(&mut reactor, space, screen, closed));
+
+        set_window_ordered_in_override(wsid, Some(false));
+        reactor.handle_event(Event::WindowServerVisibilityChanged(wsid, false));
+        apps.simulate_until_quiet(&mut reactor);
+        clear(wsid);
+
+        let layout = test_layout(&mut reactor, space, screen);
+        assert_eq!(
+            layout.len(),
+            1,
+            "the closed window's tile is given back: {layout:?}"
+        );
+        assert!(!reactor.state.windows.contains_window(closed));
+    }
+
+    #[test]
+    fn a_window_destroyed_after_it_was_ordered_out_leaves_too() {
+        let (mut apps, mut reactor, screen, space, closed, wsid) = two_tiled();
+
+        set_window_ordered_in_override(wsid, Some(false));
+        reactor.handle_event(Event::WindowInvalidated(
+            closed,
+            super::super::WindowInvalidationSource::AxDestroyedNotification,
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+        clear(wsid);
+
+        assert_eq!(test_layout(&mut reactor, space, screen).len(), 1);
+        assert!(!reactor.state.windows.contains_window(closed));
+    }
+
+    /// An element replaced rather than destroyed -- the reason invalidation
+    /// alone never retires a window -- is untouched while it stays drawn.
+    #[test]
+    fn a_destroyed_element_on_a_window_still_drawn_is_kept() {
+        let (mut apps, mut reactor, screen, space, closed, wsid) = two_tiled();
+
+        set_window_ordered_in_override(wsid, Some(true));
+        reactor.handle_event(Event::WindowInvalidated(
+            closed,
+            super::super::WindowInvalidationSource::AxDestroyedNotification,
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+        clear(wsid);
+
+        assert!(has_window_in_layout(&mut reactor, space, screen, closed));
     }
 }

@@ -11,6 +11,15 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Closing a Preview window gives its tile back straight away.** Preview
+  closes a window but leaves its window-server window behind, hidden, for up
+  to a minute, and rift kept any window the window server still knew about:
+  the closed window's tile stood empty beside its neighbour until macOS let
+  go. A window its app says it destroyed, and that is no longer drawn, is
+  now treated as closed.
+
 ## [0.5.10-plus.6] - 2026-09-28
 
 ### Fixed

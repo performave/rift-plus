@@ -185,6 +185,10 @@ pub(crate) struct StaleWindowObservation {
     /// without reference to any space. See `still_known` on
     /// `WindowServerDestroyedObservations`.
     pub(crate) still_known: bool,
+    /// Whether the app announced the window's accessibility element
+    /// destroyed. Some apps close a window and leave its window-server
+    /// window behind, ordered out, for a minute: Preview does.
+    pub(crate) ax_destroyed: bool,
 }
 
 fn stale_cleanup_candidates(
@@ -299,10 +303,12 @@ pub(crate) fn identify_stale_windows(
             // in a native fullscreen space looks like from the space it left.
             // Retiring it destroys its `WindowRecord`, taking the user's manual
             // float/tile choice with it, and it returns as a stranger for the
-            // app rules to re-float. Only an id the server has forgotten is dead.
+            // app rules to re-float. Only an id the server has forgotten is dead
+            // -- or one whose app said it destroyed the window: a window going
+            // fullscreen or a hidden tab is ordered out, but never destroyed.
             let ordered_out = matches!(observation.ordered_in, Some(false));
-            if unsuitable || invalid_layer || too_small || (ordered_out && !observation.still_known)
-            {
+            let gone = !observation.still_known || observation.ax_destroyed;
+            if unsuitable || invalid_layer || too_small || (ordered_out && gone) {
                 Some(wid)
             } else {
                 None

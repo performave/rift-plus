@@ -701,6 +701,13 @@ pub struct Reactor {
     display_archive: display_archive::DisplayArchive,
     fullscreen_slots: fullscreen_slots::FullscreenSlots,
     native_tabs: native_tabs::NativeTabs,
+    /// Windows whose app announced their accessibility element destroyed.
+    /// An app can leave the window-server window of a closed window behind,
+    /// ordered out but still listed on its desktop -- Preview does, for up to
+    /// a minute -- and rift, which keeps any window the window server still
+    /// knows, kept its tile as an empty ghost until the id finally went. The
+    /// two together are a closed window.
+    ax_destroyed_windows: HashSet<WindowId>,
     pub animation_tx: Option<AnimationSender>,
     /// Why the command now being handled could not be carried out, if it
     /// could not. Set by `fail_command` and drained by `handle_ipc_command`,
@@ -905,6 +912,7 @@ impl Reactor {
             display_archive: Default::default(),
             fullscreen_slots: Default::default(),
             native_tabs: Default::default(),
+            ax_destroyed_windows: HashSet::default(),
             #[cfg(test)]
             test_mouse_warps: Vec::new(),
             animation_tx: None,
@@ -1737,6 +1745,34 @@ impl Reactor {
 
     fn refreshes_blocked(&self) -> bool { self.refresh_quarantine_manager.blocks_refreshes() }
 
+    /// Tear down `window` if its app destroyed it and the window server has
+    /// stopped drawing it, whatever the window server still lists. See
+    /// `ax_destroyed_windows`. Not while a display change or wake is settling,
+    /// when elements are replaced wholesale and windows ordered out and back.
+    fn retire_ax_destroyed_window_if_hidden(&mut self, window: WindowId) -> Option<EventOutcome> {
+        if !self.ax_destroyed_windows.contains(&window) || self.refreshes_blocked() {
+            return None;
+        }
+        let wsid = self.state.windows.window(window)?.info.sys_id?;
+        if window_server::window_ordered_in(wsid) != Some(false) {
+            return None;
+        }
+        self.ax_destroyed_windows.remove(&window);
+        debug!(
+            ?window,
+            ?wsid,
+            "Destroyed window left ordered out by its app; retiring it"
+        );
+        crate::sys::trace::act("ax_destroyed_retired", &window.idx.get());
+        window_workflow::handle_window_destroyed(
+            &mut self.state,
+            &self.transaction_manager,
+            &mut self.drag_manager,
+            window_workflow::WindowDestroyedPayload { window },
+        )
+        .ok()
+    }
+
     fn defer_window_inventory_refresh(&mut self) {
         self.refresh_quarantine_manager.pending_inventory_refresh = true;
     }
@@ -2149,6 +2185,13 @@ impl Reactor {
                     ?source,
                     "Preserving logical window after AX element invalidation"
                 );
+                if matches!(source, WindowInvalidationSource::AxDestroyedNotification) {
+                    self.ax_destroyed_windows.insert(wid);
+                    // Already not drawn: nothing is left to wait for.
+                    if let Some(outcome) = self.retire_ax_destroyed_window_if_hidden(wid) {
+                        return Ok(outcome);
+                    }
+                }
                 return Ok(EventOutcome::focus_changed(None, should_update_notifications)
                     .with_window_inventory_request(wid.pid));
             }
@@ -2881,6 +2924,10 @@ impl Reactor {
                         self.state.windows.mark_window_hidden(wsid);
                         if self.note_native_tab_departure(wid) {
                             outcome = EventOutcome::layout_changed(false);
+                        }
+                        if let Some(retired) = self.retire_ax_destroyed_window_if_hidden(wid) {
+                            outcome.absorb(retired);
+                            return Ok(outcome);
                         }
                         // Being ordered out is not proof of anything on its own:
                         // it is also what every window on a space does when you
@@ -4654,6 +4701,11 @@ impl Reactor {
         // worth querying — and for those the live answer is worth the query, both
         // as the liveness signal and because the cached one may be old.
         let cleanup_visible_set: HashSet<WindowId> = cleanup_visible.iter().copied().collect();
+        // A window the app lists again was not destroyed after all: its element
+        // was replaced, and the inventory is rebinding it.
+        self.ax_destroyed_windows.retain(|wid| {
+            !cleanup_visible_set.contains(wid) && self.state.windows.contains_window(*wid)
+        });
         let server_observations = self
             .state
             .windows
@@ -4662,8 +4714,9 @@ impl Reactor {
                 (wid.pid == pid && !cleanup_visible_set.contains(&wid))
                     .then_some(window.info.sys_id)
                     .flatten()
+                    .map(|wsid| (wid, wsid))
             })
-            .map(|wsid| {
+            .map(|(wid, wsid)| {
                 let live = window_server::get_window(wsid);
                 let still_known = live.is_some();
                 let info = live.or_else(|| self.state.windows.get_window_server_info(wsid));
@@ -4672,6 +4725,7 @@ impl Reactor {
                     suitable: window_server::app_window_suitability(wsid),
                     ordered_in: window_server::window_ordered_in(wsid),
                     still_known,
+                    ax_destroyed: self.ax_destroyed_windows.contains(&wid),
                 })
             })
             .collect();
