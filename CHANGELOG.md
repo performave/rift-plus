@@ -11,6 +11,8 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.10-plus.7] - 2026-09-28
+
 ### Fixed
 
 - **Closing a Preview window gives its tile back straight away.** Preview
@@ -1675,7 +1677,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.6...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.7...HEAD
+[0.5.10-plus.7]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.6...v0.5.10-plus.7
 [0.5.10-plus.6]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.5...v0.5.10-plus.6
 [0.5.10-plus.5]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.4...v0.5.10-plus.5
 [0.5.10-plus.4]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.3...v0.5.10-plus.4
