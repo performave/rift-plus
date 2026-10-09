@@ -303,7 +303,7 @@ impl Reactor {
     /// `None` exactly when a slot most needs recording. The tree still has the
     /// window at that point, so ask the tree, and keep the assignment only as
     /// the fast path.
-    fn space_of_tiled_window(&self, window: WindowId) -> Option<SpaceId> {
+    pub(super) fn space_of_tiled_window(&self, window: WindowId) -> Option<SpaceId> {
         let engine = &self.layout_manager.layout_engine;
         if let Some(space) = self.assigned_space_for_window_id(window)
             && engine.is_window_tiled(space, window)

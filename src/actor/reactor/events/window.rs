@@ -120,6 +120,7 @@ pub fn handle_window_destroyed(
 pub fn handle_window_minimized(
     state: &mut crate::model::RiftState,
     wid: WindowId,
+    floating: bool,
 ) -> anyhow::Result<crate::actor::reactor::events::EventOutcome> {
     let server_id = if let Some(window) = state.windows.window_mut(wid) {
         if window.info.is_minimized {
@@ -136,9 +137,17 @@ pub fn handle_window_minimized(
     }
     state.windows.set_visibility(wid, WindowVisibility::Minimized);
     let _ = utils::refresh_heuristic(state, wid);
+    // A minimized float is still a float. Plain `WindowRemoved` drops the
+    // floating mark, and the `WindowAdded` that unminimizing sends does not
+    // ask the app rules again, so the window came back tiled and stayed so.
+    let removal = if floating {
+        LayoutEvent::WindowRemovedPreserveFloating(wid)
+    } else {
+        LayoutEvent::WindowRemoved(wid)
+    };
     Ok(
         crate::actor::reactor::events::EventOutcome::window_membership_changed(false, false)
-            .with_layout_event(LayoutEvent::WindowRemoved(wid)),
+            .with_layout_event(removal),
     )
 }
 

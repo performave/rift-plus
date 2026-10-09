@@ -25,7 +25,7 @@ type Receiver = actor::Receiver<WmEvent>;
 use self::WmCmd::*;
 use crate::actor::app::{AppInfo, AppThreadHandle, Request};
 use crate::actor::spaces::ForwardedSpaceState;
-use crate::actor::{self, config, input, mission_control, reactor};
+use crate::actor::{self, config, external_dock, input, mission_control, reactor};
 use crate::model::tx_store::WindowTxStore;
 use crate::sys::dispatch::DispatchExt;
 use crate::sys::screen::CoordinateConverter;
@@ -112,9 +112,7 @@ static BUILTIN_WM_CMD_VARIANTS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 
 impl WmCmd {
-    pub fn snake_case_variants() -> &'static [String] {
-        &BUILTIN_WM_CMD_VARIANTS
-    }
+    pub fn snake_case_variants() -> &'static [String] { &BUILTIN_WM_CMD_VARIANTS }
 }
 
 pub struct Config {
@@ -130,6 +128,7 @@ pub struct WmController {
     stack_line_tx: Option<crate::actor::stack_line::Sender>,
     mission_control_tx: Option<mission_control::Sender>,
     window_tx_store: Option<WindowTxStore>,
+    external_dock_tx: Option<external_dock::Sender>,
     receiver: Receiver,
     sender: Sender,
     hotkeys_installed: bool,
@@ -203,12 +202,19 @@ impl WmController {
             stack_line_tx: Some(stack_line_tx),
             mission_control_tx: Some(mission_control_tx),
             window_tx_store,
+            external_dock_tx: None,
             receiver,
             sender: sender.clone(),
             hotkeys_installed: false,
             apps: AppLifecycle::default(),
         };
         (this, sender)
+    }
+
+    /// Hands app launches, quits and config changes on to the external dock
+    /// watcher, which needs them for apps rift does not otherwise manage.
+    pub fn set_external_dock_sender(&mut self, tx: external_dock::Sender) {
+        self.external_dock_tx = Some(tx);
     }
 
     pub async fn run(mut self) {
@@ -279,6 +285,9 @@ impl WmController {
                 }
             }
             AppLaunch(pid, info) => {
+                if let Some(tx) = &self.external_dock_tx {
+                    tx.send(external_dock::Event::AppLaunched(pid, info.bundle_id.clone()));
+                }
                 self.new_app(pid, info);
             }
             AppGloballyActivated(pid) => {
@@ -289,6 +298,9 @@ impl WmController {
                 self.events_tx.send(Event::ApplicationGloballyDeactivated(pid));
             }
             AppTerminated(pid) => {
+                if let Some(tx) = &self.external_dock_tx {
+                    tx.send(external_dock::Event::AppTerminated(pid));
+                }
                 sys::app::remove_application_observer(pid);
                 self.apps.terminate(pid);
             }
@@ -304,6 +316,12 @@ impl WmController {
                 let old_keys_ser = serde_json::to_string(&self.config.config.keys).ok();
 
                 self.config.config = new_cfg;
+
+                if let Some(tx) = &self.external_dock_tx {
+                    tx.send(external_dock::Event::ConfigUpdated(
+                        self.config.config.settings.layout.external_docks.clone(),
+                    ));
+                }
 
                 _ = self.input_tx.send(input::Request::ConfigUpdated(self.config.config.clone()));
 

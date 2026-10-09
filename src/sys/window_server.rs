@@ -15,7 +15,8 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     CGError, CGWindowID, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
-    kCGWindowLayer, kCGWindowName, kCGWindowOwnerName,
+    kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowName, kCGWindowOwnerName,
+    kCGWindowOwnerPID,
 };
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,8 @@ thread_local! {
     /// Ids the window server has forgotten. `get_window` fabricates a record for
     /// any id in tests, so this is how a test says "this window is really gone".
     static TEST_WINDOW_GONE_OVERRIDE: RefCell<HashSet<u32>> = RefCell::new(HashSet::default());
+    /// What `visible_spaces` answers; without one it says nothing is shown.
+    static TEST_VISIBLE_SPACES_OVERRIDE: RefCell<Option<Vec<u64>>> = const { RefCell::new(None) };
 }
 
 pub const WINDOWSERVER_QUIET_US: u64 = 350_000;
@@ -409,6 +412,36 @@ pub fn mission_control_dock_overlay_visible() -> bool {
         })
 }
 
+/// Frames of `pid`'s on-screen windows above the normal level, the ones a
+/// third-party dock draws. Global, like the overlay check above: the dock
+/// shows on every desktop, and what matters is whether it is showing now.
+pub fn onscreen_raised_windows(pid: pid_t) -> Vec<CGRect> {
+    live_answer(
+        || {
+            get_visible_windows_raw::<CFDictionary<CFString, CFType>>()
+                .iter()
+                .filter(|window| {
+                    get_num(window, unsafe { kCGWindowOwnerPID }) == Some(pid as i64)
+                        && get_num(window, unsafe { kCGWindowLayer }).is_some_and(|l| l > 0)
+                        && get_f64(window, unsafe { kCGWindowAlpha }).is_some_and(|a| a > 0.0)
+                })
+                .filter_map(|window| {
+                    let bounds = window.get(unsafe { kCGWindowBounds })?;
+                    let mut frame = CGRect::default();
+                    let ok = unsafe {
+                        CGRectMakeWithDictionaryRepresentation(
+                            CFRetained::as_ptr(&bounds).as_ptr().cast(),
+                            &mut frame,
+                        )
+                    };
+                    ok.then_some(frame)
+                })
+                .collect()
+        },
+        Vec::new,
+    )
+}
+
 /// The window server's answer, except under test, where `inert` stands in.
 ///
 /// Same reasoning as [`window_spaces`], and the same rule for every question
@@ -647,6 +680,10 @@ pub fn get_window(id: WindowServerId) -> Option<WindowServerInfo> {
 
 fn get_num(dict: &CFDictionary<CFString, CFType>, key: &'static CFString) -> Option<i64> {
     dict.get(key)?.downcast::<CFNumber>().ok()?.as_i64()
+}
+
+fn get_f64(dict: &CFDictionary<CFString, CFType>, key: &'static CFString) -> Option<f64> {
+    dict.get(key)?.downcast::<CFNumber>().ok()?.as_f64()
 }
 
 fn get_string(dict: &CFDictionary<CFString, CFType>, key: &'static CFString) -> Option<String> {
@@ -1088,6 +1125,10 @@ pub fn key_focused_window_across(spaces: &[SpaceId]) -> Option<WindowId> {
 
 /// The spaces currently shown, one per display (plus fullscreen spaces).
 pub fn visible_spaces() -> Vec<SpaceId> {
+    #[cfg(test)]
+    if let Some(spaces) = TEST_VISIBLE_SPACES_OVERRIDE.with(|spaces| spaces.borrow().clone()) {
+        return spaces.into_iter().map(SpaceId::new).collect();
+    }
     trace::observe("visible_spaces", (), || {
         live_answer(visible_spaces_raw, Vec::new)
     })
@@ -1178,6 +1219,11 @@ pub fn set_window_spaces_override(id: WindowServerId, spaces: Option<Vec<u64>>) 
             override_spaces.remove(&id.as_u32());
         }
     });
+}
+
+#[cfg(test)]
+pub fn set_visible_spaces_override(spaces: Option<Vec<u64>>) {
+    TEST_VISIBLE_SPACES_OVERRIDE.with(|override_spaces| *override_spaces.borrow_mut() = spaces);
 }
 
 #[cfg(test)]

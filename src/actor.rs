@@ -7,6 +7,7 @@ pub mod config;
 pub mod config_watcher;
 pub mod drag_swap;
 pub mod drop_overlay;
+pub mod external_dock;
 pub mod input;
 pub mod menu_bar;
 pub mod mission_control;

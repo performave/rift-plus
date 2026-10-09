@@ -18,6 +18,7 @@ fn sync_existing_window_state(
     wid: WindowId,
     info: &WindowInfo,
     active_space: Option<SpaceId>,
+    floating: bool,
 ) -> anyhow::Result<crate::actor::reactor::events::EventOutcome> {
     let was_minimized = state.windows.window(wid).is_some_and(|window| window.info.is_minimized);
     let was_manageable = state.windows.window(wid).is_some_and(WindowState::is_admitted);
@@ -64,7 +65,7 @@ fn sync_existing_window_state(
     }
 
     let outcome = match (was_minimized, info.is_minimized) {
-        (false, true) => window::handle_window_minimized(state, wid)?,
+        (false, true) => window::handle_window_minimized(state, wid, floating)?,
         (true, false) => {
             window::handle_window_deminiaturized(state, window::WindowDeminiaturizedPayload {
                 window: wid,
@@ -375,9 +376,13 @@ pub(crate) fn process_window_list(
                 info.sys_id,
                 current_native_space,
             ));
-            if let Ok(existing_outcome) =
-                sync_existing_window_state(state, wid, &info, active_space)
-            {
+            if let Ok(existing_outcome) = sync_existing_window_state(
+                state,
+                wid,
+                &info,
+                active_space,
+                layout.layout_engine.is_window_floating(wid),
+            ) {
                 outcome.absorb(existing_outcome);
             }
         } else {

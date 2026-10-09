@@ -11,6 +11,71 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Added
+
+- **Tiles keep clear of docks drawn by other apps.** macOS gives no app a way
+  to reserve screen space, so rift only ever made room for Apple's Dock, and
+  windows tiled underneath a third-party one such as DockDoor Pro. rift now
+  finds the dock of each app in `settings.layout.external_docks` against its
+  screen edge, measures the bar itself through Accessibility (the window around
+  it is often far wider, room for magnified icons and labels), and keeps that
+  much of the display free, giving it back while the dock is hidden. DockDoor
+  Pro is listed by default. See [docs/external-docks.md](docs/external-docks.md).
+
+### Fixed
+
+- **Floating windows no longer end up hanging off a display's edge when their
+  desktop changes display.** Moving a desktop to another display, whether by
+  dragging it there in Mission Control or by plugging a monitor in or out, lets
+  macOS place its windows wherever it likes, and it often left floating ones
+  partly past the far edge. rift only brought back a float that was almost
+  entirely off screen, and only right after a display change. Now any floating
+  window on a desktop that has just changed display is nudged the shortest
+  distance that puts it wholly on screen, once the desktop is showing. A few
+  seconds on, a window you park off the edge yourself stays where you put it.
+- **Plugging a monitor in no longer leaves blank desktops behind.** macOS
+  mints a desktop for the arriving monitor, and often another for the laptop,
+  and rift only removed one that was empty at the moment it looked, which it
+  rarely is: macOS parks the laptop's windows on it until rift sends them
+  home. Both were left, empty, on either display. A desktop macOS minted for a
+  display change is now removed as soon as nothing is on it, no display is
+  showing it, and it is not its display's only desktop, which for the
+  monitor's own is once you have moved a desktop of yours onto it.
+  This now holds for any change of displays, not just the first monitor
+  joining the laptop: plugging a second monitor in beside the first used to
+  leave two blank desktops on the laptop, which closing the lid then carried
+  onto the monitor.
+- **No more empty tiles for windows that are not there.** An app that hides
+  a window rather than closing it (Spotify's main window, Calendar's popovers,
+  Preview for a minute after a close) could leave rift holding a tile for it,
+  an empty slot beside the real windows, once a display change, wake or
+  desktop switch announced the window again. rift now takes the tile from any
+  window the window server is not drawing on a desktop it is showing, however
+  it got there, and gives it back if the window is shown again.
+- **A monitor that was away a long time gets its own desktops back.** When
+  it returned after rift had stopped waiting for it, a blank desktop macOS
+  minted for the plug, with windows parked on it, was taken for one of yours
+  and moved to the laptop. That could be the monitor's only desktop, so macOS
+  minted it another, and the monitor's own desktops, placed after it, went to
+  the laptop as well. Now the minted desktops stay where macOS made them until
+  they can be removed, a desktop is never placed after one that has left the
+  display, and a window macOS shows on every desktop no longer makes any one
+  of them look occupied.
+- **A window sent to another desktop is the one in front when you get
+  there.** macOS brings forward whatever was frontmost on a desktop the last
+  time it was shown, so after `move_window_to_space`, following the window put
+  a different app on top of it. The window you sent now gets focus when you
+  next arrive on that desktop, whether by `follow = true`, `switch_to_space` or
+  a swipe.
+- **Switching a workspace's layout and back keeps the arrangement.** bsp ->
+  stack -> bsp rebuilt the tree from the stack, with the window on top first
+  and the rest in an arbitrary order, so windows swapped places and every split
+  and ratio was lost. Returning to a layout now restores the tree you left,
+  with any windows that closed or opened in the meantime taken out or added.
+- **A floating window stays floating when you unminimize it.** Minimizing
+  dropped the window's floating mark, so it came back into the tiling tree
+  and stayed there until you floated it again by hand.
+
 ## [0.5.10-plus.7] - 2026-09-28
 
 ### Fixed

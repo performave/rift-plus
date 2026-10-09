@@ -1320,6 +1320,15 @@ pub struct LayoutSettings {
     /// Gap configuration for window spacing
     #[serde(default)]
     pub gaps: GapSettings,
+    /// Bundle ids of apps that draw their own dock, whose space rift keeps
+    /// clear the way it does for Apple's Dock.
+    ///
+    /// macOS lets no app reserve screen space, so tiles otherwise run
+    /// underneath a third-party dock. rift finds the dock's window against a
+    /// screen edge and measures the bar inside it through Accessibility, and
+    /// gives the space back while the dock is hidden. Empty to turn it off.
+    #[serde(default = "default_external_docks")]
+    pub external_docks: Vec<String>,
     /// Scrolling layout configuration (niri-style columns)
     #[serde(default)]
     pub scrolling: ScrollingLayoutSettings,
@@ -1872,6 +1881,10 @@ fn default_animation_fps() -> f64 { 100.0 }
 
 #[allow(dead_code)]
 pub fn no() -> bool { false }
+
+/// DockDoor Pro, the dock this was built against. Its plain DockDoor sibling
+/// only adds previews to Apple's Dock and draws nothing to keep clear of.
+fn default_external_docks() -> Vec<String> { vec!["com.ejbills.DockDoorPro".to_string()] }
 
 fn default_layout_folder() -> PathBuf { PathBuf::from("~/.config/rift/layouts") }
 

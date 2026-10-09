@@ -653,6 +653,22 @@ pub struct Reactor {
     /// actor cannot tell the two apart from what it sees; rift knows which
     /// desktops it destroyed itself.
     destroyed_on_command: Option<(SpaceId, std::time::Instant)>,
+    /// The window last sent to each desktop nobody was looking at, to be
+    /// focused when the user next arrives there. macOS focuses whatever was
+    /// frontmost on a desktop when it was last shown, and a window sent there
+    /// in the meantime never was: send Claude to the desktop where Zen was
+    /// last in use, follow it, and Zen comes forward over it. Sending a window
+    /// somewhere makes it the thing most recently put there, so it is what
+    /// arriving should show. See `focus_window_sent_to_arrived_space`.
+    sent_to_space: HashMap<SpaceId, WindowId>,
+    /// A switch rift just made to a desktop with a window sent to it, and
+    /// when. macOS brings forward whichever app was last in front on a
+    /// desktop about 30ms after arriving, well before the switch is reported;
+    /// the report then sets off an inventory of every app, and a focus asked
+    /// for after it waits behind that app's share. Answering macOS's
+    /// activation directly takes the window back while the desktop is still
+    /// appearing, instead of 200ms later. See `retake_focus_for_sent_window`.
+    arriving_with_sent_window: Option<(SpaceId, WindowId, std::time::Instant)>,
     /// A window's first refusal of a size, by the transaction it answered,
     /// waiting for a second write to confirm it. See `confirm_refusal`.
     refusal_candidates: HashMap<WindowId, TransactionId>,
@@ -668,6 +684,10 @@ pub struct Reactor {
     pub(super) display_disagreement: HashMap<u32, std::time::Instant>,
     /// An `ArrangeAfterDisplayMoved` is on its way.
     pub(super) rearrange_scheduled: bool,
+    /// Desktops the window server has lately listed on a different display
+    /// than before, with when, and since when a display has shown each. See
+    /// `rescue_floats_left_off_screen`.
+    pub(super) desktops_moved: HashMap<SpaceId, (std::time::Instant, Option<std::time::Instant>)>,
     /// The float grab strips last pushed to the event tap, to push only
     /// changes. See `Request::SetFloatDragStrips` (event tap).
     last_float_strips: Vec<(u32, i32, CGRect)>,
@@ -867,11 +887,14 @@ impl Reactor {
             modifier_drag_final: false,
             modifier_drag_at_x: 0.0,
             destroyed_on_command: None,
+            sent_to_space: HashMap::default(),
+            arriving_with_sent_window: None,
             refusal_candidates: HashMap::default(),
             last_layout_command: None,
             last_user_input: None,
             display_disagreement: HashMap::default(),
             rearrange_scheduled: false,
+            desktops_moved: HashMap::default(),
             last_float_strips: Vec::new(),
             last_tile_frames: Vec::new(),
             last_mouse_up: None,
@@ -1773,6 +1796,78 @@ impl Reactor {
         .ok()
     }
 
+    /// Tiled windows on a desktop a display is showing that the window
+    /// server is not drawing: ordered out, listed on that very desktop.
+    /// There is nothing there to tile, so the tile is a ghost -- an empty
+    /// slot beside the real windows.
+    ///
+    /// How a window gets into that state is not asked, on purpose. Spotify
+    /// closes a window by ordering it out and keeping it; Preview keeps a
+    /// closed one listed for a minute; Calendar's popovers come back from a
+    /// display change re-announced on their desktop; a wake re-announces
+    /// windows that have long been hidden. Each was once fixed on its own
+    /// route in, and the next app came in by another. Whatever the route,
+    /// the window server's word on what it is drawing is the rule.
+    ///
+    /// Taken out the way native fullscreen takes a window out (see
+    /// `untile_ghost_tiles`), so a window that is ordered in again goes back
+    /// to its slot. Left alone: a minimized window, a native tab being
+    /// switched, a window in native fullscreen, and a desktop that is not a
+    /// user desktop. The desktops shown are asked of the window server, not
+    /// taken from rift's own view: switching desktops orders the old one's
+    /// windows out before rift hears of the switch.
+    fn ghost_tiles(
+        &self,
+        only: impl Fn(WindowId) -> bool,
+    ) -> Vec<(WindowId, WindowServerId, SpaceId)> {
+        if self.is_mission_control_active() || self.is_in_drag() || self.refreshes_blocked() {
+            return Vec::new();
+        }
+        let mut shown: Option<Vec<SpaceId>> = None;
+        let mut ghosts = Vec::new();
+        for (wid, window) in self.state.windows.iter_windows() {
+            if !only(wid) || window.info.is_minimized {
+                continue;
+            }
+            let Some(wsid) = window.info.sys_id else { continue };
+            let Some(space) = self.space_of_tiled_window(wid) else {
+                continue;
+            };
+            if self.native_tab_switch_pending(wid)
+                || self.is_known_fullscreen_window(wsid)
+                || window_server::window_ordered_in(wsid) != Some(false)
+                || window_server::window_space(wsid) != Some(space)
+                || !window_server::space_is_user(space.get())
+            {
+                continue;
+            }
+            if shown.get_or_insert_with(window_server::visible_spaces).contains(&space) {
+                ghosts.push((wid, wsid, space));
+            }
+        }
+        ghosts
+    }
+
+    /// Takes every ghost `ghost_tiles` finds out of its tree. Marked hidden
+    /// first, or the layout events put it straight back.
+    fn untile_ghost_tiles(&mut self, only: impl Fn(WindowId) -> bool) -> EventOutcome {
+        let mut outcome = EventOutcome::default();
+        for (window, wsid, space) in self.ghost_tiles(only) {
+            debug!(
+                ?window,
+                ?wsid,
+                space = space.get(),
+                "Tiled window the window server is not drawing; untiling it"
+            );
+            crate::sys::trace::act("hidden_tile_untiled", &(window.idx.get(), space.get()));
+            self.state.windows.mark_window_hidden(wsid);
+            outcome = outcome
+                .with_layout_event(LayoutEvent::WindowRemovedPreserveFloating(window))
+                .with_arrange_passes(1);
+        }
+        outcome
+    }
+
     fn defer_window_inventory_refresh(&mut self) {
         self.refresh_quarantine_manager.pending_inventory_refresh = true;
     }
@@ -1948,6 +2043,7 @@ impl Reactor {
             Event::ArrangeAfterDisplayMoved => {
                 self.rearrange_scheduled = false;
                 let _ = LayoutManager::update_layout(self, false, false, None);
+                self.rescue_floats_left_off_screen();
                 return Ok(EventOutcome::default());
             }
             _ => {}
@@ -2057,6 +2153,7 @@ impl Reactor {
                         let _ = app.handle.send(Request::ApplicationGloballyActivated(pid));
                     }
                 }
+                self.retake_focus_for_sent_window(pid);
                 // The app thread will resolve the current AX main window and
                 // emit ApplicationActivated. Do not replay cached focus here.
                 return Ok(EventOutcome::focus_changed(None, should_update_notifications));
@@ -2295,7 +2392,8 @@ impl Reactor {
                 );
             }
             Event::WindowMinimized(wid) => {
-                return window_workflow::handle_window_minimized(&mut self.state, wid);
+                let floating = self.layout_manager.layout_engine.is_window_floating(wid);
+                return window_workflow::handle_window_minimized(&mut self.state, wid, floating);
             }
             Event::WindowDeminiaturized(wid) => {
                 let active_space = self.state.windows.window(wid).and_then(|window| {
@@ -2327,6 +2425,17 @@ impl Reactor {
                 // while the resized window went on, leaving a gap.
                 if self.modifier_drag.is_some() {
                     effective_mouse_state = Some(crate::sys::event::MouseState::Up);
+                }
+                // macOS moves the windows of a desktop that changed display a
+                // beat after the snapshot that says so; look again once it
+                // has, rather than trusting the frames the snapshot saw.
+                if effective_mouse_state != Some(crate::sys::event::MouseState::Down)
+                    && self.layout_manager.layout_engine.is_window_floating(wid)
+                    && self
+                        .best_space_for_window_id(wid)
+                        .is_some_and(|space| self.desktops_moved.contains_key(&space))
+                {
+                    self.schedule_rearrange(Duration::from_millis(300));
                 }
                 // Noted before the transaction gate below can discard the
                 // report: the button is down and this window is moving.
@@ -3262,6 +3371,7 @@ impl Reactor {
                 if let crate::sys::space_switch::SpaceSwitch::AlreadyShowing(space) = switch {
                     return Ok(self.arrive_on_already_shown_space(space, None));
                 }
+                self.note_switch_toward_sent_window(index, &switch);
                 return Ok(EventOutcome::default());
             }
             Event::Command(Command::Reactor(ReactorCommand::MoveWindowToSpace {
@@ -4410,6 +4520,7 @@ impl Reactor {
         }
         self.space_state.menu_bar_space = menu_bar_space;
         self.space_state.command_space = command_space;
+        self.note_desktops_moved(&display_space_ids);
         self.space_state.display_space_ids = display_space_ids;
         self.space_state.last_user_space_by_display = last_user_space_by_display;
 
@@ -4515,8 +4626,11 @@ impl Reactor {
         self.settle_displaced_windows();
         if !releases_lifecycle_refresh_quarantine {
             self.follow_space_switch_across_displays(&spaces_by_display_before, &mut outcome);
+            self.focus_window_sent_to_arrived_space(&spaces_by_display_before);
         }
         self.try_apply_pending_space_change();
+        // A desktop coming into view is when a ghost tile on it shows.
+        outcome.absorb(self.untile_ghost_tiles(|_| true));
         if should_force_refresh_layout {
             outcome.refresh_window_inventories = true;
             outcome = outcome.with_arrange_passes(1);
@@ -4595,6 +4709,120 @@ impl Reactor {
         }
 
         self.arrive_on_space(space, frame, None, outcome);
+    }
+
+    /// Focuses the window sent to a desktop that has just come into view. The
+    /// report of a switch comes after macOS has already activated its own
+    /// pick, so focusing here is the last word rather than a race with it.
+    ///
+    /// Only the window as it was sent: if it has since been moved on, closed,
+    /// or taken off the layout, macOS's choice stands. And a desktop that
+    /// comes into view is done with either way, so a later visit, after the
+    /// user has been working there, is left alone.
+    fn focus_window_sent_to_arrived_space(&mut self, before: &HashMap<String, SpaceId>) {
+        if self.sent_to_space.is_empty()
+            || self.is_mission_control_active()
+            || self.is_in_drag()
+            || self.modifier_drag.is_some()
+        {
+            return;
+        }
+        let arrived: Vec<SpaceId> = self
+            .space_state
+            .screens
+            .iter()
+            .filter_map(|screen| {
+                let space = screen.space?;
+                (!before.values().any(|&shown| shown == space)).then_some(space)
+            })
+            .collect();
+        for space in arrived {
+            if self.arriving_with_sent_window.is_some_and(|(arriving, ..)| arriving == space) {
+                self.arriving_with_sent_window = None;
+            }
+            let Some(wid) = self.sent_to_space.remove(&space) else {
+                continue;
+            };
+            if self.visible_focus_candidate_in_active_workspace(space, Some(wid)) != Some(wid) {
+                continue;
+            }
+            debug!(
+                ?wid,
+                space = space.get(),
+                "Focusing the window sent to this desktop"
+            );
+            crate::sys::trace::act("focus_sent_window", &(space.get(), wid));
+            self.handle_layout_response(
+                layout::EventResponse {
+                    focus_window: Some(wid),
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+    }
+
+    /// Remembers a switch rift has just made toward a desktop holding a sent
+    /// window, so macOS's activation on arrival can be answered at once.
+    fn note_switch_toward_sent_window(
+        &mut self,
+        index: usize,
+        switch: &crate::sys::space_switch::SpaceSwitch,
+    ) {
+        if !matches!(switch, crate::sys::space_switch::SpaceSwitch::Issued) {
+            return;
+        }
+        let Some(space) = crate::sys::space_switch::space_at_index(index) else {
+            return;
+        };
+        if let Some(&wid) = self.sent_to_space.get(&space) {
+            self.arriving_with_sent_window = Some((space, wid, crate::sys::trace::now()));
+        }
+    }
+
+    /// macOS has brought another app forward just after rift switched to a
+    /// desktop with a window sent to it: raise that window straight away.
+    ///
+    /// Straight to the raise manager, past `handle_layout_response`. That
+    /// path only focuses a window it has seen become visible on a desktop it
+    /// knows is shown, and neither is reported yet -- asking earlier, at the
+    /// switch itself, was dropped for exactly that and left the other app in
+    /// front. Nor does the switch alone do: macOS's activation comes after it
+    /// and would win. The report's own focus still follows, as the fallback
+    /// if this raise does not take.
+    fn retake_focus_for_sent_window(&mut self, activated: pid_t) {
+        let Some((space, wid, at)) = self.arriving_with_sent_window else {
+            return;
+        };
+        if crate::sys::trace::now().saturating_duration_since(at)
+            > std::time::Duration::from_millis(500)
+        {
+            self.arriving_with_sent_window = None;
+            return;
+        }
+        if activated == wid.pid
+            || self.is_mission_control_active()
+            || self.is_in_drag()
+            || self.modifier_drag.is_some()
+            || self.best_space_for_window_id(wid) != Some(space)
+        {
+            return;
+        }
+        let mut app_handles = HashMap::default();
+        self.insert_app_handle_for_window(&mut app_handles, wid);
+        if app_handles.is_empty() {
+            return;
+        }
+        crate::sys::trace::act("retake_focus_for_sent_window", &(space.get(), wid, activated));
+        let msg = raise_manager::Event::RaiseRequest(RaiseRequest {
+            raise_windows: Vec::new(),
+            focus_window: Some((wid, None)),
+            app_handles,
+            focus_quiet: Quiet::No,
+        });
+        if let Err(e) = self.communication_manager.raise_manager_tx.try_send(msg) {
+            warn!("Failed to send raise request to raise manager: {}", e);
+        }
     }
 
     /// Land on the display showing `space`, the way a space switch on the
@@ -4845,6 +5073,11 @@ impl Reactor {
             outcome.absorb(EventOutcome::layout_changed(false));
         }
         self.apply_event_outcome(outcome);
+        // Last, after the inventory has added what it lists: an app that
+        // still lists a window it has ordered out would otherwise put the
+        // ghost straight back.
+        let ghosts = self.untile_ghost_tiles(|wid| wid.pid == pid);
+        self.apply_event_outcome(ghosts);
     }
 
     fn best_space_for_window(
@@ -5508,18 +5741,6 @@ impl Reactor {
         });
     }
 
-    /// Floating windows a display change left almost entirely off screen,
-    /// brought back onto the display they overlap most.
-    ///
-    /// macOS moves the windows that were on a display when it goes, but not
-    /// one that still has a sliver on a display that stayed: a float that
-    /// straddled onto a monitor, or sat at its edge, is left where it was when
-    /// the monitor is unplugged or moved, with a few pixels showing -- Eric's
-    /// "windows nearly outside the viewport when connecting the monitor back
-    /// in". rift lays out tiled windows itself; floating ones it leaves where
-    /// they are, so nothing put these right. Only in the seconds after the
-    /// window server has moved windows for a display change: at any other
-    /// time a window parked off screen is where someone put it.
     /// Arrange again after `after`, once: one retry on its way covers every
     /// caller that wants one.
     pub(super) fn schedule_rearrange(&mut self, after: Duration) {
@@ -5543,12 +5764,88 @@ impl Reactor {
         );
     }
 
+    /// Desktops the window server now lists on a different display than it
+    /// did, noted for `rescue_floats_left_off_screen`. Whatever carried one
+    /// there -- a monitor plugged in or unplugged, or the user dragging it
+    /// between displays in Mission Control -- macOS moved every window on it,
+    /// so none of them is where anyone put it.
+    fn note_desktops_moved(&mut self, now: &HashMap<String, Vec<SpaceId>>) {
+        let before: HashMap<SpaceId, &String> = self
+            .space_state
+            .display_space_ids
+            .iter()
+            .flat_map(|(uuid, spaces)| spaces.iter().map(move |space| (*space, uuid)))
+            .collect();
+        let at = std::time::Instant::now();
+        let mut shown_moved = false;
+        for (uuid, spaces) in now {
+            for space in spaces {
+                if before.get(space).is_none_or(|was| *was == uuid) {
+                    continue;
+                }
+                debug!(desktop = space.get(), display = %uuid, "A desktop changed display");
+                self.desktops_moved.insert(*space, (at, None));
+                shown_moved |= self.space_state.screens.iter().any(|s| s.space == Some(*space));
+            }
+        }
+        // The windows follow the snapshot, and an app may not report the
+        // move at all; look again once they have landed.
+        if shown_moved {
+            self.schedule_rearrange(Duration::from_millis(600));
+        }
+    }
+
+    /// Floating windows a display change left off screen, brought back onto
+    /// the display showing their desktop.
+    ///
+    /// rift lays out tiled windows itself; floating ones it leaves where they
+    /// are, so nothing else puts these right. Two cases:
+    ///
+    /// - After a display change, a float almost entirely off screen. macOS
+    ///   moves the windows that were on a display when it goes, but not one
+    ///   that still has a sliver on a display that stayed: a float that
+    ///   straddled onto a monitor, or sat at its edge, is left where it was
+    ///   with a few pixels showing. Only in the seconds after the window
+    ///   server has moved windows for the change: at any other time a window
+    ///   parked off screen is where someone put it.
+    /// - On a desktop that changed display, any float not wholly on screen.
+    ///   Moving a desktop to another display, macOS places its windows where
+    ///   it likes, often hanging off the far edge (2026-09-29: a desktop
+    ///   dragged onto the LG in Mission Control put Obsidian at x=2520 of
+    ///   2560). None of those frames was chosen by anyone, so a partial
+    ///   overhang is as wrong as a total one. Judged when a display shows the
+    ///   desktop -- a hidden desktop is not written to -- and for a few
+    ///   seconds after, while macOS may still be moving them.
     fn rescue_floats_left_off_screen(&mut self) {
         const MOSTLY_GONE: f64 = 0.25;
         const AFTER_CHURN: Duration = Duration::from_secs(10);
-        if !crate::sys::display_churn::since_windows_last_moved()
-            .is_some_and(|since| since < AFTER_CHURN)
-        {
+        // Shown this long, a moved desktop's windows are where they will stay
+        // unless someone moves them, and from then on that someone is the user.
+        const MOVED_SETTLE: Duration = Duration::from_secs(3);
+        // A desktop moved while hidden keeps its claim until it is shown, but
+        // not indefinitely.
+        const MOVED_FORGET: Duration = Duration::from_secs(30 * 60);
+        // Frames are whole points; a window flush with an edge can read a
+        // fraction past it.
+        const EDGE_SLACK: f64 = 2.0;
+
+        self.desktops_moved.retain(|_, (at, shown)| {
+            at.elapsed() < MOVED_FORGET && shown.is_none_or(|since| since.elapsed() < MOVED_SETTLE)
+        });
+        // Mid-change the geometry is about to be wrong, and inside Mission
+        // Control windows are not where they will be; a write in either
+        // lands somewhere nobody asked for.
+        if crate::sys::display_churn::is_active() || self.is_mission_control_active() {
+            return;
+        }
+        let after_churn = crate::sys::display_churn::since_windows_last_moved()
+            .is_some_and(|since| since < AFTER_CHURN);
+        if !after_churn && self.desktops_moved.is_empty() {
+            return;
+        }
+        if crate::sys::event::get_mouse_state() == Some(crate::sys::event::MouseState::Down) {
+            // Whatever the pointer is doing, it is not asking rift to move a
+            // window; the next look comes with the release.
             return;
         }
         let screens: Vec<(CGRect, SpaceId)> = self
@@ -5560,8 +5857,19 @@ impl Reactor {
         if screens.is_empty() {
             return;
         }
+        let now = std::time::Instant::now();
         let mut moves: Vec<(WindowId, WindowServerId, CGRect)> = Vec::new();
         for (_, space) in &screens {
+            let moved = match self.desktops_moved.get_mut(space) {
+                Some((_, shown)) => {
+                    shown.get_or_insert(now);
+                    true
+                }
+                None => false,
+            };
+            if !moved && !after_churn {
+                continue;
+            }
             for wid in self
                 .layout_manager
                 .layout_engine
@@ -5589,7 +5897,16 @@ impl Reactor {
                 };
                 let overlap = frame.intersection(&target_screen);
                 let share = overlap.size.width * overlap.size.height / area;
-                if share >= MOSTLY_GONE {
+                let overhangs = frame.origin.x < target_screen.origin.x - EDGE_SLACK
+                    || frame.origin.y < target_screen.origin.y - EDGE_SLACK
+                    || frame.max().x > target_screen.max().x + EDGE_SLACK
+                    || frame.max().y > target_screen.max().y + EDGE_SLACK;
+                let rescue = if moved {
+                    overhangs
+                } else {
+                    share < MOSTLY_GONE
+                };
+                if !rescue {
                     continue;
                 }
                 let width = frame.size.width.min(target_screen.size.width);
@@ -5610,6 +5927,9 @@ impl Reactor {
                 &serde_json::json!({
                     "window": wid.idx.get(),
                     "to": [target.origin.x, target.origin.y, target.size.width, target.size.height],
+                    "desktop_moved": self
+                        .best_space_for_window_id(wid)
+                        .is_some_and(|space| self.desktops_moved.contains_key(&space)),
                 }),
             );
             info!(
@@ -6869,6 +7189,9 @@ impl Reactor {
             return EventOutcome::default();
         }
         self.note_window_sent_to_space(window_server_id);
+        if !self.space_state.screens.iter().any(|screen| screen.space == Some(space)) {
+            self.sent_to_space.insert(space, wid);
+        }
         if follow {
             let switch = unsafe {
                 crate::sys::space_switch::switch_to_space_index(
@@ -6882,6 +7205,7 @@ impl Reactor {
             if let crate::sys::space_switch::SpaceSwitch::AlreadyShowing(space) = switch {
                 return self.arrive_on_already_shown_space(space, Some(wid));
             }
+            self.note_switch_toward_sent_window(index, &switch);
         }
         EventOutcome::default()
     }
@@ -8540,6 +8864,11 @@ impl Reactor {
         }
         self.mission_control_manager.mission_control_state = new_state;
         self.update_focus_follows_mouse_state();
+        // A desktop dragged to another display in Mission Control had its
+        // windows moved while the rescue could not look.
+        if !active && !self.desktops_moved.is_empty() {
+            self.schedule_rearrange(Duration::from_millis(300));
+        }
     }
 
     fn refresh_windows_after_mission_control(&mut self) {

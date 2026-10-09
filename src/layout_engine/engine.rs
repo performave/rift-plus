@@ -163,6 +163,15 @@ pub struct LayoutEngine {
     /// minimum size, but most enforce one, and a window asked for less than
     /// it will accept simply stays larger — and lies over its neighbour.
     observed_min_sizes: HashMap<WindowId, CGSize>,
+    /// The tree a workspace had in a layout mode it has since left, and that
+    /// tree's layout. Switching modes builds the new mode from a flat list of
+    /// windows, and leaving stack lists only the window on top, so a round
+    /// trip bsp -> stack -> bsp lost every split and ratio and put the rest
+    /// back in window-id order: two windows that had never been touched
+    /// swapped places. Coming back restores the tree that was left instead.
+    /// Runtime only: a restart restores the mode the workspace was saved in,
+    /// and the others start over.
+    parked_layouts: HashMap<VirtualWorkspaceId, Vec<(LayoutMode, LayoutSystemKind, LayoutId)>>,
     virtual_workspace_manager: WorkspaceStore,
     layout_settings: LayoutSettings,
     broadcast_tx: Option<BroadcastSender>,
@@ -380,18 +389,65 @@ impl LayoutEngine {
         }
         window_order.retain(|wid| !self.floating.is_floating(*wid));
 
+        // Only tiling modes are parked: a floating workspace's windows are
+        // floats, which the trees on either side of it do not hold.
+        let parks = current_mode != LayoutMode::Floating && mode != LayoutMode::Floating;
+        let other_sizes: Vec<LayoutId> = self
+            .workspace_layouts
+            .all_layouts()
+            .into_iter()
+            .filter(|(workspace, layout)| *workspace == workspace_id && Some(*layout) != old_layout)
+            .map(|(_, layout)| layout)
+            .collect();
+        let restored = if parks {
+            self.parked_layouts.get_mut(&workspace_id).and_then(|parked| {
+                let index = parked.iter().position(|(parked_mode, ..)| *parked_mode == mode)?;
+                let (_, system, layout) = parked.swap_remove(index);
+                Some((system, layout))
+            })
+        } else {
+            None
+        };
+
         let Some(workspace) = self.virtual_workspace_manager.workspaces.get_mut(workspace_id)
         else {
             return false;
         };
         workspace.layout_mode = mode;
-        workspace.layout_system =
-            VirtualWorkspace::create_layout_system(mode, &self.layout_settings);
-
-        let new_layout = workspace.layout_system.create_layout();
+        let (system, new_layout) = match restored {
+            Some((system, layout)) => (system, layout),
+            None => {
+                let mut system =
+                    VirtualWorkspace::create_layout_system(mode, &self.layout_settings);
+                let layout = system.create_layout();
+                (system, layout)
+            }
+        };
+        let left = std::mem::replace(&mut workspace.layout_system, system);
+        if parks && let Some(old_layout) = old_layout {
+            // Only the tree in use is kept. The ones remembered for other
+            // screen sizes would hold the same windows a second time, and a
+            // window removed later is only ever looked for in the tree it is
+            // in.
+            let mut left = left;
+            for layout in other_sizes {
+                if left.contains_layout(layout) {
+                    left.remove_layout(layout);
+                }
+            }
+            let parked = self.parked_layouts.entry(workspace_id).or_default();
+            parked.retain(|(parked_mode, ..)| *parked_mode != current_mode);
+            parked.push((current_mode, left, old_layout));
+        }
         self.workspace_layouts.replace_layouts_for_workspace(workspace_id, new_layout);
 
-        for wid in window_order {
+        // A restored tree is as it was left: windows that have gone since
+        // come out of it, and ones that arrived go in after the selection.
+        let parked_windows = workspace.layout_system.all_windows_in_layout(new_layout);
+        for wid in parked_windows.iter().filter(|wid| !window_order.contains(wid)) {
+            workspace.layout_system.remove_window(*wid);
+        }
+        for wid in window_order.into_iter().filter(|wid| !parked_windows.contains(wid)) {
             workspace.layout_system.add_window_after_selection(new_layout, wid);
         }
 
@@ -1648,6 +1704,7 @@ impl LayoutEngine {
             focused_window: None,
             window_layout_constraints: HashMap::default(),
             observed_min_sizes: HashMap::default(),
+            parked_layouts: HashMap::default(),
             virtual_workspace_manager,
             layout_settings: layout_settings.clone(),
             broadcast_tx,
@@ -5663,6 +5720,100 @@ mod tests {
             Some(LayoutMode::Stack),
             "a reload with no matching rule must not reset the mode to layout.mode"
         );
+    }
+
+    fn tree_on(engine: &LayoutEngine, space: SpaceId) -> String {
+        let workspace = engine.active_workspace(space).expect("an active workspace");
+        let layout = engine.workspace_layouts.active(workspace).expect("an active layout");
+        engine.workspace_tree(workspace).draw_tree(layout)
+    }
+
+    fn toggle_bsp_stack(engine: &mut LayoutEngine, store: &mut WindowStore, space: SpaceId) {
+        let _ = engine.handle_virtual_workspace_command(
+            store,
+            space,
+            &LayoutCommand::ToggleWorkspaceLayout(vec![LayoutMode::Bsp, LayoutMode::Stack]),
+        );
+    }
+
+    /// bsp -> stack -> bsp used to rebuild the bsp tree from the stack's
+    /// windows: the one on top, then the rest in window-id order. Anything
+    /// arranged by hand came back scrambled -- two windows swapped places --
+    /// and every split and ratio was lost. The tree that was left comes back.
+    #[test]
+    fn toggling_bsp_to_stack_and_back_restores_the_tree() {
+        let mut store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(4);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1920.0, 1080.0)),
+        );
+        let _ = engine.handle_virtual_workspace_command(
+            &mut store,
+            space,
+            &LayoutCommand::SetWorkspaceLayout {
+                workspace: None,
+                mode: LayoutMode::Bsp,
+            },
+        );
+        for idx in 1..=3 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+        swap_first_two(&mut engine, space);
+        let order = order_on(&mut engine, space);
+        let tree = tree_on(&engine, space);
+
+        toggle_bsp_stack(&mut engine, &mut store, space);
+        assert_ne!(tree_on(&engine, space), tree, "precondition: now a stack");
+        toggle_bsp_stack(&mut engine, &mut store, space);
+
+        assert_eq!(order_on(&mut engine, space), order);
+        assert_eq!(tree_on(&engine, space), tree);
+    }
+
+    /// Windows that come and go while the workspace is a stack are reconciled
+    /// into the restored tree: the closed one leaves it, the new one joins.
+    #[test]
+    fn a_restored_tree_follows_windows_that_came_and_went_meanwhile() {
+        let mut store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(4);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1920.0, 1080.0)),
+        );
+        let _ = engine.handle_virtual_workspace_command(
+            &mut store,
+            space,
+            &LayoutCommand::SetWorkspaceLayout {
+                workspace: None,
+                mode: LayoutMode::Bsp,
+            },
+        );
+        for idx in 1..=3 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+
+        toggle_bsp_stack(&mut engine, &mut store, space);
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowRemoved(WindowId::new(1, 2)));
+        let _ =
+            engine.handle_event(&mut store, LayoutEvent::WindowAdded(space, WindowId::new(1, 4)));
+        toggle_bsp_stack(&mut engine, &mut store, space);
+
+        let mut windows = order_on(&mut engine, space);
+        windows.sort();
+        assert_eq!(windows, vec![
+            WindowId::new(1, 1),
+            WindowId::new(1, 3),
+            WindowId::new(1, 4)
+        ]);
     }
 
     #[test]

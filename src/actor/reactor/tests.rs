@@ -8642,6 +8642,92 @@ mod mouse_follows_focus {
         crate::sys::window_server::set_cursor_location_override(None);
     }
 
+    /// Send a window to a desktop nobody is looking at, then switch to it
+    /// yourself. That switch is on the key window's display, so it is
+    /// macOS's to finish, and macOS brings forward whatever was frontmost
+    /// there before -- never the window just sent. rift has the last word:
+    /// the space change is reported after macOS's activation.
+    #[test]
+    fn arriving_on_a_desktop_focuses_the_window_sent_there() {
+        let (_apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+        let b = WindowId::new(1, 2);
+        let left = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let right = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        switch_right_display_to(&mut reactor, SpaceId::new(3));
+        while raise_manager_rx.try_recv().is_ok() {}
+        reactor.sent_to_space.insert(SpaceId::new(2), b);
+
+        let show_left = |reactor: &mut Reactor, space: SpaceId| {
+            reactor.handle_event(space_state_event_with(
+                vec![left, right],
+                vec![Some(space), Some(SpaceId::new(3))],
+                |state| state.has_seen_display_set = true,
+            ));
+        };
+        show_left(&mut reactor, SpaceId::new(2));
+
+        let msg = raise_manager_rx.try_recv().expect("the sent window is focused").1;
+        let raise_manager::Event::RaiseRequest(RaiseRequest { focus_window, .. }) = msg else {
+            panic!("unexpected raise manager event: {msg:?}");
+        };
+        assert_eq!(focus_window.map(|(wid, _)| wid), Some(b));
+
+        // Arriving is what the record was for; the next visit is macOS's.
+        show_left(&mut reactor, SpaceId::new(1));
+        while raise_manager_rx.try_recv().is_ok() {}
+        show_left(&mut reactor, SpaceId::new(2));
+        assert!(raise_manager_rx.try_recv().is_err());
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// macOS brings forward the app last in front on a desktop about 30ms
+    /// after arriving, before the switch is even reported. The sent window
+    /// is raised straight back, not after the report and the inventory it
+    /// sets off -- which is what showed as a flicker of the other app.
+    #[test]
+    fn macos_activating_another_app_on_arrival_is_answered_at_once() {
+        let (mut apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+        let b = WindowId::new(1, 2);
+        switch_right_display_to(&mut reactor, SpaceId::new(3));
+        reactor.handle_events(apps.make_app_with_opts(2, make_windows(1), None, false, true));
+        apps.simulate_until_quiet(&mut reactor);
+        while raise_manager_rx.try_recv().is_ok() {}
+        reactor.sent_to_space.insert(SpaceId::new(2), b);
+        reactor.arriving_with_sent_window = Some((SpaceId::new(2), b, crate::sys::trace::now()));
+
+        reactor.handle_event(Event::ApplicationGloballyActivated(2));
+
+        let msg = raise_manager_rx.try_recv().expect("the sent window is raised").1;
+        let raise_manager::Event::RaiseRequest(RaiseRequest { focus_window, .. }) = msg else {
+            panic!("unexpected raise manager event: {msg:?}");
+        };
+        assert_eq!(focus_window.map(|(wid, _)| wid), Some(b));
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
+    /// A window sent on somewhere else since is not on the desktop arrived
+    /// at, so macOS's pick stands.
+    #[test]
+    fn arriving_leaves_focus_alone_when_the_sent_window_has_moved_on() {
+        let (_apps, mut reactor, mut raise_manager_rx) = two_displays_focused_on_left();
+        let b = WindowId::new(1, 2);
+        let left = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let right = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        switch_right_display_to(&mut reactor, SpaceId::new(2));
+        while raise_manager_rx.try_recv().is_ok() {}
+        reactor.sent_to_space.insert(SpaceId::new(3), b);
+
+        reactor.handle_event(space_state_event_with(
+            vec![left, right],
+            vec![Some(SpaceId::new(3)), Some(SpaceId::new(2))],
+            |state| state.has_seen_display_set = true,
+        ));
+
+        assert!(raise_manager_rx.try_recv().is_err());
+        assert!(reactor.sent_to_space.is_empty());
+        crate::sys::window_server::set_cursor_location_override(None);
+    }
+
     /// When the space has nothing rift knows of, the pointer still crosses
     /// over: to the middle of that display.
     #[test]
@@ -9269,6 +9355,295 @@ mod floating_placement {
         crate::sys::display_churn::set_since_windows_last_moved(None);
         crate::sys::window_server::set_live_frame_override(wsid, None);
         assert_eq!(reactor.transaction_manager.get_target_frame(wsid), before);
+    }
+
+    /// Plugging the LG in minted a blank desktop for it and another the laptop
+    /// was switched to; after the user moved their desktops onto the LG both
+    /// were left, empty, on either display (2026-09-30). Each goes once it is
+    /// empty, unshown and not its display's only desktop -- the LG's only when
+    /// the user has given the LG a desktop of their own and switched to it.
+    #[test]
+    fn blank_desktops_minted_for_a_plug_go_once_nothing_needs_them() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        sa::set_available(true);
+        let mut reactor = test_reactor();
+        let laptop = CGRect::new(CGPoint::new(-1453., 688.), CGSize::new(1453., 948.));
+        let lg = CGRect::new(CGPoint::new(0., 31.), CGSize::new(2560., 1409.));
+        let (own3, own4, minted42, minted43) = (
+            SpaceId::new(3),
+            SpaceId::new(4),
+            SpaceId::new(42),
+            SpaceId::new(43),
+        );
+        let ids = |laptop_ids: Vec<SpaceId>, lg_ids: Vec<SpaceId>| {
+            [
+                ("test-display-0".to_string(), laptop_ids),
+                ("test-display-1".to_string(), lg_ids),
+            ]
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+        };
+        let now = crate::sys::trace::now();
+        reactor.display_archive.litter.push((minted42, now));
+        reactor.display_archive.litter.push((minted43, now));
+
+        // Just after the plug: the laptop back on its own desktop, the LG on
+        // the only one it has.
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, lg],
+            vec![Some(own3), Some(minted43)],
+            |state| state.display_space_ids = ids(vec![minted42, own3, own4], vec![minted43]),
+        ));
+        assert_eq!(
+            sa::space_destroys(),
+            vec![minted42.get()],
+            "the laptop's blank one goes"
+        );
+        assert!(
+            reactor.display_archive.litter.iter().any(|(s, _)| *s == minted43),
+            "the LG's only desktop was given up on"
+        );
+
+        // The user drags desktop 4 onto the LG and switches to it.
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, lg],
+            vec![Some(own3), Some(own4)],
+            |state| state.display_space_ids = ids(vec![own3], vec![own4, minted43]),
+        ));
+        assert_eq!(sa::space_destroys(), vec![minted42.get(), minted43.get()]);
+        assert!(reactor.display_archive.litter.is_empty());
+    }
+
+    /// A second monitor joining the first had macOS mint two blank desktops on
+    /// the laptop (2026-10-09). Only an arrival with one display already here
+    /// used to note them, so they were left for the user to delete by hand.
+    /// Any change of displays notes what it minted.
+    #[test]
+    fn blank_desktops_minted_when_a_second_monitor_joins_go() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        sa::set_available(true);
+        let mut reactor = test_reactor();
+        let laptop = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1453., 948.));
+        let dell = CGRect::new(CGPoint::new(1453., 0.), CGSize::new(2560., 1409.));
+        let (own3, own4, dell10, small20, minted30, minted31) = (
+            SpaceId::new(3),
+            SpaceId::new(4),
+            SpaceId::new(10),
+            SpaceId::new(20),
+            SpaceId::new(30),
+            SpaceId::new(31),
+        );
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, dell],
+            vec![Some(own3), Some(dell10)],
+            |state| {
+                state.display_space_ids = [
+                    ("test-display-0".to_string(), vec![own3, own4]),
+                    ("test-display-1".to_string(), vec![dell10]),
+                ]
+                .into_iter()
+                .collect()
+            },
+        ));
+        assert!(sa::space_destroys().is_empty());
+
+        // The second monitor: SkyLight lists it, and the laptop's two new
+        // desktops, before the display list has a screen for it.
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, dell],
+            vec![Some(own3), Some(dell10)],
+            |state| {
+                state.display_space_ids = [
+                    ("test-display-0".to_string(), vec![
+                        own3, own4, minted31, minted30,
+                    ]),
+                    ("test-display-1".to_string(), vec![dell10]),
+                    ("test-display-2".to_string(), vec![small20]),
+                ]
+                .into_iter()
+                .collect()
+            },
+        ));
+        assert_eq!(sa::space_destroys(), vec![minted30.get(), minted31.get()]);
+        assert!(
+            reactor.display_archive.litter.iter().any(|(s, _)| *s == small20),
+            "the new monitor's only desktop stays"
+        );
+    }
+
+    /// A desktop the user makes with the displays unchanged is theirs.
+    #[test]
+    fn a_desktop_made_with_the_displays_unchanged_is_left() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        sa::set_available(true);
+        let mut reactor = test_reactor();
+        let laptop = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let (own, made) = (SpaceId::new(3), SpaceId::new(42));
+        let ids = |spaces: Vec<SpaceId>| {
+            [("test-display-0".to_string(), spaces)].into_iter().collect::<HashMap<_, _>>()
+        };
+        reactor.handle_event(space_state_event_with(vec![laptop], vec![Some(own)], |state| {
+            state.display_space_ids = ids(vec![own])
+        }));
+        reactor.handle_event(space_state_event_with(vec![laptop], vec![Some(own)], |state| {
+            state.display_space_ids = ids(vec![own, made])
+        }));
+        assert!(sa::space_destroys().is_empty());
+        assert!(reactor.display_archive.litter.is_empty());
+    }
+
+    /// A blank desktop a display is showing is never destroyed: Dock does not
+    /// survive it. It waits for the switch away.
+    #[test]
+    fn a_blank_minted_desktop_on_screen_waits_for_the_switch_away() {
+        use crate::sys::scripting_addition::test_hooks as sa;
+        sa::set_available(true);
+        let mut reactor = test_reactor();
+        let laptop = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+        let (own, minted) = (SpaceId::new(3), SpaceId::new(42));
+        let ids = |spaces: Vec<SpaceId>| {
+            [("test-display-0".to_string(), spaces)].into_iter().collect::<HashMap<_, _>>()
+        };
+        reactor.display_archive.litter.push((minted, crate::sys::trace::now()));
+        reactor.handle_event(space_state_event_with(
+            vec![laptop],
+            vec![Some(minted)],
+            |state| state.display_space_ids = ids(vec![minted, own]),
+        ));
+        assert!(sa::space_destroys().is_empty());
+        reactor.handle_event(space_state_event_with(vec![laptop], vec![Some(own)], |state| {
+            state.display_space_ids = ids(vec![minted, own])
+        }));
+        assert_eq!(sa::space_destroys(), vec![minted.get()]);
+    }
+
+    /// The float fixture's desktop listed on a laptop beside a monitor that
+    /// shows desktop 3, then carried to the monitor -- as dragging it there in
+    /// Mission Control does -- with `shown` deciding whether the monitor
+    /// switches to it. Returns the monitor's frame.
+    fn move_float_desktop_to_monitor(
+        reactor: &mut Reactor,
+        laptop: CGRect,
+        space: SpaceId,
+        shown: bool,
+    ) -> CGRect {
+        let monitor = CGRect::new(CGPoint::new(1440., 0.), CGSize::new(2560., 1440.));
+        let (other, fresh) = (SpaceId::new(3), SpaceId::new(2));
+        let ids = |laptop_ids: Vec<SpaceId>, monitor_ids: Vec<SpaceId>| {
+            [
+                ("test-display-0".to_string(), laptop_ids),
+                ("test-display-1".to_string(), monitor_ids),
+            ]
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+        };
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, monitor],
+            vec![Some(space), Some(other)],
+            |state| state.display_space_ids = ids(vec![space], vec![other]),
+        ));
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, monitor],
+            vec![Some(fresh), Some(if shown { space } else { other })],
+            |state| state.display_space_ids = ids(vec![fresh], vec![other, space]),
+        ));
+        monitor
+    }
+
+    /// A desktop carried to another display has its windows placed by macOS,
+    /// often hanging off the far edge (2026-09-29: a desktop dragged onto the
+    /// LG in Mission Control left Obsidian at x=2520 of 2560, Preview a third
+    /// off). Nobody chose those frames, so a float only partly off screen is
+    /// brought fully back too -- not only one that is almost gone.
+    #[test]
+    fn a_float_on_a_desktop_moved_to_another_display_is_brought_fully_on_screen() {
+        let (mut reactor, space, _wid, wsid, laptop) = floating_window_on_one_screen();
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        // A third of it past the monitor's right edge.
+        let overhanging = CGRect::new(CGPoint::new(3600., 30.), CGSize::new(600., 400.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(overhanging));
+        let monitor = move_float_desktop_to_monitor(&mut reactor, laptop, space, true);
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+
+        let target = reactor.transaction_manager.get_target_frame(wsid).expect("a frame written");
+        assert!(
+            target.origin.x >= monitor.origin.x
+                && target.max().x <= monitor.max().x
+                && target.origin.y >= monitor.origin.y
+                && target.max().y <= monitor.max().y,
+            "not brought fully onto the monitor: {target:?}"
+        );
+        assert_eq!(target.size, overhanging.size);
+        assert_eq!(
+            target.origin.y, overhanging.origin.y,
+            "moved further than it had to"
+        );
+    }
+
+    /// A hidden desktop is not written to. Its windows are brought back when
+    /// a display shows it, however much later that is.
+    #[test]
+    fn a_moved_desktops_floats_wait_until_it_is_shown() {
+        let (mut reactor, space, _wid, wsid, laptop) = floating_window_on_one_screen();
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        let overhanging = CGRect::new(CGPoint::new(3600., 30.), CGSize::new(600., 400.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(overhanging));
+        let before = reactor.transaction_manager.get_target_frame(wsid);
+        let monitor = move_float_desktop_to_monitor(&mut reactor, laptop, space, false);
+        assert_eq!(
+            reactor.transaction_manager.get_target_frame(wsid),
+            before,
+            "wrote to a window on a desktop no display shows"
+        );
+
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, monitor],
+            vec![Some(SpaceId::new(2)), Some(space)],
+            |state| {
+                state.display_space_ids = [
+                    ("test-display-0".to_string(), vec![SpaceId::new(2)]),
+                    ("test-display-1".to_string(), vec![SpaceId::new(3), space]),
+                ]
+                .into_iter()
+                .collect()
+            },
+        ));
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+        let target = reactor.transaction_manager.get_target_frame(wsid).expect("a frame written");
+        assert!(
+            target.max().x <= monitor.max().x,
+            "left hanging off the edge: {target:?}"
+        );
+    }
+
+    /// Once a moved desktop has been on screen a while, its windows are where
+    /// they will stay, and one the user then parks half off an edge stays.
+    #[test]
+    fn a_float_parked_off_an_edge_after_the_move_settled_is_left() {
+        let (mut reactor, space, _wid, wsid, laptop) = floating_window_on_one_screen();
+        crate::sys::display_churn::set_since_windows_last_moved(None);
+        let monitor = move_float_desktop_to_monitor(&mut reactor, laptop, space, true);
+        let settled = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        reactor.desktops_moved.insert(space, (settled, Some(settled)));
+
+        let parked = CGRect::new(CGPoint::new(3600., 30.), CGSize::new(600., 400.));
+        crate::sys::window_server::set_live_frame_override(wsid, Some(parked));
+        let before = reactor.transaction_manager.get_target_frame(wsid);
+        reactor.handle_event(space_state_event_with(
+            vec![laptop, monitor],
+            vec![Some(SpaceId::new(2)), Some(space)],
+            |state| {
+                state.display_space_ids = [
+                    ("test-display-0".to_string(), vec![SpaceId::new(2)]),
+                    ("test-display-1".to_string(), vec![SpaceId::new(3), space]),
+                ]
+                .into_iter()
+                .collect()
+            },
+        ));
+        crate::sys::window_server::set_live_frame_override(wsid, None);
+        assert_eq!(reactor.transaction_manager.get_target_frame(wsid), before);
+        assert!(reactor.desktops_moved.is_empty(), "a settled move was kept");
     }
 
     /// A float moved by something other than a drag keeps its new place:
@@ -12002,6 +12377,90 @@ mod display_archive {
             "the memory is spent once the display is back"
         );
         set_window_spaces_override(wsid, None);
+        crate::sys::screen::set_managed_display_spaces_override(None);
+        sa::set_available(false);
+    }
+
+    /// The LG back after a give-up, 2026-10-08: macOS parked a laptop window
+    /// on the blank desktop it minted for the LG. Counted as occupied, that
+    /// desktop was taken for one the user made and carried to the laptop --
+    /// the LG's only desktop, so macOS minted it another -- and the LG's own
+    /// desktops, placed after it, followed it there.
+    #[test]
+    fn a_revived_return_leaves_the_monitor_its_blank_desktop_with_windows_parked_on_it() {
+        let mut reactor = test_reactor();
+        reactor.config.settings.displaced_windows = crate::common::config::DisplacedWindows::Spaces;
+        sa::set_available(true);
+        let home = space1();
+        let lgs = SpaceId::new(60);
+        managed(vec![("test-display-0", vec![home, lgs])]);
+        reactor.handle_event(space_state_event_with(
+            vec![screen1()],
+            vec![Some(lgs)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home, lgs]);
+                state.last_user_space_by_display.insert("test-display-0".to_string(), lgs);
+            },
+        ));
+        reactor.add_test_app(1);
+        let frame = CGRect::new(CGPoint::new(10., 10.), CGSize::new(400., 400.));
+        let (lg_wid, lg_wsid) = (WindowId::new(1, 1), WindowServerId::new(101));
+        let (home_wid, home_wsid) = (WindowId::new(1, 2), WindowServerId::new(102));
+        reactor.add_test_window(lg_wid, lg_wsid, Some(lgs), frame);
+        reactor.add_test_window(home_wid, home_wsid, Some(home), frame);
+        let lg_workspace = reactor.test_workspace(lgs, 0);
+        assert!(reactor.assign_test_window_to_workspace(lgs, lg_wid, lg_workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(lgs, lg_wid));
+        let home_workspace = reactor.test_workspace(home, 0);
+        assert!(reactor.assign_test_window_to_workspace(home, home_wid, home_workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(home, home_wid));
+        set_window_spaces(&[lg_wsid], lgs);
+        set_window_spaces(&[home_wsid], home);
+        reactor.display_archive.given_up.insert(
+            DISPLAY2.to_string(),
+            super::display_record::RecordedDisplay {
+                uuid: DISPLAY2.to_string(),
+                desktops: vec![lgs],
+                shown: Some(lgs),
+            },
+        );
+        reactor.capture_pre_churn_layout();
+
+        // The LG comes back on a fresh desktop, and macOS parks the laptop's
+        // window there.
+        let fresh = SpaceId::new(70);
+        managed(vec![
+            ("test-display-0", vec![home, lgs]),
+            (DISPLAY2, vec![fresh]),
+        ]);
+        set_window_spaces(&[home_wsid], fresh);
+        let space_moves_before = sa::space_moves().len();
+        reactor.handle_event(space_state_event_with(
+            vec![screen1(), screen2()],
+            vec![Some(lgs), Some(fresh)],
+            |state| {
+                state.has_seen_display_set = true;
+                state.display_set_changed = true;
+                state.topology_changed = true;
+                state.should_force_refresh_layout = true;
+                state.display_space_ids.insert("test-display-0".to_string(), vec![home, lgs]);
+                state.display_space_ids.insert(DISPLAY2.to_string(), vec![fresh]);
+            },
+        ));
+
+        let moves = sa::space_moves()[space_moves_before..].to_vec();
+        assert!(
+            !moves.iter().any(|(space, _)| *space == fresh.get()),
+            "the monitor's only desktop was carried to the laptop: {moves:?}"
+        );
+        assert!(
+            moves.contains(&(lgs.get(), fresh.get())),
+            "the LG's desktop was not sent back after one on the LG: {moves:?}"
+        );
+        for wsid in [lg_wsid, home_wsid] {
+            set_window_spaces_override(wsid, None);
+        }
         crate::sys::screen::set_managed_display_spaces_override(None);
         sa::set_available(false);
     }
@@ -16046,4 +16505,200 @@ mod closed_but_left_behind {
 
         assert!(has_window_in_layout(&mut reactor, space, screen, closed));
     }
+}
+
+/// Spotify closes its window by ordering it out and keeping it, so the window
+/// server lists it on its desktop for as long as the app runs. Already hidden
+/// when a wake gave it a tile back, it never sent the visibility change that
+/// would take it out, and its tile stood empty beside the real windows.
+mod hidden_but_tiled {
+    use test_log::test;
+
+    use super::*;
+    use crate::sys::window_server::{
+        set_visible_spaces_override, set_window_ordered_in_override, set_window_spaces_override,
+        set_window_suitability_override,
+    };
+
+    const APP: pid_t = 94;
+
+    struct Hidden {
+        apps: Apps,
+        reactor: Reactor,
+        screen: CGRect,
+        space: SpaceId,
+        kept: WindowId,
+        hidden: WindowId,
+        wsid: WindowServerId,
+        before: Vec<(WindowId, CGRect)>,
+        state: TestWindowState,
+    }
+
+    impl Drop for Hidden {
+        fn drop(&mut self) {
+            set_window_ordered_in_override(self.wsid, None);
+            set_window_spaces_override(self.wsid, None);
+            set_window_suitability_override(self.wsid, None);
+            set_visible_spaces_override(None);
+        }
+    }
+
+    /// Two tiles; the second is ordered out on its own desktop and its app has
+    /// stopped listing it.
+    fn hidden(shown: Vec<u64>) -> Hidden {
+        let (mut apps, mut reactor) = test_context();
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let space = SpaceId::new(1);
+        apps.make_app_and_settle_on_screen(&mut reactor, screen, space, APP, make_windows(2));
+        let (kept, hidden) = (WindowId::new(APP, 1), WindowId::new(APP, 2));
+        let wsid = reactor.test_window_server_id(hidden);
+        let before = test_layout(&mut reactor, space, screen);
+        assert_eq!(before.len(), 2);
+
+        set_window_spaces_override(wsid, Some(vec![space.get()]));
+        set_window_suitability_override(wsid, Some(true));
+        set_window_ordered_in_override(wsid, Some(false));
+        set_visible_spaces_override(Some(shown));
+        let state = apps.windows.remove(&hidden).expect("hidden window");
+        Hidden {
+            apps,
+            reactor,
+            screen,
+            space,
+            kept,
+            hidden,
+            wsid,
+            before,
+            state,
+        }
+    }
+
+    impl Hidden {
+        fn inventory(&mut self) {
+            self.reactor.discover_test_windows(APP, vec![], vec![self.kept]);
+            self.apps.simulate_until_quiet(&mut self.reactor);
+        }
+
+        fn tiled(&mut self) -> bool {
+            has_window_in_layout(&mut self.reactor, self.space, self.screen, self.hidden)
+        }
+    }
+
+    #[test]
+    fn a_hidden_window_left_out_of_its_apps_inventory_loses_its_tile() {
+        let mut h = hidden(vec![1]);
+        h.inventory();
+
+        assert!(
+            !h.tiled(),
+            "{:?}",
+            test_layout(&mut h.reactor, h.space, h.screen)
+        );
+        assert_eq!(test_layout(&mut h.reactor, h.space, h.screen).len(), 1);
+        assert!(
+            h.reactor.state.windows.contains_window(h.hidden),
+            "the window is only hidden, so its record is kept"
+        );
+    }
+
+    #[test]
+    fn it_comes_back_to_its_place_when_shown_again() {
+        let mut h = hidden(vec![1]);
+        h.inventory();
+        assert!(!h.tiled());
+
+        h.apps.windows.insert(h.hidden, h.state.clone());
+        set_window_ordered_in_override(h.wsid, Some(true));
+        h.reactor.handle_event(Event::WindowServerVisibilityChanged(h.wsid, true));
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert_eq!(test_layout(&mut h.reactor, h.space, h.screen), h.before);
+    }
+
+    /// Switching desktops orders the old desktop's windows out before rift
+    /// hears of the switch, and an inventory then omits them as well. Only
+    /// the window server's own answer on what is shown can tell the two apart.
+    #[test]
+    fn a_desktop_the_window_server_is_not_showing_is_left_alone() {
+        let mut h = hidden(vec![2]);
+        h.inventory();
+
+        assert!(h.tiled());
+    }
+
+    /// Calendar's popover, ordered out for hours and re-announced on its
+    /// desktop by a display change, held a tile beside Zen (2026-10-09). Its
+    /// app still lists it, so no inventory takes it out; showing the desktop
+    /// does.
+    #[test]
+    fn a_ghost_its_app_still_lists_loses_its_tile_when_its_desktop_is_shown() {
+        let mut h = hidden(vec![1]);
+        h.apps.windows.insert(h.hidden, h.state.clone());
+        // Away to another desktop and back.
+        h.reactor
+            .handle_event(space_state_event(vec![h.screen], vec![Some(SpaceId::new(2))]));
+        h.reactor.handle_event(space_state_event(vec![h.screen], vec![Some(h.space)]));
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert!(
+            !h.tiled(),
+            "{:?}",
+            test_layout(&mut h.reactor, h.space, h.screen)
+        );
+        assert!(h.reactor.state.windows.contains_window(h.hidden));
+    }
+
+    #[test]
+    fn a_window_drawn_keeps_its_tile_when_its_desktop_is_shown() {
+        let mut h = hidden(vec![1]);
+        set_window_ordered_in_override(h.wsid, Some(true));
+        h.apps.windows.insert(h.hidden, h.state.clone());
+        // Away to another desktop and back.
+        h.reactor
+            .handle_event(space_state_event(vec![h.screen], vec![Some(SpaceId::new(2))]));
+        h.reactor.handle_event(space_state_event(vec![h.screen], vec![Some(h.space)]));
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert!(h.tiled());
+    }
+
+    #[test]
+    fn a_window_still_drawn_keeps_its_tile() {
+        let mut h = hidden(vec![1]);
+        set_window_ordered_in_override(h.wsid, Some(true));
+        h.inventory();
+
+        assert!(h.tiled());
+    }
+}
+
+/// Unminimizing a floating window tiled it: minimizing dropped the floating
+/// mark, and nothing on the way back asked the app rules again.
+#[test]
+fn a_minimized_float_comes_back_floating() {
+    let (mut apps, mut reactor) = test_context();
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let float = WindowId::new(1, 2);
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, float));
+    reactor.handle_test_layout_command(LayoutCommand::ToggleWindowFloating);
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(reactor.layout_manager.layout_engine.is_window_floating(float));
+    assert_eq!(test_layout(&mut reactor, space, screen).len(), 1);
+
+    reactor.handle_event(Event::WindowMinimized(float));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::WindowDeminiaturized(float));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert!(reactor.layout_manager.layout_engine.is_window_floating(float));
+    let tiled: Vec<_> = reactor
+        .layout_manager
+        .layout_engine
+        .windows_on_space_in_layout_order(space)
+        .into_iter()
+        .filter(|w| !reactor.layout_manager.layout_engine.is_window_floating(*w))
+        .collect();
+    assert_eq!(tiled, vec![WindowId::new(1, 1)]);
 }

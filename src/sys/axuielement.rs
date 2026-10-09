@@ -343,6 +343,20 @@ impl AXUIElement {
         Ok(out)
     }
 
+    pub fn children(&self) -> Result<Vec<AXUIElement>> {
+        let Some(value) = self.copy_attribute("AXChildren")? else {
+            return Ok(Vec::new());
+        };
+        let array = self.downcast::<CFArray>(value)?;
+        let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
+        let mut out = Vec::with_capacity(array.len());
+        for entry in array.iter() {
+            let elem = self.downcast::<RawAXUIElement>(entry)?;
+            out.push(AXUIElement::new(elem));
+        }
+        Ok(out)
+    }
+
     pub fn parent(&self) -> Result<Option<AXUIElement>> {
         let Some(value) = self.copy_attribute("AXParent")? else {
             return Ok(None);

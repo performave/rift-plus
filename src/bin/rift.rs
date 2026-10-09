@@ -359,7 +359,7 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
     };
     let (mc_tx, mc_rx) = rift_wm::actor::channel();
     let (_mc_native_tx, mc_native_rx) = rift_wm::actor::channel();
-    let (wm_controller, wm_controller_sender) = WmController::new(
+    let (mut wm_controller, wm_controller_sender) = WmController::new(
         wm_config,
         config_tx.clone(),
         events_tx.clone(),
@@ -404,6 +404,22 @@ Enable it in System Settings > Desktop & Dock (Mission Control) and restart Rift
 
     let notification_center =
         NotificationCenter::new(wm_controller_sender.clone(), spaces_tx.clone());
+
+    // Docks drawn by other apps. Its own thread, because measuring one means
+    // Accessibility round trips into an app that may be slow to answer.
+    let (external_dock_tx, external_dock_rx) = rift_wm::actor::channel();
+    wm_controller.set_external_dock_sender(external_dock_tx.clone());
+    let external_docks = config.settings.layout.external_docks.clone();
+    let external_dock_spaces_tx = spaces_tx.clone();
+    spawn_supervised("external_dock", move || {
+        rift_wm::actor::external_dock::ExternalDocks::new(
+            external_docks,
+            external_dock_tx,
+            external_dock_rx,
+            external_dock_spaces_tx,
+        )
+        .run()
+    });
 
     let process_actor = ProcessActor::new(wm_controller_sender.clone(), spaces_tx);
 

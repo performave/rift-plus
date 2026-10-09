@@ -382,7 +382,20 @@ fn constrain_display_bounds(did: u32, raw: CGRect, notch_height: f64) -> CGRect 
         }
     }
 
-    frame
+    // Docks drawn by other apps, which nothing above knows about.
+    super::external_dock::apply(frame, raw, &super::external_dock::reservations())
+}
+
+/// Every active display, as (display id, bounds).
+pub fn active_display_bounds() -> Vec<(u32, CGRect)> {
+    const MAX_SCREENS: usize = 64;
+    let mut ids = [0u32; MAX_SCREENS];
+    let mut count: u32 = 0;
+    let err = unsafe { CGGetActiveDisplayList(MAX_SCREENS as u32, ids.as_mut_ptr(), &mut count) };
+    if err != CGError::Success {
+        return Vec::new();
+    }
+    ids[..count as usize].iter().map(|&did| (did, CGDisplayBounds(did))).collect()
 }
 
 /// Converts between Quartz and Cocoa coordinate systems.

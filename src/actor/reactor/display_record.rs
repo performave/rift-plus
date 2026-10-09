@@ -113,6 +113,12 @@ const GIVE_UP_ON_DISPLAY: Duration = Duration::from_secs(120);
 /// it is left alone.
 const RETIRE_GIVE_UP: Duration = Duration::from_secs(30);
 
+/// How long a desktop macOS minted for a display change is watched for the
+/// moment it can go. Long, because what frees it is the user: moving their
+/// own desktops onto a monitor and switching away from the blank one macOS
+/// gave it, which can take minutes after the plug.
+const LITTER_WATCH: Duration = Duration::from_secs(15 * 60);
+
 /// How long after the return pass a window turning up somewhere other than
 /// its recorded home is still the window server finishing the move, and is
 /// taken back.
@@ -1047,6 +1053,8 @@ impl Reactor {
                 .filter(|space| !recorded.contains(space))
                 .collect()
         };
+        // The desktops minted for the arrival are noted as litter by
+        // `note_display_set`, as they are for every display change.
         let whole = revived.unwrap_or(whole);
 
         let survivor = whole[0].uuid.clone();
@@ -1893,19 +1901,32 @@ impl Reactor {
                     && !retiring.contains(s)
             })
             .collect();
-        let occupied: HashSet<SpaceId> = self
-            .state
-            .windows
-            .iter_tracked_window_server_ids()
-            .filter_map(crate::sys::window_server::window_space)
-            .collect();
+        let occupied = self.occupied_desktops();
         let spare: Vec<SpaceId> = candidates
             .iter()
             .filter(|(_, s)| record.minted.contains(s) && !occupied.contains(s))
             .map(|(_, s)| *s)
             .collect();
-        let unknown: Vec<SpaceId> =
-            candidates.into_iter().map(|(_, s)| s).filter(|s| !spare.contains(s)).collect();
+        // One of macOS's with windows on it is usually only holding them
+        // until the pass sends them home: macOS parks a display's windows on
+        // the desktop it mints for it (2026-09-29: Messages, Beeper and
+        // Discord on the laptop's 184). Judged now, before those sends land,
+        // it looked like the user's and was kept; watched, it goes once they
+        // have.
+        let parked_on: Vec<SpaceId> = candidates
+            .iter()
+            .filter(|(_, s)| record.minted.contains(s) && occupied.contains(s))
+            .map(|(_, s)| *s)
+            .collect();
+        // Neither kind is the user's: a parked one is litter too (noted
+        // below), not a desktop to carry to the display that stayed. Carried,
+        // the arriving display's blank one went to the laptop on 2026-10-08,
+        // and macOS minted the monitor yet another.
+        let unknown: Vec<SpaceId> = candidates
+            .into_iter()
+            .map(|(_, s)| s)
+            .filter(|s| !spare.contains(s) && !parked_on.contains(s))
+            .collect();
 
         // A desktop the user rearranged while away keeps its arrangement:
         // its tree is not put back from the record, and what it shows now
@@ -2033,16 +2054,32 @@ impl Reactor {
                 // stays with it, whoever it used to belong to: taking a
                 // display's shown -- and possibly only -- desktop off it
                 // leaves that display with nothing to show.
-                if record.arrival
-                    && self
-                        .space_state
-                        .screens
-                        .iter()
-                        .any(|screen| screen.space == Some(space) && screen.display_uuid != d.uuid)
+                //
+                // On a return, only a display's only desktop: a revived record
+                // has to take the laptop off the monitor's desktop it was left
+                // showing, but taking the monitor's only one makes macOS mint
+                // it another.
+                let shown_by = self
+                    .space_state
+                    .screens
+                    .iter()
+                    .find(|screen| screen.space == Some(space) && screen.display_uuid != d.uuid)
+                    .map(|screen| screen.display_uuid.clone());
+                if let Some(other) = shown_by
+                    && (record.arrival || now.get(&other).is_none_or(|listed| listed.len() < 2))
                 {
                     continue;
                 }
-                let Some(after) = anchor.or_else(|| shown_now(&d.uuid)) else {
+                // The desktop moves onto whichever display `after` is on, so
+                // `after` has to be on this one now: the reactor's screens are
+                // a move behind, and on 2026-10-08 the monitor's "shown"
+                // desktop had just gone to the laptop and took 477 and 484
+                // after it.
+                let on_d_now = now.get(&d.uuid).cloned().unwrap_or_default();
+                let Some(after) = anchor
+                    .or_else(|| shown_now(&d.uuid).filter(|s| on_d_now.contains(s)))
+                    .or_else(|| on_d_now.first().copied())
+                else {
                     continue;
                 };
                 if !addition {
@@ -2183,6 +2220,9 @@ impl Reactor {
         // The desktops macOS minted for the return that nothing claimed go
         // the way of the ones rift makes: destroyed once no display is
         // showing them, and left alone if one still is.
+        for space in parked_on {
+            self.note_litter(space);
+        }
         for space in spare {
             if self.display_archive.retiring.iter().any(|(s, _)| *s == space) {
                 continue;
@@ -2335,6 +2375,92 @@ impl Reactor {
         })
     }
 
+    /// The desktops a tracked window is on, by the window server's word.
+    /// A window listed on several desktops (one shown on every desktop, a
+    /// lock-screen shield) is on none of them in particular and counts for
+    /// none: counted for its first, it kept a blank minted desktop "occupied"
+    /// so it was neither retired nor left alone.
+    fn occupied_desktops(&self) -> HashSet<SpaceId> {
+        self.state
+            .windows
+            .iter_tracked_window_server_ids()
+            .filter_map(|wsid| {
+                let spaces = crate::sys::window_server::window_spaces(wsid);
+                match spaces.as_slice() {
+                    [only] => Some(*only),
+                    [] => None,
+                    _ => {
+                        let mut user = spaces
+                            .iter()
+                            .copied()
+                            .filter(|s| crate::sys::window_server::space_is_user(s.get()));
+                        match (user.next(), user.next()) {
+                            (Some(space), None) => Some(space),
+                            _ => None,
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn note_litter(&mut self, space: SpaceId) {
+        if self.display_archive.litter.iter().any(|(s, _)| *s == space) {
+            return;
+        }
+        crate::sys::trace::act("litter_noted", &space.get());
+        self.display_archive.litter.push((space, crate::sys::trace::now()));
+    }
+
+    /// Destroys the blank desktops macOS minted for a display change once
+    /// they can go: nothing on them, no display showing them, and not the
+    /// only desktop their display has (a display cannot be left with none).
+    /// Plugging the LG in minted one for it and one for the laptop, and
+    /// after the user had moved their desktops onto the LG both were left
+    /// behind, empty, on either display, for the user to delete every time.
+    ///
+    /// A desktop with windows on it waits rather than being given up: the
+    /// windows are most often ones macOS parked there that the return is
+    /// sending home. One still unclaimed after `LITTER_WATCH` is left alone.
+    fn retire_litter(&mut self) {
+        if self.display_archive.litter.is_empty() {
+            return;
+        }
+        if crate::sys::display_churn::is_active() {
+            return;
+        }
+        let listed = self.display_space_ids_now();
+        let occupied = self.occupied_desktops();
+        let litter = std::mem::take(&mut self.display_archive.litter);
+        for (space, since) in litter {
+            let Some(siblings) = listed.values().find(|spaces| spaces.contains(&space)) else {
+                // Gone already: macOS reaped it, or the user deleted it.
+                continue;
+            };
+            if since.elapsed() > LITTER_WATCH {
+                debug!(desktop = space.get(), "Leaving a minted desktop nobody freed");
+                continue;
+            }
+            if siblings.len() < 2 || self.shown_live(space) || occupied.contains(&space) {
+                self.display_archive.litter.push((space, since));
+                continue;
+            }
+            if scripting_addition::destroy_space(space.get()) {
+                crate::sys::trace::act("litter_destroyed", &space.get());
+                info!(
+                    desktop = space.get(),
+                    "Destroyed a blank desktop macOS minted for a display change"
+                );
+                self.layout_manager.layout_engine.forget_space(space);
+            } else {
+                warn!(
+                    desktop = space.get(),
+                    "Could not destroy a blank desktop macOS minted for a display change"
+                );
+            }
+        }
+    }
+
     /// Destroys the desktops made at departure that are done with — their
     /// windows gone back — as soon as no display shows them and nothing is
     /// on them. Destroying a desktop a display is showing is not something
@@ -2347,17 +2473,13 @@ impl Reactor {
     /// come back to it — retried on every space change until it can go, and
     /// abandoned only after `RETIRE_GIVE_UP`.
     pub(super) fn retire_made_desktops(&mut self) {
+        self.retire_litter();
         if self.display_archive.retiring.is_empty() {
             return;
         }
         let listed: HashSet<SpaceId> =
             self.display_space_ids_now().into_values().flatten().collect();
-        let occupied: HashSet<SpaceId> = self
-            .state
-            .windows
-            .iter_tracked_window_server_ids()
-            .filter_map(crate::sys::window_server::window_space)
-            .collect();
+        let occupied = self.occupied_desktops();
         let retiring = std::mem::take(&mut self.display_archive.retiring);
         for (made, since) in retiring {
             if !listed.contains(&made) {

@@ -17,6 +17,7 @@ pub mod enhanced_ui;
 pub mod event;
 pub mod event_tap;
 pub mod executor;
+pub mod external_dock;
 pub mod geometry;
 pub mod gesture;
 pub mod haptics;

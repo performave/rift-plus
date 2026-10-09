@@ -26,6 +26,7 @@
 //! onto the new space. Anything that never lands — closed in the meantime, or
 //! no scripting addition — is simply left out.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use dispatchr::queue;
@@ -84,6 +85,10 @@ pub(super) struct DisplayArchive {
     /// Desktops rift made that could not be destroyed yet because a display
     /// was still showing them, with when they were first tried.
     pub(super) retiring: Vec<(SpaceId, Instant)>,
+    /// Desktops macOS minted for a display change that nothing claimed, with
+    /// when they were noted: destroyed once empty, unshown and not their
+    /// display's only desktop. See `retire_litter`.
+    pub(super) litter: Vec<(SpaceId, Instant)>,
     /// The last record's layout, kept after its return for
     /// `RestoreDepartureLayout`.
     pub(super) last_departure: Option<super::display_record::DepartureSnapshot>,
@@ -105,6 +110,10 @@ pub(super) struct DisplayArchive {
     /// coming back after all is then a return, not an arrival. See
     /// `revive_given_up_display`.
     pub(super) given_up: HashMap<String, super::display_record::RecordedDisplay>,
+    /// The displays and desktops of the last report, whole or not. A desktop
+    /// first listed in a report whose displays differ from these was minted
+    /// by macOS for that change. See `note_minted_desktops`.
+    pub(super) last_listing: Option<(BTreeSet<String>, HashSet<SpaceId>)>,
     /// The Mac has woken since the record was last settled: Dock may have
     /// gone to sleep before carrying the settle out, so the first whole
     /// display report after a wake runs it again.
@@ -469,6 +478,7 @@ impl Reactor {
         if let Some(record) = self.display_archive.record.as_mut() {
             record.note_listed(display_space_ids.values().flatten().copied(), churning);
         }
+        self.note_minted_desktops(screens, display_space_ids);
         // The desktops and the displays come from different places —
         // SkyLight lists the first, the display list the second — and an
         // unplug parts them: SkyLight hands the departing display's desktops
@@ -535,6 +545,44 @@ impl Reactor {
             pre.pinned = true;
         }
         outcome
+    }
+
+    /// Notes as litter every desktop macOS minted for a display change: the
+    /// ones first listed in a report whose displays differ from the last
+    /// report's. Nobody makes a desktop in the instant a display comes or
+    /// goes; rift's own stand-ins are made in answer to that report and
+    /// listed in a later one. `retire_litter` destroys each once it is empty,
+    /// unshown and not its display's only desktop.
+    ///
+    /// Whatever the change. This used to be noted only on an arrival with one
+    /// display already here, so the two blank desktops macOS gave the laptop
+    /// when a second monitor joined the first were left for the user to
+    /// delete by hand.
+    fn note_minted_desktops(
+        &mut self,
+        screens: &[ScreenInfo],
+        display_space_ids: &HashMap<String, Vec<SpaceId>>,
+    ) {
+        let displays: BTreeSet<String> = display_space_ids
+            .keys()
+            .cloned()
+            .chain(screens.iter().map(|screen| screen.display_uuid.clone()))
+            .collect();
+        let listed: HashSet<SpaceId> = display_space_ids.values().flatten().copied().collect();
+        let previous =
+            self.display_archive.last_listing.replace((displays.clone(), listed.clone()));
+        let Some((previous_displays, previous_listed)) = previous else {
+            return;
+        };
+        if previous_displays == displays || previous_listed.is_empty() {
+            return;
+        }
+        let mut minted: Vec<SpaceId> =
+            listed.into_iter().filter(|space| !previous_listed.contains(space)).collect();
+        minted.sort();
+        for space in minted {
+            self.note_litter(space);
+        }
     }
 
     /// A desktop in the last whole report and not in this one, with the same

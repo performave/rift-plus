@@ -119,6 +119,19 @@ fn frames_match(a: CGRect, b: CGRect) -> bool {
 }
 
 impl Reactor {
+    /// Whether `window` is one half of a tab switch still being matched up:
+    /// ordered out a moment ago, or held in its tree for the tab taking its
+    /// place. Until the hand-off it is supposed to be hidden and still tiled.
+    pub(super) fn native_tab_switch_pending(&self, window: WindowId) -> bool {
+        let now = crate::sys::trace::now();
+        self.native_tabs.hold_for(window).is_some()
+            || self
+                .native_tabs
+                .departures
+                .iter()
+                .any(|d| d.window == window && now.duration_since(d.at) < TAB_SWITCH_WINDOW)
+    }
+
     /// `window` has just been ordered out. Remember the place it had, in case
     /// a tab of its group is being brought forward to take it; if that tab
     /// was heard first, hand the place over now. Returns whether the layout
