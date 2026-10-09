@@ -95,3 +95,86 @@ A virtual display is a well-behaved one. It will not reproduce anything
 specific to a particular monitor's EDID, the pseudo-display a lid close
 reports, or the space renumbering that follows sleep — that one is triggered by
 wake rather than by topology change. Those still need real hardware.
+
+For running churn continuously without it moving your own windows, see
+[vm-harness.md](vm-harness.md).
+
+## How rift reconciles a display change
+
+Almost every churn bug has had one root: rift reasons in `SpaceId`, and macOS
+destroys desktops and mints new ids at every reconfiguration, moves a desktop
+between displays as a matter of course, and on macOS 27 reaps empty ones
+seconds afterwards. No id scheme survives that — a destroyed desktop cannot be
+identified because it no longer exists. What does survive is the **windows**:
+window-server ids outlast unplugs, lid flaps and restarts of rift. So the
+durable way to ask "is this the same desktop as before?" is by content, which
+is what `desktop_match::match_desktops` does — scoring every pairing of
+recorded and current desktops by windows in common, with the display and
+position only as tie-breaks.
+
+The machinery lives in `src/actor/reactor/display_record.rs`:
+
+- **The departure record.** When a display leaves, rift records every display's
+  desktops, their trees and which windows were where, from a *pre-churn
+  snapshot* taken at the first sign of the change (windows start leaving a
+  desktop a few hundred milliseconds before the reconfiguration arrives). It
+  records every tracked window's home from that snapshot, tree or no tree: a
+  window on a desktop that has never been shown is in no tree, and a record
+  built from trees alone cannot move it.
+- **The settle.** The survivor gets stand-in desktops for its own that macOS
+  destroyed, so its windows have somewhere to go.
+- **The return.** Once every recorded display is back, the pass pairs destroyed
+  desktops with fresh ones, sends windows home, restores trees, and retires the
+  empty desktops macOS minted for the return.
+- **Aftercare** (`AFTERCARE`, five seconds). The window server goes on
+  reassigning windows after the pass has declared itself done, so the pass
+  leaves where each window belongs behind it, and a window that turns up
+  elsewhere while the window server is still moving windows for the change is
+  sent back once. A window the user moves fails that test and stays.
+- **The arrival record.** A display arriving with no record open (after a
+  restart while undocked, say) still gets the display that was already here
+  recorded, and its desktops, windows and trees put back once macOS has
+  finished handing things to the newcomer.
+- **Giving up** (`GIVE_UP_ON_DISPLAY`, two minutes). A recorded display the
+  window server has stopped listing is dropped so the rest can be put back, and
+  its later return is still treated as one. The survivor is never given up on.
+
+Things worth knowing before changing any of it:
+
+- **A single report can carry a departure and a return.** A pseudo display
+  appearing and going again across a replug does exactly that.
+- **The give-up absence is aged only while display reports keep arriving**,
+  because that is where the check runs. A quiet machine with a display unplugged
+  never gives up on it. That fell out of the placement rather than being
+  designed.
+- **Never write a window back mid-change.** macOS moves remembered windows onto
+  an arriving display before rift hears of it, and a write made then uses
+  geometry that is about to be wrong. rift lays windows out once the change has
+  settled, and for ten seconds afterwards checks "already there" against the
+  window's live frame rather than its cache.
+- **Floating windows are not laid out, so they are rescued instead**
+  (`rescue_floats_left_off_screen`). After a display change, a float almost
+  entirely off screen is brought back. On a desktop that has changed display
+  -- a plug, an unplug, or a Mission Control drag -- any float not wholly on
+  screen is, since macOS placed all of them, until the desktop has been shown
+  for a few seconds. Hidden desktops are never written to; theirs wait until
+  shown.
+- **`space_window_list_for_connection` is unbacked under test** — every desktop
+  looks empty. Ask per-window `window_space` instead. Live, the list also
+  includes the wallpaper window.
+
+## Reading a churn after the fact
+
+`rift execute trace dump <path>` writes the always-on flight recorder
+retroactively (see [tracing.md](tracing.md)). The lines worth grepping, in the
+err log or the dump:
+
+| Line | Means |
+|---|---|
+| `Displays back; put everything where the record has it` | the return ran; its `replaced={…}` is the destroyed→fresh pairing. Its absence across a session means a return never completed |
+| `A desktop macOS minted for the return holds nothing` | an empty minted desktop is being retired |
+| `Window placed by the user while a display is away` | the record was edited. Should be rare; a burst is mis-attribution |
+| `giving up on it so the rest can be put back` | a display was dropped from the record |
+| `record_members` (Act) | where the record's windows came from, and which tracked windows it does **not** account for |
+| `reconcile`, `pass_done`, `record_aftercare`, `record_give_up` (Act) | the return's counts, a pass ending, a window sent home after it, a give-up |
+| `display_churn_end` (Act) | rift considers the change over |

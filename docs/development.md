@@ -55,7 +55,18 @@ you swap in locally.
 
 `just churn` connects and disconnects a virtual display at the running rift and
 checks its invariants each cycle, so an unplug no longer means reaching behind
-the machine. See [display-churn.md](display-churn.md).
+the machine. See [display-churn.md](display-churn.md), and
+[vm-harness.md](vm-harness.md) for running it in a VM instead of against your
+own session.
+
+## When something goes wrong
+
+rift keeps an always-on flight recorder: reproduce the bug, then `rift execute
+trace dump <path>`. A recorded trace dropped into `tests/traces/` is replayed by
+every `cargo test`. See [tracing.md](tracing.md).
+
+Open performance findings are in [performance.md](performance.md); reported,
+unresolved problems in [known-issues.md](known-issues.md).
 
 ## Formatting
 

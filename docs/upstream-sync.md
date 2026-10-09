@@ -149,10 +149,10 @@ each new file deliberately. `git diff --name-status <base> HEAD -- .github/`.
 2. Resolve. Take our side wherever the fork has deliberately diverged, and
    note the declines for the changelog as you go.
 3. Port the fork's `event_tap.rs`/`gesture_tap.rs` work into `input.rs`.
-4. `just check`, then the VM battery in
-   [vm-harness-handoff.md](vm-harness-handoff.md) — the merge touches the churn
-   and layout paths that battery exists for, and `cargo test` will not see a
-   regression there.
+4. `just check`, then the VM battery and the hands-on pointer pass in
+   [vm-harness.md](vm-harness.md) — the merge touches the churn, layout and
+   input paths those exist for, and `cargo test` will not see a regression
+   there.
 5. Version: upstream is `0.5.10`, so the fork becomes `0.5.10-plus.1`. CI
    refuses to release when the tag, `Cargo.toml`, `Cargo.lock` and
    `CHANGELOG.md` disagree.

@@ -62,8 +62,10 @@ See [CHANGELOG.md](CHANGELOG.md) for what it adds over upstream.
 |---|---|
 | [docs/development.md](docs/development.md) | building, and the local dev loop |
 | [docs/scripting-addition.md](docs/scripting-addition.md) | what it is, what it needs, and why |
+| [docs/external-docks.md](docs/external-docks.md) | keeping tiles clear of DockDoor Pro and other third-party docks |
 | [docs/releasing.md](docs/releasing.md) | cutting a release |
 | [docs/ci-setup.md](docs/ci-setup.md) | one-time signing and notarization secrets |
+| [docs/known-issues.md](docs/known-issues.md) | reported problems not yet resolved |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | commits, changelog, versioning |
 
 ## Quick Start
