@@ -3,10 +3,11 @@
 # Can this machine hotplug a second display at all?
 #
 # On the host the answer is yes and `just churn` depends on it. In a
-# Virtualization.framework guest it is an open question: VZ caps its own
-# displays at one, but BetterDisplay's device comes from a separate driver, so
-# the cap may not reach it. This script settles it, and is the first thing to
-# run on a fresh guest. See docs/vm-harness.md.
+# Virtualization.framework guest VZ caps its own displays at one; this asks
+# whether BetterDisplay's device, from a separate driver, gets past the cap. The
+# harness no longer depends on the answer -- its own CGVirtualDisplay (vdisp.m)
+# does get past it -- but this remains a quick check that a fresh guest can take
+# a second display at all. See docs/vm-harness.md.
 #
 # Standalone on purpose: it does not need rift deployed. If rift-cli happens to
 # be there it also answers the follow-up question -- whether a virtual display
@@ -67,7 +68,7 @@ fi
 
 command -v betterdisplaycli >/dev/null 2>&1 || {
     say "RESULT: inconclusive"
-    info "betterdisplaycli is not installed. See docs/vm-harness.md step 6."
+    info "betterdisplaycli is not installed; install BetterDisplay in the guest first."
     exit 2
 }
 

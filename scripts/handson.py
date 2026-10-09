@@ -6,7 +6,7 @@ encode. This does the things a hand does -- grab the boundary between two
 tiles and pull it, hold the modifier and resize, throw one window onto
 another, stack, fullscreen, switch desktops, unplug the display mid-session --
 and captures a screenshot at every step, because a structurally perfect tree
-can still render as overlapping windows (see docs/vm-harness-handoff.md).
+can still render as overlapping windows (see docs/vm-harness.md).
 
 Run it inside the guest's Aqua session, the same way `chaos.py` is run.
 """

@@ -2,7 +2,7 @@
 // the way a hand does rather than only through the CLI.
 //
 // Apple Events are the obvious route and hang indefinitely inside a LaunchAgent
-// here (see docs/vm-harness-handoff.md), so this posts CGEvents directly, the
+// here (see docs/vm-harness.md), so this posts CGEvents directly, the
 // same way `dtool fullscreen` posts its key. A drag is sent as a down, a run of
 // dragged events and an up: rift's tap reads movement, not teleports, and a
 // single jump from start to finish is not a gesture it will follow.
