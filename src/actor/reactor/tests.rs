@@ -16648,6 +16648,28 @@ mod hidden_but_tiled {
         assert!(h.reactor.state.windows.contains_window(h.hidden));
     }
 
+    /// DaVinci Resolve left a hidden window on its native fullscreen desktop,
+    /// and it held a tile on another display's desktop beside Zen
+    /// (2026-10-09). Where the window server lists a hidden window does not
+    /// matter: its tile is empty either way.
+    #[test]
+    fn a_ghost_listed_on_another_desktop_loses_its_tile_too() {
+        let mut h = hidden(vec![1]);
+        set_window_spaces_override(h.wsid, Some(vec![9]));
+        h.apps.windows.insert(h.hidden, h.state.clone());
+        // Away to another desktop and back.
+        h.reactor
+            .handle_event(space_state_event(vec![h.screen], vec![Some(SpaceId::new(2))]));
+        h.reactor.handle_event(space_state_event(vec![h.screen], vec![Some(h.space)]));
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert!(
+            !h.tiled(),
+            "{:?}",
+            test_layout(&mut h.reactor, h.space, h.screen)
+        );
+    }
+
     #[test]
     fn a_window_drawn_keeps_its_tile_when_its_desktop_is_shown() {
         let mut h = hidden(vec![1]);

@@ -1797,25 +1797,26 @@ impl Reactor {
     }
 
     /// Tiled windows on a desktop a display is showing that the window
-    /// server is not drawing: ordered out, listed on that very desktop.
-    /// There is nothing there to tile, so the tile is a ghost -- an empty
-    /// slot beside the real windows.
+    /// server is not drawing. There is nothing in the tile, so it is a ghost
+    /// -- an empty slot beside the real windows.
     ///
-    /// How a window gets into that state is not asked, on purpose. Spotify
-    /// closes a window by ordering it out and keeping it; Preview keeps a
-    /// closed one listed for a minute; Calendar's popovers come back from a
-    /// display change re-announced on their desktop; a wake re-announces
-    /// windows that have long been hidden. Each was once fixed on its own
-    /// route in, and the next app came in by another. Whatever the route,
-    /// the window server's word on what it is drawing is the rule.
+    /// How a window gets into that state is not asked, on purpose, and nor is
+    /// where the window server lists it. Spotify closes a window by ordering it
+    /// out and keeping it; Preview keeps a closed one listed for a minute;
+    /// Calendar's popovers come back from a display change re-announced on
+    /// their desktop; DaVinci Resolve left a hidden window on its native
+    /// fullscreen desktop that a display arriving gave a tile elsewhere. Each
+    /// was once fixed on its own route in, and the next came in by another --
+    /// this rule's first version among them, which asked only about windows
+    /// hidden on the tile's own desktop. Ordered out means no tile.
     ///
     /// Taken out the way native fullscreen takes a window out (see
     /// `untile_ghost_tiles`), so a window that is ordered in again goes back
-    /// to its slot. Left alone: a minimized window, a native tab being
-    /// switched, a window in native fullscreen, and a desktop that is not a
-    /// user desktop. The desktops shown are asked of the window server, not
-    /// taken from rift's own view: switching desktops orders the old one's
-    /// windows out before rift hears of the switch.
+    /// to its slot, a window coming out of native fullscreen included. Left
+    /// alone: a minimized window, a native tab being switched, and a desktop
+    /// that is not a user desktop. The desktops shown are asked of the window
+    /// server, not taken from rift's own view: switching desktops orders the
+    /// old one's windows out before rift hears of the switch.
     fn ghost_tiles(
         &self,
         only: impl Fn(WindowId) -> bool,
@@ -1834,9 +1835,7 @@ impl Reactor {
                 continue;
             };
             if self.native_tab_switch_pending(wid)
-                || self.is_known_fullscreen_window(wsid)
                 || window_server::window_ordered_in(wsid) != Some(false)
-                || window_server::window_space(wsid) != Some(space)
                 || !window_server::space_is_user(space.get())
             {
                 continue;
