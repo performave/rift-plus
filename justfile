@@ -49,6 +49,21 @@ _install profile:
         codesign --force --sign "{{identity}}" "$prefix/$bin"
         chmod 555 "$prefix/$bin"
     done
+    # Homebrew's service runs its own copy of rift, at a path that stays the
+    # same from one version to the next so the Accessibility grant survives an
+    # upgrade (the formula's `service_binary`). Swapping only the keg left that
+    # copy stale, and where it had never been made, `brew services restart`
+    # pointed the service at nothing and rift did not start at all.
+    service="$(brew --prefix)/var/{{formula}}/rift"
+    plist="$HOME/Library/LaunchAgents/sh.brew.{{formula}}.plist"
+    if [ -e "$service" ] || grep -qs "$service" "$plist"; then
+        mkdir -p "$(dirname "$service")"
+        # Renamed into place, never copied over: overwriting the file the
+        # running rift started from invalidates its code pages, and the kernel
+        # kills it.
+        cp "$prefix/rift" "$(dirname "$service")/.rift.new"
+        mv -f "$(dirname "$service")/.rift.new" "$service"
+    fi
 
 # Two services can run rift: the per-user launchd agent that
 # `rift service install` writes (`com.performave.rift-plus`, or
