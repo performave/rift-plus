@@ -16724,3 +16724,42 @@ fn a_minimized_float_comes_back_floating() {
         .collect();
     assert_eq!(tiled, vec![WindowId::new(1, 1)]);
 }
+
+#[test]
+fn focus_display_measures_from_a_fullscreen_display_with_the_menu_bar() {
+    let (mut apps, mut reactor) = test_context();
+    let (raise_manager_tx, mut raise_manager_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_manager_tx;
+
+    // The laptop on the left is showing a native-fullscreen app, so it has no
+    // managed desktop and the command space falls through to the right-hand
+    // display. Keyboard focus, and the menu bar, are still on the laptop.
+    let left = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let right = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let right_space = SpaceId::new(2);
+    reactor.handle_event(space_state_event_with(
+        vec![left, right],
+        vec![None, Some(right_space)],
+        |state| state.has_seen_display_set = true,
+    ));
+    let mut windows = make_windows(1);
+    windows[0].frame.origin = CGPoint::new(1100., 100.);
+    reactor.handle_events(apps.make_app_with_opts(1, windows, None, false, true));
+    apps.simulate_until_quiet(&mut reactor);
+    while raise_manager_rx.try_recv().is_ok() {}
+
+    crate::sys::screen::set_active_menu_bar_display_override(Some("test-display-0"));
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::FocusDisplay(
+        DisplaySelector::Direction(Direction::Right),
+    ))));
+    crate::sys::screen::set_active_menu_bar_display_override(None);
+
+    let msg = raise_manager_rx
+        .try_recv()
+        .expect("focusing right from the fullscreen display should raise a window")
+        .1;
+    let raise_manager::Event::RaiseRequest(RaiseRequest { focus_window, .. }) = msg else {
+        panic!("Unexpected event: {msg:?}");
+    };
+    assert_eq!(focus_window.map(|(wid, _)| wid), Some(WindowId::new(1, 1)));
+}

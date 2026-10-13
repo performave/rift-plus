@@ -24,6 +24,14 @@ Entries describe this fork's changes relative to
 
 ### Fixed
 
+- **Focusing a display works when a fullscreen app is involved.** A display
+  showing a native-fullscreen app has no desktop rift manages, so rift could
+  not tell it was the display you were on, and measured the direction from
+  another one: from a fullscreen DaVinci Resolve on the laptop, focusing the
+  display to its right did nothing. Focusing *onto* that display only moved the
+  pointer and left the keyboard where it was. rift now goes by the display
+  holding the menu bar, which follows keyboard focus into fullscreen, and
+  focuses the fullscreen window when it arrives.
 - **Floating windows no longer end up hanging off a display's edge when their
   desktop changes display.** Moving a desktop to another display, whether by
   dragging it there in Mission Control or by plugging a monitor in or out, lets

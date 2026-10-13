@@ -1,7 +1,7 @@
 use tracing::{debug, error, info, warn};
 
 use super::super::ScreenInfo;
-use crate::actor::app::{AppThreadHandle, Quiet, WindowId};
+use crate::actor::app::{AppThreadHandle, Quiet, WindowId, pid_t};
 use crate::actor::raise_manager;
 use crate::actor::reactor::WorkspaceSwitchOrigin;
 use crate::actor::reactor::events::EventOutcome;
@@ -373,6 +373,11 @@ pub struct DisplayFocusPayload {
     /// Center of `focus_window`'s frame, used to warp the cursor onto the
     /// window that receives focus. Falls back to the screen center.
     pub focus_window_center: Option<objc2_core_foundation::CGPoint>,
+    /// The window on top of a display that is showing a native-fullscreen
+    /// space, which has no desktop rift manages and so no `focus_window`. Set
+    /// only when rift does not track that window; a tracked one comes through
+    /// `focus_window` instead.
+    pub fullscreen_key_window: Option<(pid_t, WindowServerId)>,
 }
 
 pub(crate) fn focus_window_raise_request(
@@ -431,7 +436,18 @@ pub fn handle_focus_display(
             .with_raise_request(focus_window_raise_request(apps, window))
             .with_mouse_warp(payload.focus_window_center.unwrap_or_else(|| screen.frame.mid())));
     }
-    Ok(EventOutcome::focus_changed(None, false).with_mouse_warp(screen.frame.mid()))
+    let mut outcome = EventOutcome::focus_changed(None, false).with_mouse_warp(screen.frame.mid());
+    // A fullscreen space is not a desktop the layout engine knows, so there is
+    // no WindowFocused to send; without focusing the window itself, the warp
+    // alone left keyboard focus on the display the user was leaving.
+    if screen.space.is_none() {
+        if let Some(window) = payload.focus_window {
+            outcome = outcome.with_raise_request(focus_window_raise_request(apps, window));
+        } else if let Some(key_window) = payload.fullscreen_key_window {
+            outcome.make_key_windows.push(key_window);
+        }
+    }
+    Ok(outcome)
 }
 
 pub fn handle_command_reactor_focus_window(

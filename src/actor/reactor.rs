@@ -3475,13 +3475,19 @@ impl Reactor {
                         target_is_active,
                         focus_window,
                         focus_window_center: None,
+                        fullscreen_key_window: None,
                     },
                 );
             }
             Event::Command(Command::Reactor(ReactorCommand::FocusDisplay(selector))) => {
                 let screen = self.screen_for_selector(&selector, None).cloned();
+                let mut fullscreen_key_window = None;
                 let focus_window = screen.as_ref().and_then(|screen| {
-                    let space = screen.space?;
+                    let Some(space) = screen.space else {
+                        let (tracked, key_window) = self.fullscreen_window_on_screen(screen)?;
+                        fullscreen_key_window = key_window;
+                        return tracked;
+                    };
                     self.last_focused_window_in_space(space).or_else(|| {
                         self.layout_manager
                             .layout_engine
@@ -3504,6 +3510,7 @@ impl Reactor {
                         target_is_active,
                         focus_window,
                         focus_window_center,
+                        fullscreen_key_window,
                     },
                 );
             }
@@ -8988,11 +8995,43 @@ impl Reactor {
         crate::sys::space_switch::active_space()
     }
 
+    /// The window a display showing a native-fullscreen space has on top:
+    /// the tracked window if rift knows it, otherwise its pid and window
+    /// server id so it can be made key directly. The window server is asked
+    /// rather than rift's own state because one display can hold several
+    /// fullscreen spaces and only the stacking order says which is showing.
+    fn fullscreen_window_on_screen(
+        &self,
+        screen: &ScreenInfo,
+    ) -> Option<(Option<WindowId>, Option<(pid_t, WindowServerId)>)> {
+        let wsid = window_server::get_window_at_point(screen.frame.mid())?;
+        if let Some(window) = self.state.windows.tracked_window_id(wsid) {
+            return Some((Some(window), None));
+        }
+        let info = window_server::get_window(wsid)?;
+        Some((None, Some((info.pid, wsid))))
+    }
+
     fn screen_for_point(&self, point: CGPoint) -> Option<&ScreenInfo> {
         self.space_state.screens.iter().find(|screen| screen.frame.contains(point))
     }
 
     fn current_screen_center(&self) -> Option<CGPoint> {
+        // A display showing a native-fullscreen app has no desktop rift
+        // manages, so the command space cannot name it and lands on some other
+        // display instead: with Resolve fullscreen on the laptop, focus_display
+        // measured "right" from the Sidecar and found nothing there. The menu
+        // bar stays with the display that has keyboard focus, fullscreen or not.
+        if let Some(uuid) = crate::sys::screen::active_menu_bar_display_uuid()
+            && let Some(screen) = self
+                .space_state
+                .screens
+                .iter()
+                .find(|screen| screen.display_uuid == uuid && screen.space.is_none())
+        {
+            return Some(screen.frame.mid());
+        }
+
         if let Some(space) = self.raw_command_space() {
             if let Some(screen) = self.space_state.screen_by_space(space) {
                 return Some(screen.frame.mid());
