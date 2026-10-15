@@ -2946,8 +2946,21 @@ impl Reactor {
                 // display it was dropped on pulled it back. That is the
                 // flicker between displays that ended with the window tiled
                 // on the wrong one.
-                let target_space =
-                    pending_swap.and_then(|(_, target)| self.best_space_for_window_id(target));
+                // The target's space is the desktop whose tree drew the slot
+                // the pointer is over, which is where the drag took its
+                // candidates from, and not wherever the window server lists
+                // the target. The two part ways for a window macOS moved
+                // behind rift's back, as at a display plug, or one it has
+                // stopped drawing: on 2026-10-15 a ghost tile in desktop
+                // 101's tree was listed on desktop 5, and Zen, dropped onto
+                // it, was filed in 5's tree while it stayed on 101. That
+                // left Zen in neither layout, out of reach of the float and
+                // tile keys. The window server answers only for a target
+                // that no tree holds.
+                let target_space = pending_swap.and_then(|(_, target)| {
+                    self.space_of_tiled_window(target)
+                        .or_else(|| self.best_space_for_window_id(target))
+                });
                 // And that statement has to outlive the drop by a beat: the
                 // window server's own report that the window moved to the
                 // display it hung over arrives after this, while the arrange

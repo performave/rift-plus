@@ -24,6 +24,14 @@ Entries describe this fork's changes relative to
   it. rift now checks every tiled window on a shown desktop right before it
   lays that desktop out, so no path can give a hidden window a slot. The
   toggle also no longer re-adds windows that were taken out of the layout.
+- **A window dropped onto a tile stays on the desktop you dropped it on.**
+  rift filed the dropped window under whichever desktop macOS listed the
+  tile's window on, and the two can disagree: macOS moves windows behind
+  rift's back when a display is plugged in, and keeps listing a window it has
+  stopped drawing wherever it last was. The dropped window then stayed on
+  screen but belonged to no layout there, and the float and tile keys did
+  nothing to it. The desktop whose layout drew the tile now decides, and
+  macOS is asked only when no layout holds the window.
 
 ## [0.5.10-plus.8] - 2026-10-13
 

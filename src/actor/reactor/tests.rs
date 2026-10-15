@@ -10947,6 +10947,77 @@ fn a_drop_on_a_target_lands_in_the_targets_space_however_the_window_hangs_over()
 }
 
 #[test]
+fn a_drop_follows_the_tree_that_drew_the_target_not_the_window_servers_listing() {
+    // 2026-10-15: a ghost tile in desktop 101's tree was listed by the window
+    // server on desktop 5. Zen, dropped onto it, was filed in desktop 5's
+    // tree while it stayed on 101: in no layout, so the float and tile keys
+    // stopped reaching it.
+    let mut reactor = Reactor::new_for_test(LayoutEngine::new(
+        &crate::common::config::VirtualWorkspaceSettings::default(),
+        &crate::common::config::LayoutSettings {
+            mode: LayoutMode::Bsp,
+            ..crate::common::config::LayoutSettings::default()
+        },
+        None,
+    ));
+    let top = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1440., 900.));
+    let bottom = CGRect::new(CGPoint::new(0., 900.), CGSize::new(1440., 900.));
+    let (drawn, listed) = (SpaceId::new(1), SpaceId::new(2));
+    reactor.handle_event(space_state_event(vec![top, bottom], vec![
+        Some(drawn),
+        Some(listed),
+    ]));
+    reactor.add_test_app(1);
+    let workspace = reactor.test_workspace(drawn, 0);
+    let _ = reactor.test_workspace_ids(listed);
+
+    let target = WindowId::new(1, 1);
+    let dragged = WindowId::new(1, 2);
+    let target_wsid = WindowServerId::new(101);
+    let left_frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(720., 900.));
+    let right_frame = CGRect::new(CGPoint::new(720., 0.), CGSize::new(720., 900.));
+    for (wid, wsid, frame) in [(target, 101, left_frame), (dragged, 102, right_frame)] {
+        reactor.add_test_window(wid, WindowServerId::new(wsid), Some(drawn), frame);
+        assert!(reactor.assign_test_window_to_workspace(drawn, wid, workspace));
+        reactor.send_layout_event(LayoutEvent::WindowAdded(drawn, wid));
+    }
+
+    // The tree drew the target's slot on the top display, but the window
+    // server lists the target on the bottom display's desktop.
+    crate::sys::window_server::set_window_spaces_override(target_wsid, Some(vec![listed.get()]));
+    reactor.drag_manager.drag_state = DragState::PendingSwap {
+        session: DragSession {
+            window: dragged,
+            last_frame: right_frame,
+            origin_space: Some(drawn),
+            settled_space: Some(drawn),
+            layout_dirty: true,
+        },
+        target,
+    };
+    reactor.handle_event(Event::MouseUp);
+    crate::sys::window_server::set_window_spaces_override(target_wsid, None);
+
+    assert!(matches!(reactor.drag_manager.drag_state, DragState::Inactive));
+    let engine = &reactor.layout_manager.layout_engine;
+    assert!(
+        engine.is_window_tiled(drawn, dragged),
+        "the dropped window stays in the tree that drew the target"
+    );
+    assert!(
+        !engine.is_window_tiled(listed, dragged),
+        "and is not filed where the window server lists the target"
+    );
+    assert_eq!(reactor.assigned_space_for_window_id(dragged), Some(drawn));
+    // The pin is let go at once, the window being where it was dropped; one
+    // naming the listed desktop would hold it there against every arrange.
+    assert!(
+        reactor.drag_manager.drop_pin.is_none_or(|pin| pin.space == drawn),
+        "no pin holds the window to where the window server lists the target"
+    );
+}
+
+#[test]
 fn a_window_that_refuses_its_size_is_given_at_least_that_size() {
     let (mut reactor, left, right, space, _) = reactor_with_two_tiled_windows(LayoutMode::Bsp);
     let screen = reactor.space_state.screen_by_space(space).unwrap().frame;
