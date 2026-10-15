@@ -11,6 +11,20 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Fixed
+
+- **A window macOS is not drawing never gets a tile, however it got into the
+  layout.** A window an app has hidden or closed without destroying, such as
+  Spotify's main window after ⌘W, used to be taken out of the layout only when
+  you switched desktops or when rift re-read the app's windows. Any other path
+  could put it back as an empty slot beside your real windows. Toggling
+  between bsp and stack was one such path: it brought those windows back on
+  every toggle, and dragging a window onto one of the empty slots filed it
+  under another desktop, where the float and tile keys could no longer reach
+  it. rift now checks every tiled window on a shown desktop right before it
+  lays that desktop out, so no path can give a hidden window a slot. The
+  toggle also no longer re-adds windows that were taken out of the layout.
+
 ## [0.5.10-plus.8] - 2026-10-13
 
 ### Added

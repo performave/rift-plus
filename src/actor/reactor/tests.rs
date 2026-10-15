@@ -16692,6 +16692,79 @@ mod hidden_but_tiled {
 
         assert!(h.tiled());
     }
+
+    /// No desktop switch and no inventory: the ghost is in the tree by some
+    /// route nobody has named yet. The arrange is where every route ends, so
+    /// that is where it loses its tile.
+    #[test]
+    fn a_ghost_loses_its_tile_at_the_next_arrange_whatever_put_it_there() {
+        let mut h = hidden(vec![1]);
+        assert!(h.tiled(), "precondition: nothing has looked at it yet");
+
+        h.reactor.update_layout_or_warn(false, false, None);
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert!(
+            !h.tiled(),
+            "{:?}",
+            test_layout(&mut h.reactor, h.space, h.screen)
+        );
+        assert_eq!(test_layout(&mut h.reactor, h.space, h.screen).len(), 1);
+        assert!(h.reactor.state.windows.contains_window(h.hidden));
+    }
+
+    #[test]
+    fn an_arrange_leaves_a_drawn_window_alone() {
+        let mut h = hidden(vec![1]);
+        set_window_ordered_in_override(h.wsid, Some(true));
+
+        h.reactor.update_layout_or_warn(false, false, None);
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert!(h.tiled());
+        assert_eq!(test_layout(&mut h.reactor, h.space, h.screen), h.before);
+    }
+
+    /// A ghost the arrange took out goes back to its place when its app
+    /// shows the window again, as one untiled any other way does.
+    #[test]
+    fn a_ghost_untiled_by_an_arrange_comes_back_when_shown_again() {
+        let mut h = hidden(vec![1]);
+        h.reactor.update_layout_or_warn(false, false, None);
+        h.apps.simulate_until_quiet(&mut h.reactor);
+        assert!(!h.tiled());
+
+        h.apps.windows.insert(h.hidden, h.state.clone());
+        set_window_ordered_in_override(h.wsid, Some(true));
+        h.reactor.handle_event(Event::WindowServerVisibilityChanged(h.wsid, true));
+        h.apps.simulate_until_quiet(&mut h.reactor);
+
+        assert_eq!(test_layout(&mut h.reactor, h.space, h.screen), h.before);
+    }
+
+    /// Spotify's closed window and Google Drive's hidden one, untiled from
+    /// desktop 1, came back beside Zen and ChatGPT at every bsp/stack toggle
+    /// (2026-10-15); a drag onto one of the empty slots then filed Zen in
+    /// another desktop's tree.
+    #[test]
+    fn a_layout_toggle_does_not_bring_a_ghost_back() {
+        let mut h = hidden(vec![1]);
+        h.inventory();
+        assert!(!h.tiled(), "precondition: untiled");
+
+        for _ in 0..3 {
+            h.reactor.handle_test_layout_command(LayoutCommand::ToggleWorkspaceLayout(vec![
+                LayoutMode::Bsp,
+                LayoutMode::Stack,
+            ]));
+            h.apps.simulate_until_quiet(&mut h.reactor);
+            assert!(
+                !h.tiled(),
+                "{:?}",
+                test_layout(&mut h.reactor, h.space, h.screen)
+            );
+        }
+    }
 }
 
 /// Unminimizing a floating window tiled it: minimizing dropped the floating

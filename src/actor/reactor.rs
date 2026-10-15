@@ -1821,23 +1821,22 @@ impl Reactor {
         &self,
         only: impl Fn(WindowId) -> bool,
     ) -> Vec<(WindowId, WindowServerId, SpaceId)> {
-        if self.is_mission_control_active() || self.is_in_drag() || self.refreshes_blocked() {
+        if !self.may_untile_ghosts() {
             return Vec::new();
         }
         let mut shown: Option<Vec<SpaceId>> = None;
         let mut ghosts = Vec::new();
         for (wid, window) in self.state.windows.iter_windows() {
-            if !only(wid) || window.info.is_minimized {
+            if !only(wid) || window.info.is_minimized || window.info.sys_id.is_none() {
                 continue;
             }
-            let Some(wsid) = window.info.sys_id else { continue };
             let Some(space) = self.space_of_tiled_window(wid) else {
                 continue;
             };
-            if self.native_tab_switch_pending(wid)
-                || window_server::window_ordered_in(wsid) != Some(false)
-                || !window_server::space_is_user(space.get())
-            {
+            let Some(wsid) = self.ghost_server_id(wid) else {
+                continue;
+            };
+            if !window_server::space_is_user(space.get()) {
                 continue;
             }
             if shown.get_or_insert_with(window_server::visible_spaces).contains(&space) {
@@ -1847,24 +1846,89 @@ impl Reactor {
         ghosts
     }
 
+    fn may_untile_ghosts(&self) -> bool {
+        !(self.is_mission_control_active() || self.is_in_drag() || self.refreshes_blocked())
+    }
+
+    /// The window server id of `window` if it is the stuff of a ghost: not
+    /// minimized, no native tab switch pending, and ordered out.
+    fn ghost_server_id(&self, window: WindowId) -> Option<WindowServerId> {
+        let state = self.state.windows.window(window)?;
+        let wsid = state.info.sys_id?;
+        if state.info.is_minimized
+            || self.native_tab_switch_pending(window)
+            || window_server::window_ordered_in(wsid) != Some(false)
+        {
+            return None;
+        }
+        Some(wsid)
+    }
+
     /// Takes every ghost `ghost_tiles` finds out of its tree. Marked hidden
     /// first, or the layout events put it straight back.
     fn untile_ghost_tiles(&mut self, only: impl Fn(WindowId) -> bool) -> EventOutcome {
         let mut outcome = EventOutcome::default();
         for (window, wsid, space) in self.ghost_tiles(only) {
-            debug!(
-                ?window,
-                ?wsid,
-                space = space.get(),
-                "Tiled window the window server is not drawing; untiling it"
-            );
-            crate::sys::trace::act("hidden_tile_untiled", &(window.idx.get(), space.get()));
-            self.state.windows.mark_window_hidden(wsid);
+            self.note_ghost_untiled(window, wsid, space);
             outcome = outcome
                 .with_layout_event(LayoutEvent::WindowRemovedPreserveFloating(window))
                 .with_arrange_passes(1);
         }
         outcome
+    }
+
+    fn note_ghost_untiled(&mut self, window: WindowId, wsid: WindowServerId, space: SpaceId) {
+        debug!(
+            ?window,
+            ?wsid,
+            space = space.get(),
+            "Tiled window the window server is not drawing; untiling it"
+        );
+        crate::sys::trace::act("hidden_tile_untiled", &(window.idx.get(), space.get()));
+        self.state.windows.mark_window_hidden(wsid);
+    }
+
+    /// The same rule, kept where every route into a tree ends: the arrange
+    /// that would give a desktop on screen its frames. Running it after a
+    /// desktop switch and after an app's inventory only covered the routes
+    /// someone had thought of, and a month of ghosts came in by others --
+    /// the last a bsp/stack toggle that rebuilt the tree from the
+    /// workspace's assignments, untiled ghosts included (2026-10-15).
+    /// Whatever put a ghost into a tree, it does not get a slot on screen.
+    ///
+    /// The removals go straight to the engine, each arranging on its way
+    /// through, so the pass that called this finds the trees already clear.
+    pub(super) fn untile_ghosts_before_arrange(&mut self, scope: Option<SpaceId>) {
+        if !self.may_untile_ghosts() {
+            return;
+        }
+        let mut shown: Option<Vec<SpaceId>> = None;
+        let mut ghosts = Vec::new();
+        let on_screen: Vec<SpaceId> = self
+            .space_state
+            .screens
+            .iter()
+            .filter_map(|screen| screen.space)
+            .filter(|space| scope.is_none_or(|scope| scope == *space))
+            .collect();
+        for space in on_screen {
+            let tiled = self.layout_manager.layout_engine.tiled_windows_at(space);
+            if tiled.is_empty()
+                || !shown.get_or_insert_with(window_server::visible_spaces).contains(&space)
+                || !window_server::space_is_user(space.get())
+            {
+                continue;
+            }
+            for window in tiled {
+                if let Some(wsid) = self.ghost_server_id(window) {
+                    ghosts.push((window, wsid, space));
+                }
+            }
+        }
+        for (window, wsid, space) in ghosts {
+            self.note_ghost_untiled(window, wsid, space);
+            self.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(window));
+        }
     }
 
     fn defer_window_inventory_refresh(&mut self) {

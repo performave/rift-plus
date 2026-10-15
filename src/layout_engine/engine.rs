@@ -365,13 +365,25 @@ impl LayoutEngine {
             let mut ordered = old_layout
                 .map(|layout| workspace.layout_system.visible_windows_in_layout(layout))
                 .unwrap_or_default();
-            // Keep windows hidden by stack/group selection when rebuilding into a new mode.
-            let mut hidden_windows: Vec<_> = self
-                .virtual_workspace_manager
-                .workspace_windows(window_store, space, workspace_id)
-                .into_iter()
-                .filter(|wid| !ordered.contains(wid))
-                .collect();
+            // Keep windows hidden by stack/group selection when rebuilding into
+            // a new mode. They are taken from the tree, not from the
+            // workspace's assignments: a window can be assigned and in no
+            // tree on purpose -- in native fullscreen, or ordered out and
+            // untiled as a ghost -- and rebuilding from the assignments gave
+            // every such window a tile again. Spotify's closed window and
+            // Google Drive's hidden one came back beside Zen at every
+            // bsp/stack toggle (2026-10-15).
+            let mut hidden_windows: Vec<_> = match old_layout {
+                Some(layout) => workspace.layout_system.all_windows_in_layout(layout),
+                None => self.virtual_workspace_manager.workspace_windows(
+                    window_store,
+                    space,
+                    workspace_id,
+                ),
+            }
+            .into_iter()
+            .filter(|wid| !ordered.contains(wid))
+            .collect();
             hidden_windows.sort();
             ordered.extend(hidden_windows);
             (workspace.layout_mode, selected, ordered)
@@ -4316,6 +4328,13 @@ impl LayoutEngine {
 
     /// Whether `window` is part of the active layout on `space`: tiled, as
     /// opposed to merely tracked, floating, minimized, or assigned elsewhere.
+    /// Every window in the tree `space` shows, stack-hidden ones included.
+    pub fn tiled_windows_at(&self, space: SpaceId) -> Vec<WindowId> {
+        self.workspace_and_layout(space)
+            .map(|(ws_id, layout)| self.workspace_tree(ws_id).all_windows_in_layout(layout))
+            .unwrap_or_default()
+    }
+
     pub fn is_window_tiled(&self, space: SpaceId, window: WindowId) -> bool {
         self.workspace_and_layout(space).is_some_and(|(ws_id, layout)| {
             self.workspace_tree(ws_id).contains_window(layout, window)
@@ -5814,6 +5833,52 @@ mod tests {
             WindowId::new(1, 3),
             WindowId::new(1, 4)
         ]);
+    }
+
+    /// A window taken out of the tree but left assigned -- a ghost the reactor
+    /// untiled, a window in native fullscreen -- is not given a tile again by
+    /// a toggle, in either direction. Rebuilding from the assignments put
+    /// Spotify's closed window back beside Zen at every toggle (2026-10-15).
+    #[test]
+    fn a_toggle_does_not_retile_a_window_taken_out_of_the_tree() {
+        let mut store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(4);
+        let _ = engine.handle_event(
+            &mut store,
+            LayoutEvent::SpaceExposed(space, CGSize::new(1920.0, 1080.0)),
+        );
+        let _ = engine.handle_virtual_workspace_command(
+            &mut store,
+            space,
+            &LayoutCommand::SetWorkspaceLayout {
+                workspace: None,
+                mode: LayoutMode::Bsp,
+            },
+        );
+        for idx in 1..=3 {
+            let _ = engine.handle_event(
+                &mut store,
+                LayoutEvent::WindowAdded(space, WindowId::new(1, idx)),
+            );
+        }
+        let ghost = WindowId::new(1, 2);
+        let _ = engine.handle_event(&mut store, LayoutEvent::WindowRemovedPreserveFloating(ghost));
+        let workspace = engine.active_workspace(space).expect("an active workspace");
+        assert!(
+            engine
+                .virtual_workspace_manager()
+                .workspace_windows(&store, space, workspace)
+                .contains(&ghost),
+            "precondition: untiled, but still assigned"
+        );
+
+        for _ in 0..3 {
+            toggle_bsp_stack(&mut engine, &mut store, space);
+            let mut windows = order_on(&mut engine, space);
+            windows.sort();
+            assert_eq!(windows, vec![WindowId::new(1, 1), WindowId::new(1, 3)]);
+        }
     }
 
     #[test]
