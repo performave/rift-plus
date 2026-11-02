@@ -2,6 +2,7 @@
 //
 //   dtool count           how many displays are online (fast; no swift compile)
 //   dtool list            id/size/main/builtin per display, one per line
+//   dtool key <code> [cmd|ctrl]  one key press, optionally with a modifier
 //   dtool mon <seconds>   log every CGDisplayReconfiguration callback with its
 //                         flags, so an attach can be compared against what a
 //                         real cable produces
@@ -10,6 +11,8 @@
 // physical monitor negotiates its mode and flashes, firing several callbacks
 // (BEGIN/MODE/SHAPE) around the ADD; if CGVirtualDisplay fires a bare ADD then
 // the harness is testing an easier problem than the one that actually breaks.
+//
+//   clang -fobjc-arc -framework CoreGraphics -framework Foundation -o dtool dtool.m
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 
@@ -130,12 +133,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
         // it again toggles it, and nothing reports whether it is open.
         // An optional `cmd` holds Command with it: ⌘N is how the harness
         // asks an app for a window, since Apple Events hang in the guest.
+        // `ctrl` holds Control: ⌃→ and ⌃← step through desktops in Dock's
+        // own order, which is how a test sees whether Dock's model of a
+        // display's desktops agrees with the window server's.
         CGKeyCode code = (CGKeyCode)atoi(argv[2]);
         CGEventRef down = CGEventCreateKeyboardEvent(NULL, code, true);
         CGEventRef up = CGEventCreateKeyboardEvent(NULL, code, false);
-        if (argc > 3 && !strcmp(argv[3], "cmd")) {
-            CGEventSetFlags(down, kCGEventFlagMaskCommand);
-            CGEventSetFlags(up, kCGEventFlagMaskCommand);
+        if (argc > 3 && (!strcmp(argv[3], "cmd") || !strcmp(argv[3], "ctrl"))) {
+            CGEventFlags flags = !strcmp(argv[3], "cmd") ? kCGEventFlagMaskCommand : kCGEventFlagMaskControl;
+            // A real arrow key also carries the keypad and fn flags, and
+            // the space-switch shortcut does not fire without them.
+            if (code >= 123 && code <= 126) flags |= kCGEventFlagMaskNumericPad | kCGEventFlagMaskSecondaryFn;
+            CGEventSetFlags(down, flags);
+            CGEventSetFlags(up, flags);
         }
         CGEventPost(kCGHIDEventTap, down);
         usleep(30000);
