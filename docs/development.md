@@ -29,8 +29,10 @@ pinned to the cdhash, which changes on every single rebuild — so every rebuild
 silently loses Accessibility, and rift exits 1 in a launchd respawn loop with
 nothing but a line in `/tmp/rift_$USER.err.log` to explain itself.
 
-Signing with a Developer ID gives a stable requirement, and the grant survives
-rebuilds. `just` uses `RIFT_CODESIGN_IDENTITY` if set, and otherwise the
+Signing with a real certificate gives a stable requirement, and the grant
+survives rebuilds. It need not be a Developer ID: a free account's Apple
+Development certificate does the same job for a binary that never leaves your
+Mac. `just` uses `RIFT_CODESIGN_IDENTITY` if set, and otherwise the
 identity in the justfile.
 
 Release builds get this for free — CI signs with the hardened runtime and
@@ -92,8 +94,9 @@ answer is none — an empty run and a real one should never look alike.
   Dock's memory even though it is still installed. `just sa`, or let
   `run_on_start` do it. `just status` says which.
 - **`brew upgrade`** replaces the swapped binaries with the tap's build. That
-  build is signed with the same Developer ID, so Accessibility survives — but it
-  is not your working tree. Re-run `just install` if you were testing something.
+  build is signed by CI, not with your local identity, so expect to grant
+  Accessibility again — and it is not your working tree. Re-run `just install`
+  if you were testing something.
 - **Two window managers at once** do not fail loudly, they fight — windows
   oscillate as each reacts to the other's frame changes. Stop yabai and skhd
   before starting rift, and verify with `launchctl list | grep -iE

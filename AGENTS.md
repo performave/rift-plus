@@ -60,7 +60,8 @@ guide.
 **Signing is not optional locally.** macOS records the Accessibility grant
 against a binary's designated requirement, so an ad-hoc signature pins it to a
 cdhash that every rebuild changes: rift then silently loses Accessibility and
-respawns in a launchd loop. `just` signs with the Developer ID.
+respawns in a launchd loop. `just` signs with a real certificate (the
+justfile's `identity`; a free account's Apple Development one is enough).
 
 ## Releases
 

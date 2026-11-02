@@ -1,7 +1,7 @@
 # Local development for the rift fork. `just` lists these.
 #
 # The loop that matters is `just dev`: build fast, swap the binaries Homebrew's
-# service actually runs, re-sign with the Developer ID, restart. One command,
+# service actually runs, re-sign with a real certificate, restart. One command,
 # because doing it by hand is four and forgetting the signature costs you the
 # Accessibility grant (see AGENTS.md).
 
@@ -11,7 +11,9 @@ formula := "rift-plus"
 
 # Signing identity. Ad-hoc (`-`) will run, but macOS re-prompts for
 # Accessibility on every rebuild and rift exits 1 until you do.
-identity := env("RIFT_CODESIGN_IDENTITY", "Developer ID Application: Eric Wang (8UR4G77744)")
+# A free account's Apple Development certificate is enough: what Accessibility
+# needs is a requirement that outlives the cdhash, not a paid team.
+identity := env("RIFT_CODESIGN_IDENTITY", "Apple Development: eric.wang401@gmail.com (2RTC9978WY)")
 
 # The profile `dev` uses: opt-level 2, no LTO, incremental. ~20s vs ~2m.
 profile := "release-fast"
