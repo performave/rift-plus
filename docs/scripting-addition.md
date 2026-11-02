@@ -111,8 +111,11 @@ does (`killall Dock`), and is harmless until then.
 
 The handshake reports which Dock internals the payload managed to resolve, one
 flag each. rift checks only the ones its own commands need
-(`attrib::REQUIRED`): `dock.spaces`, the desktop picture manager, and the add /
-remove / move space functions. Two flags are deliberately not required —
+(`attrib::REQUIRED`): `dock.spaces` and adding, removing and moving a space.
+`MOV_SPACE` is reported only for a move that can run end to end — Dock's own
+`moveSpace` together with the desktop picture manager, or on 27.2 the SkyLight
+transaction described below — so the picture manager's own flag (`DPPM`) is
+informational. Two flags are deliberately not required —
 `SET_WINDOW` belongs to a yabai command rift does not send, and `ANIM_TIME` is
 the patch that zeroes Dock's space-change animation.
 
@@ -153,8 +156,48 @@ The pattern for the routine is in `arm64_payload.m` next to the others, with a
 delta from the match to the tail; the payload refuses to hook unless the
 instruction at that delta is the store it expects (`str d1, [x20,
 #scrollPosition]`, with the ivar offset taken from the runtime), so a Dock the
-pattern happens to match but the delta does not is left alone. Only macOS 26 on
-Apple silicon is listed so far.
+pattern happens to match but the delta does not is left alone. macOS 26 and 27
+on Apple silicon are listed, both of 27's slices (see below).
+
+## Finding Dock's code, and what 27.2 changed
+
+Each Dock internal is found by a byte pattern, searched forward from a hint
+offset in `arm64_payload.m` for at most `0x1286a0` bytes. A macOS update that
+moves code *earlier* leaves a hint past its match, and the pattern, though
+unchanged, is never reached; 27.2 did that to five symbols at once. So when the
+hinted search misses, `hex_find_seq` scans the whole of Dock's `__TEXT` and
+takes the match only if the pattern fits exactly one place. The Dock log says
+when that happened, with the offset to move the hint to:
+
+```text
+[rift-sa] nothing past hint 0x180000, but the pattern fits once in __TEXT, at 0x12dbcc
+```
+
+`fits nowhere` means the code itself changed and needs disassembly, not a new
+hint. Read the log with `/usr/bin/log show --predicate 'process == "Dock" AND
+eventMessage CONTAINS "rift-sa"'`; zsh's `log` builtin shadows the tool.
+
+Dock on 27 is a fat binary with two arm64e slices, `arm64e` and `arm64e.x1`;
+newer chips run the second, whose functions open with `pacibsppc` instead of
+`pacibsp`. The 27 patterns leave that first instruction open. To see which
+slice a Dock is running, match the `__TEXT` size in `vmmap <dock pid>` against
+`otool -arch <slice> -l`.
+
+27.2 also changed what the payload calls by name:
+
+- `-[Spaces currentSpaceForDisplayUUID:]` is gone; `currentSpaceForDisplay:`
+  takes the display's id instead, which `displayForSPID:` gives for any of
+  its desktops. Sending the old selector raises inside Dock and kills it, so
+  `SPACE_FOCUS` checks which one Dock has.
+- Mission Control moved to WindowManager, and with it moving desktops: Dock's
+  `moveSpace` and the desktop picture manager's
+  `moveSpace:toDisplay:displayUUID:` no longer exist. WindowManager moves a
+  desktop with one `SLSTransactionMoveManagedSpaceToDisplayAfterSpace`, and
+  Dock re-reads the layout from the window server afterwards. Where Dock's
+  `moveSpace` is not found, `SPACE_MOVE` does the same from Dock's connection
+  and then sends Dock `refreshSpacesIfNeeded` straight away, so Dock's own
+  order (what ⌃← and ⌃→ walk) agrees with the window server's.
+  `scripts/desktop-move-test.py` checks both, in the guest.
 
 ## What the payload answers
 

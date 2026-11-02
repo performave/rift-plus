@@ -12,7 +12,9 @@
 
 uint64_t get_dock_spaces_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0x30000;
+        // Kept just under 27.2's x1 match: 27.0.1 fits this pattern twice,
+        // and only the first after the hint is the right one.
+        return 0x2e000;
     } else if (os_version.majorVersion == 26) {
         return 0x30000;
     } else if (os_version.majorVersion == 15) {
@@ -30,7 +32,7 @@ uint64_t get_dock_spaces_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_dppm_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0x50000;
+        return 0x4f000;
     } else if (os_version.majorVersion == 26) {
         return 0x70000;
     } else if (os_version.majorVersion == 15) {
@@ -48,7 +50,7 @@ uint64_t get_dppm_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_fix_animation_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0x220000;
+        return 0x170000;
     } else if (os_version.majorVersion == 26) {
         return 0x250000;
     } else if (os_version.majorVersion == 15) {
@@ -66,7 +68,7 @@ uint64_t get_fix_animation_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_add_space_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0x220000;
+        return 0x170000;
     } else if (os_version.majorVersion == 26) {
         return 0x250000;
     } else if (os_version.majorVersion == 15) {
@@ -84,7 +86,7 @@ uint64_t get_add_space_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_remove_space_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0x180000;
+        return 0x120000;
     } else if (os_version.majorVersion == 26) {
         return 0x1e0000;
     } else if (os_version.majorVersion == 15) {
@@ -194,8 +196,9 @@ const char *get_fix_animation_pattern(NSOperatingSystemVersion os_version) {
 
 const char *get_add_space_pattern(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // Only the 26.4+ shape survives into 27.
-        return "7F 23 03 D5 E1 03 1E AA ?? ?? ?? 97 FE 03 01 AA FD 7B 05 A9 FD 43 01 91 F3 03 14 AA F5 03";
+        // Only the 26.4+ shape survives into 27. The first instruction is
+        // left open on 27 for the arm64e.x1 slice; see get_space_step_pattern.
+        return "?? ?? ?? ?? E1 03 1E AA ?? ?? ?? 97 FE 03 01 AA FD 7B 05 A9 FD 43 01 91 F3 03 14 AA F5 03";
     } else if (os_version.majorVersion == 26) {
         if (os_version.minorVersion >= 4) {
             return "7F 23 03 D5 E1 03 1E AA ?? ?? ?? 97 FE 03 01 AA FD 7B 05 A9 FD 43 01 91 F3 03 14 AA F5 03";
@@ -215,7 +218,9 @@ const char *get_add_space_pattern(NSOperatingSystemVersion os_version) {
 }
 
 const char *get_remove_space_pattern(NSOperatingSystemVersion os_version) {
-    if (os_version.majorVersion == 26 || os_version.majorVersion == 27) {
+    if (os_version.majorVersion == 27) {
+        return "?? ?? ?? ?? FF ?? ?? D1 FC ?? ?? A9 FA ?? ?? A9 F8 ?? ?? A9 F6 ?? ?? A9 F4 ?? ?? A9 FD ?? ?? A9 FD ?? ?? 91 ?? 03 03 AA F5 03 02 AA F4 03 01 AA";
+    } else if (os_version.majorVersion == 26) {
         return "7F 23 03 D5 FF ?? ?? D1 FC ?? ?? A9 FA ?? ?? A9 F8 ?? ?? A9 F6 ?? ?? A9 F4 ?? ?? A9 FD ?? ?? A9 FD ?? ?? 91 ?? 03 03 AA F5 03 02 AA F4 03 01 AA";
     } else if (os_version.majorVersion == 15) {
         return "7F 23 03 D5 FF 83 ?? D1 FC 6F ?? A9 FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD 7B ?? A9 FD 43 ?? 91 ?? 03 03 AA ?? 03 02 AA ?? 03 01 AA ?? 03 00 AA ?? ?? ?? AA";
@@ -231,7 +236,11 @@ const char *get_remove_space_pattern(NSOperatingSystemVersion os_version) {
 }
 
 const char *get_move_space_pattern(NSOperatingSystemVersion os_version) {
-    if (os_version.majorVersion == 26 || os_version.majorVersion == 27) {
+    if (os_version.majorVersion == 27) {
+        // The first instruction is left open, as for add_space. 27.2 has no
+        // moveSpace in Dock at all; see space_move_resolve in payload.m.
+        return "?? ?? ?? ?? E3 03 1E AA ?? ?? ?? 97 FE 03 03 AA FD 7B ?? A9 FD ?? ?? 91 F6 03 14 AA";
+    } else if (os_version.majorVersion == 26) {
         return "7F 23 03 D5 E3 03 1E AA ?? ?? ?? 97 FE 03 03 AA FD 7B ?? A9 FD ?? ?? 91 F6 03 14 AA";
     } else if (os_version.majorVersion == 15) {
         return "7F 23 03 D5 E3 03 1E AA ?? ?? FF 97 FE 03 03 AA FD 7B 06 A9 FD 83 01 91 F6 03 14 AA F4 03 02 AA FB 03 01 AA FA 03 00 AA ?? 13 00 ?? E8 ?? ?? F9 19 68 68 F8 E0 03 19 AA E1 03 16 AA";
@@ -292,7 +301,7 @@ const char *get_set_front_window_pattern(NSOperatingSystemVersion os_version) {
 
 uint64_t get_space_step_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        return 0xd0000;
+        return 0xc0000;
     } else if (os_version.majorVersion == 26) {
         return 0x140000;
     }
@@ -305,8 +314,12 @@ uint64_t get_space_step_offset(NSOperatingSystemVersion os_version) {
 // `ldr d2, [x20, #lastAnimationTime]`, `fsub`, `fdiv d0, d0, d8`.
 const char *get_space_step_pattern(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // As 26, with `mov x8, #0x7fefffffffffffff` after the call.
-        return "7F 23 03 D5 E9 23 BD 6D F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91 08 1C A0 4E ?? ?? ?? 94 08 02 F0 92 82 16 40 FD 00 38 62 1E 00 18 68 1E";
+        // As 26, with `mov x8, #0x7fefffffffffffff` after the call. The
+        // first instruction is left open: 27 ships an arm64e.x1 slice, run
+        // on newer chips, whose functions open with `pacibsppc` rather than
+        // `pacibsp`, and the routine is otherwise the same there, down to
+        // the detour site and the resume delta.
+        return "?? ?? ?? ?? E9 23 BD 6D F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91 08 1C A0 4E ?? ?? ?? 94 08 02 F0 92 82 16 40 FD 00 38 62 1E 00 18 68 1E";
     } else if (os_version.majorVersion == 26) {
         return "7F 23 03 D5 E9 23 BD 6D F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91 08 1C A0 4E ?? ?? ?? 94 82 16 40 FD 00 38 62 1E 00 18 68 1E";
     }

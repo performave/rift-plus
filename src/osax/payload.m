@@ -14,6 +14,7 @@
 #include <mach/vm_page_size.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <dlfcn.h>
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <sys/types.h>
@@ -99,6 +100,12 @@ static uint64_t animation_time_addr;
 // set the animation's timing. Zero when this Dock does not have it. See
 // space_step_resolve and the block above init_instances.
 static uint64_t space_step_addr;
+
+// rift addition: how 27.2 moves a space, looked up at runtime because older
+// SkyLights do not have it. Null wherever Dock's own moveSpace was found. See
+// space_move_resolve.
+typedef void (*move_managed_space_call)(CFTypeRef transaction, uint64_t sid, CFStringRef display_uuid, uint64_t after_sid);
+static move_managed_space_call move_managed_space_fp;
 static bool macOSSequoia;
 
 static pthread_t daemon_thread;
@@ -168,6 +175,42 @@ static uint64_t image_slide(void)
     return 0;
 }
 
+//
+// NOTE(rift): the offsets in arm64_payload.m are where hex_find_seq starts,
+// and it only ever searches forward, so a Dock update that moves code earlier
+// leaves a hint sitting past its match: the pattern still fits and the search
+// never reaches it. 27.2 did that to five symbols at once, the trackpad space
+// switch step among them. When the hinted search misses, the whole of Dock's
+// __TEXT is scanned instead, and the match is taken only if it is the one
+// place the pattern fits -- without a hint to narrow it, a pattern that fits
+// twice would be a guess, and a wrong guess is a call or a patch into the
+// middle of some other function.
+//
+static uint64_t hex_find_unique(const char *want, const char *wild, uint64_t length, uint64_t hint)
+{
+    const struct segment_command_64 *text = getsegbyname("__TEXT");
+    uint64_t start = text->vmaddr + image_slide();
+    uint64_t end = start + text->vmsize;
+    uint64_t found = 0;
+    int matches = 0;
+
+    for (uint64_t addr = start; addr + length <= end; ++addr) {
+        uint64_t i = 0;
+        while (i < length && (wild[i] || ((char *) addr)[i] == want[i])) ++i;
+        if (i == length) {
+            found = addr;
+            if (++matches > 1) break;
+        }
+    }
+
+    if (matches == 1) {
+        NSLog(@"[rift-sa] nothing past hint 0x%llx, but the pattern fits once in __TEXT, at 0x%llx", hint - start, found - start);
+        return found;
+    }
+    NSLog(@"[rift-sa] nothing past hint 0x%llx, and the pattern fits %s in __TEXT", hint - start, matches ? "more than once" : "nowhere");
+    return 0;
+}
+
 static uint64_t hex_find_seq(uint64_t baddr, const char *c_pattern)
 {
     if (!baddr || !c_pattern) return 0;
@@ -201,7 +244,7 @@ loop:
             if (addr - baddr < 0x1286a0) {
                 goto loop;
             } else {
-                return 0;
+                return hex_find_unique(buffer_a, buffer_b, pattern_length, baddr);
             }
         }
     }
@@ -276,6 +319,14 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
         // matches this Dock, and only the offsets the search starts from
         // moved. The two selector spellings macOSSequoia picks between are
         // unchanged, so it is set here for the same reason as on 26.
+        //
+        // 27.2 moved code earlier again, past the hints, which the full scan
+        // in hex_find_seq now absorbs, and dropped both of those spellings
+        // for currentSpaceForDisplay: -- current_space_for_display now picks
+        // by what Dock answers to. It also rewrote the desktop picture
+        // manager in Swift, without the moveSpace:toDisplay:displayUUID: that
+        // do_space_move sends it, and took moveSpace out of Dock; neither
+        // pattern fits there, and space_move_resolve finds the replacement.
         //
         NSLog(@"[rift-sa] Detected macOS 27... flagging 'macOSSequoia=true.'");
         macOSSequoia = true;
@@ -545,6 +596,30 @@ static void space_step_resolve(uint64_t baseaddr, NSOperatingSystemVersion os_ve
 }
 #endif
 
+//
+// rift addition: moving a space on 27.2.
+//
+// 27.2 took moving desktops out of Dock. Mission Control lives in
+// WindowManager now, which moves a space with a single SkyLight transaction,
+// and Dock only catches up afterwards, re-reading the layout from the window
+// server when Mission Control closes. Dock's own moveSpace and the desktop
+// picture manager it was paired with are gone, so where they cannot be found
+// do_space_move does what WindowManager does, from Dock's connection, and then
+// has Dock re-read the layout straight away through refreshSpacesIfNeeded.
+// Both are names rather than byte patterns, and are checked for rather than
+// assumed.
+//
+static void space_move_resolve(void)
+{
+    if (move_space_fp || dock_spaces == nil) return;
+    if (![dock_spaces respondsToSelector:@selector(refreshSpacesIfNeeded)]) return;
+
+    move_managed_space_fp = (move_managed_space_call) dlsym(RTLD_DEFAULT, "SLSTransactionMoveManagedSpaceToDisplayAfterSpace");
+    if (move_managed_space_fp) {
+        NSLog(@"[rift-sa] moveSpace not found; moving spaces through SLSTransactionMoveManagedSpaceToDisplayAfterSpace");
+    }
+}
+
 static void init_instances()
 {
     NSOperatingSystemVersion os_version = [[NSProcessInfo processInfo] operatingSystemVersion];
@@ -674,6 +749,7 @@ static void init_instances()
     }
 
     space_step_resolve(baseaddr, os_version);
+    space_move_resolve();
 }
 
 static inline id get_ivar_value(id instance, const char *name)
@@ -747,7 +823,9 @@ static inline id display_space_for_space_with_id(uint64_t space_id)
 
 static void do_space_move(char *message)
 {
-    if (dock_spaces == nil || dp_desktop_picture_manager == nil || move_space_fp == 0) return;
+    if (dock_spaces == nil) return;
+    bool via_skylight = move_managed_space_fp != NULL;
+    if (!via_skylight && (dp_desktop_picture_manager == nil || move_space_fp == 0)) return;
 
     uint64_t source_space_id, dest_space_id, source_prev_space_id;
     unpack(source_space_id);
@@ -785,11 +863,30 @@ static void do_space_move(char *message)
         [ns_source_space release];
     }
 
-    asm__call_move_space(source_space, dest_space, dest_display_uuid, dock_spaces, move_space_fp);
+    if (via_skylight) {
+        // See space_move_resolve. The commit is synchronous so the refresh
+        // reads the layout the move left, not the one before it.
+        CFTypeRef transaction = SLSTransactionCreate(SLSMainConnectionID());
+        move_managed_space_fp(transaction, source_space_id, dest_display_uuid, dest_space_id);
+        SLSTransactionCommit(transaction, 1);
+        CFRelease(transaction);
 
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        ((void (*)(id, SEL, id, unsigned, CFStringRef)) objc_msgSend)(dp_desktop_picture_manager, @selector(moveSpace:toDisplay:displayUUID:), source_space, dest_display_id, dest_display_uuid);
-    });
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            ((void (*)(id, SEL)) objc_msgSend)(dock_spaces, @selector(refreshSpacesIfNeeded));
+        });
+
+        // The refresh rebuilds Dock's model, so the objects looked up before
+        // the move may no longer be the ones Dock reads.
+        source_space = space_for_display_with_id(dest_display_uuid, source_space_id);
+        source_display_space = display_space_for_display_uuid(source_display_uuid);
+        dest_display_space = display_space_for_display_uuid(dest_display_uuid);
+    } else {
+        asm__call_move_space(source_space, dest_space, dest_display_uuid, dock_spaces, move_space_fp);
+
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            ((void (*)(id, SEL, id, unsigned, CFStringRef)) objc_msgSend)(dp_desktop_picture_manager, @selector(moveSpace:toDisplay:displayUUID:), source_space, dest_display_id, dest_display_uuid);
+        });
+    }
 
     if (focus_dest_space) {
         uint64_t new_source_space_id = SLSManagedDisplayGetCurrentSpace(SLSMainConnectionID(), source_display_uuid);
@@ -890,6 +987,30 @@ static void dock_update_visibility_for_space(id space)
     });
 }
 
+//
+// NOTE(rift): 27.2 dropped currentSpaceForDisplayUUID: for
+// currentSpaceForDisplay:, which takes the display's id instead of its uuid,
+// and Dock's displayForSPID: gives that id for any space on the display. An
+// unknown selector raises inside Dock and takes it down, so each spelling is
+// sent only where this Dock has it, and none at all answers nil.
+//
+static id current_space_for_display(CFStringRef display_uuid, uint64_t space_on_display)
+{
+    if ([dock_spaces respondsToSelector:@selector(currentSpaceForDisplayUUID:)]) {
+        return ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplayUUID:), display_uuid);
+    }
+    if ([dock_spaces respondsToSelector:@selector(currentSpaceforDisplayUUID:)]) {
+        return ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceforDisplayUUID:), display_uuid);
+    }
+    if ([dock_spaces respondsToSelector:@selector(currentSpaceForDisplay:)]
+        && [dock_spaces respondsToSelector:@selector(displayForSPID:)]) {
+        uint32_t display_id = ((uint32_t (*)(id, SEL, uint64_t)) objc_msgSend)(dock_spaces, @selector(displayForSPID:), space_on_display);
+        if (display_id == 0) return nil;
+        return ((id (*)(id, SEL, uint32_t)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplay:), display_id);
+    }
+    return nil;
+}
+
 static bool do_space_focus(char *message)
 {
     if (dock_spaces == nil) return false;
@@ -901,9 +1022,11 @@ static bool do_space_focus(char *message)
     bool focused = false;
     CFStringRef dest_display = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), dest_space_id);
     if (dest_display == NULL) return false;
-    id source_space = macOSSequoia
-                    ? ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplayUUID:), dest_display)
-                    : ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceforDisplayUUID:), dest_display);
+    id source_space = current_space_for_display(dest_display, dest_space_id);
+    if (source_space == nil) {
+        CFRelease(dest_display);
+        return false;
+    }
     uint64_t source_space_id = get_space_id(source_space);
 
     if (source_space_id == dest_space_id) {
@@ -1301,7 +1424,8 @@ static void do_handshake(int sockfd)
     if (dp_desktop_picture_manager != nil) attrib |= OSAX_ATTRIB_DPPM;
     if (add_space_fp)                      attrib |= OSAX_ATTRIB_ADD_SPACE;
     if (remove_space_fp)                   attrib |= OSAX_ATTRIB_REM_SPACE;
-    if (move_space_fp)                     attrib |= OSAX_ATTRIB_MOV_SPACE;
+    // NOTE(rift): reported only for a move that can run end to end; see do_space_move.
+    if ((move_space_fp && dp_desktop_picture_manager) || move_managed_space_fp) attrib |= OSAX_ATTRIB_MOV_SPACE;
     if (set_front_window_fp)               attrib |= OSAX_ATTRIB_SET_WINDOW;
     if (animation_time_addr)               attrib |= OSAX_ATTRIB_ANIM_TIME;
     if (space_step_addr)                   attrib |= OSAX_ATTRIB_SPACE_STEP;

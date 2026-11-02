@@ -59,10 +59,15 @@ mod opcode {
 pub mod attrib {
     /// `dock_spaces`, the object every space command goes through.
     pub const DOCK_SPACES: u32 = 0x01;
-    /// The desktop picture manager, which a space move has to be told about.
+    /// The desktop picture manager, which a space move had to be told about
+    /// until macOS 27.2 took desktop moves out of Dock. The payload folds it
+    /// into [`MOV_SPACE`] wherever it is still needed, so rift asks for that.
     pub const DPPM: u32 = 0x02;
     pub const ADD_SPACE: u32 = 0x04;
     pub const REM_SPACE: u32 = 0x08;
+    /// A space move that can run end to end: Dock's own `moveSpace` and the
+    /// desktop picture manager, or on 27.2 the SkyLight transaction
+    /// WindowManager moves desktops with.
     pub const MOV_SPACE: u32 = 0x10;
     /// Dock's "set front window", which rift does its own way.
     pub const SET_WINDOW: u32 = 0x20;
@@ -82,14 +87,14 @@ pub mod attrib {
     /// | `DOCK_SPACES` | every space command |
     /// | `ADD_SPACE` | [`super::create_space`] |
     /// | `REM_SPACE` | [`super::destroy_space`] |
-    /// | `MOV_SPACE`, `DPPM` | [`super::move_space_after_space`] |
+    /// | `MOV_SPACE` | [`super::move_space_after_space`] |
     ///
     /// `SET_WINDOW` and `ANIM_TIME` are deliberately absent: they belong to
     /// yabai commands rift does not send. [`super::move_window_to_space`],
     /// the one that matters most, needs no flag at all — inside Dock it is a
     /// plain `SLSMoveWindowsToManagedSpace` that works from there and nowhere
     /// else.
-    pub const REQUIRED: u32 = DOCK_SPACES | DPPM | ADD_SPACE | REM_SPACE | MOV_SPACE;
+    pub const REQUIRED: u32 = DOCK_SPACES | ADD_SPACE | REM_SPACE | MOV_SPACE;
 
     /// Names the flags in `wanted` that `reported` does not have, for messages.
     pub fn missing(reported: u32, wanted: u32) -> Vec<&'static str> {
@@ -579,7 +584,7 @@ mod tests {
             version: "1.0.0".into(),
             attributes: 0,
         };
-        assert_eq!(handshake.missing().len(), 5);
+        assert_eq!(handshake.missing().len(), 4);
     }
 
     #[test]

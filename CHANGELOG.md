@@ -32,6 +32,32 @@ Entries describe this fork's changes relative to
   screen but belonged to no layout there, and the float and tile keys did
   nothing to it. The desktop whose layout drew the tile now decides, and
   macOS is asked only when no layout holds the window.
+- **The trackpad space switch animation works again on macOS 27.2.** 27.2
+  moved Dock's code, and the scripting addition only ever searched forward
+  from where each routine used to start, so it found none of them: the swipe
+  went back to Dock's own spring, and dock.spaces, add and remove space and
+  the animation-time patch went missing too, though every one of them is
+  byte-for-byte unchanged. When the usual search misses, the addition now scans
+  all of Dock's code and takes a match only if it is the one place the pattern
+  fits, so the next update that merely shuffles Dock needs no new release.
+  The 27 patterns also match the `arm64e.x1` half of Dock that newer chips
+  run, whose functions begin with a different instruction.
+- **Switching desktops through the scripting addition no longer crashes Dock
+  on macOS 27.2.** 27.2 renamed the Dock call that answers which desktop a
+  display is showing, and an unknown call raises inside Dock. It went
+  unnoticed only because the addition could not find Dock's spaces at all;
+  with the fix above it would have taken Dock down on the first switch. The
+  addition now asks Dock which spelling it has.
+- **Desktops move between displays again on macOS 27.2,** which is how rift
+  puts a monitor's desktops back after you replug it, and how it orders a
+  display's desktops. 27.2 moved Mission Control out of Dock and took Dock's
+  own way of moving a desktop with it, so every move rift asked for did
+  nothing, silently, and rift counted it done. The addition now moves a
+  desktop the way Mission Control does on 27.2, with one window server
+  transaction, and then has Dock re-read the layout so its own order (what
+  ⌃← and ⌃→ step through) agrees. `rift sa status` no longer asks for the
+  desktop picture manager, which 27.2 does not have and the move no longer
+  needs. `OSAX_VERSION` is `1.3.8`; run `sudo rift sa load`.
 
 ## [0.5.10-plus.8] - 2026-10-13
 
