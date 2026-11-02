@@ -140,12 +140,23 @@ sa:
     printf '%s\n' "$out"
     if printf '%s' "$out" | grep -q 'restart Dock'; then
         echo "just: Dock is holding an older payload and cannot swap it in place; restarting it"
+        # Wait for a Dock with a new pid: the old one is still listed while it
+        # exits, and loading into it just hits the old payload again.
+        old="$(pgrep -x Dock || true)"
         killall Dock
         for _ in $(seq 1 50); do
-            pgrep -x Dock >/dev/null && break
+            new="$(pgrep -x Dock || true)"
+            [ -n "$new" ] && [ "$new" != "$old" ] && break
             sleep 0.1
         done
-        sudo rift sa load
+        # The loader finds Dock through LaunchServices, which lists the new
+        # one a moment after its process exists ("could not locate Dock.app
+        # pid"), so give it a few tries.
+        for _ in 1 2 3 4 5; do
+            sudo rift sa load && exit 0
+            sleep 1
+        done
+        exit 1
     fi
 
 # The sudoers rule is pinned to a binary's hash, so every rebuild staleness it.
