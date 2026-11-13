@@ -48,7 +48,8 @@
 `rift-plus` is a fork of [acsandmann/rift](https://github.com/acsandmann/rift)
 carrying extra patches — most visibly, it ships its own scripting addition, so
 moving windows between spaces works without yabai installed. Releases are
-Developer ID signed and notarized.
+signed in CI with an Apple Development certificate. They are not notarized,
+which a Homebrew install does not need.
 
 ```sh
 brew install performave/tap/rift-plus
@@ -64,7 +65,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what it adds over upstream.
 | [docs/scripting-addition.md](docs/scripting-addition.md) | what it is, what it needs, and why |
 | [docs/external-docks.md](docs/external-docks.md) | keeping tiles clear of DockDoor Pro and other third-party docks |
 | [docs/releasing.md](docs/releasing.md) | cutting a release |
-| [docs/ci-setup.md](docs/ci-setup.md) | one-time signing and notarization secrets |
+| [docs/ci-setup.md](docs/ci-setup.md) | signing mode, and the one-time signing and notarization secrets |
 | [docs/known-issues.md](docs/known-issues.md) | reported problems not yet resolved |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | commits, changelog, versioning |
 

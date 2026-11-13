@@ -11,6 +11,20 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+### Changed
+
+- **Releases are signed with an Apple Development certificate and no longer
+  notarized**, because there is no paid Apple Developer account behind them
+  for now. The Developer ID that signed earlier releases has been revoked, and
+  macOS now kills those binaries at launch, so 0.5.10-plus.7 and earlier no
+  longer start. The new certificate means Accessibility has to be granted once
+  more after this upgrade: remove rift's old entry in System Settings > Privacy
+  & Security > Accessibility and approve it again. After that the grant
+  survives upgrades as before. A Homebrew install never needed notarization,
+  because Homebrew does not quarantine what a formula installs. Signing and
+  notarization stay in the release workflow, behind the `MACOS_SIGNING`
+  repository variable (see `docs/ci-setup.md`).
+
 ### Fixed
 
 - **A window macOS is not drawing never gets a tile, however it got into the

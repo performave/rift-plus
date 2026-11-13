@@ -1,16 +1,27 @@
 name: release
 
-# Build, Developer ID sign, notarize, and stage a rift-plus release as a draft.
+# Build, sign, and stage a rift-plus release as a draft.
 #
-# Triggers on a tag like `v0.5.3-plus.1`. Runs on a macOS runner, imports the
-# Developer ID Application certificate into a throwaway keychain, builds a
-# universal (x86_64 + arm64) binary, signs it with the hardened runtime,
-# notarizes it with notarytool, and opens a **draft** GitHub Release with the
-# archive attached. Publishing that draft is what bumps the Homebrew tap
-# (see tap.yml).
+# Triggers on a tag like `v0.5.3-plus.1`. Runs on a macOS runner, builds a
+# universal (x86_64 + arm64) binary, signs it with the hardened runtime, and
+# opens a **draft** GitHub Release with the archive attached. Publishing that
+# draft is what bumps the Homebrew tap (see tap.yml).
 #
-# One-time secret setup: docs/ci-setup.md. The names match the yabai-plus repo
-# so the same values work for both.
+# The MACOS_SIGNING repository variable (Settings > Secrets and variables >
+# Actions > Variables) picks the signature, so getting a paid Apple Developer
+# account back means changing a variable, not this file:
+#
+#   adhoc      Default, used when the variable is unset. Needs no certificate
+#              and reads no Apple secret. The Accessibility grant is pinned to
+#              this exact build, so every upgrade must be approved again.
+#   signed     Signs with the certificate in APPLE_CERTIFICATE, with no
+#              notarization. A free account's Apple Development certificate
+#              is enough, and it keeps the Accessibility grant across upgrades.
+#   notarized  Signs with a Developer ID Application certificate and notarizes.
+#              Needs a paid Apple Developer Program membership.
+#
+# One-time setup: docs/ci-setup.md. The names match the yabai-plus repo, so the
+# same values work for both.
 
 on:
   push:
@@ -87,6 +98,24 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Releasing ${VERSION}"
 
+      # Checked before anything is built, so a typo in the variable fails here
+      # instead of being quietly treated as one of the modes.
+      - name: Choose signing mode
+        id: signing
+        env:
+          MODE: ${{ vars.MACOS_SIGNING || 'adhoc' }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            adhoc|signed|notarized) ;;
+            *)
+              echo "::error::MACOS_SIGNING is '$MODE'; expected adhoc, signed or notarized (docs/ci-setup.md)"
+              exit 1
+              ;;
+          esac
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "Signing mode: ${MODE}"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -140,9 +169,10 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Import Apple signing certificate
-        # Creates a temporary keychain, imports the Developer ID cert, and sets
-        # the key partition list so codesign works non-interactively -- the
-        # usual failure when this is done by hand on recent runners.
+        # Creates a temporary keychain, imports the certificate, and sets the
+        # key partition list so codesign works non-interactively -- the usual
+        # failure when this is done by hand on recent runners.
+        if: steps.signing.outputs.mode != 'adhoc'
         uses: apple-actions/import-codesign-certs@v7.0.0
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
@@ -171,18 +201,33 @@ jobs:
       # loader and payload are written to /Library/ScriptingAdditions at
       # `rift sa load` time and ad-hoc signed separately. Never hardened-sign
       # those two -- they run inside Dock.
+      #
+      # An ad-hoc signature has no identity for Apple's timestamp server to
+      # vouch for, so it is made without a timestamp.
       - name: Codesign (hardened runtime)
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MODE: ${{ steps.signing.outputs.mode }}
+          # Not even read in adhoc mode: the identity left over in the secrets
+          # may be a revoked one.
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.mode != 'adhoc' && secrets.APPLE_SIGNING_IDENTITY || '' }}
         run: |
           set -euo pipefail
+          if [ "$MODE" = adhoc ]; then
+            sign=(--sign - --timestamp=none)
+          elif [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            sign=(--sign "$APPLE_SIGNING_IDENTITY" --timestamp)
+          else
+            echo "::error::MACOS_SIGNING=${MODE} needs the APPLE_SIGNING_IDENTITY secret (docs/ci-setup.md)"
+            exit 1
+          fi
           for bin in rift rift-cli; do
-            codesign --force --timestamp --options runtime \
-              --sign "$APPLE_SIGNING_IDENTITY" "dist/${bin}"
+            codesign --force --options runtime "${sign[@]}" "dist/${bin}"
             codesign --verify --strict --verbose=2 "dist/${bin}"
+            codesign -dvv "dist/${bin}"
           done
 
       - name: Prepare App Store Connect API key
+        if: steps.signing.outputs.mode == 'notarized'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
@@ -193,6 +238,7 @@ jobs:
           echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Notarize
+        if: steps.signing.outputs.mode == 'notarized'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -269,6 +315,8 @@ jobs:
             echo "### Draft release ${RELEASE_TAG} is ready"
             echo
             echo '`sha256`: `${{ steps.archive.outputs.sha256 }}`'
+            echo
+            echo 'Signing: `${{ steps.signing.outputs.mode }}`'
             echo
             echo "Review it in the Releases tab and publish. Publishing bumps"
             echo "\`Formula/rift-plus.rb\` in the tap (see tap.yml)."

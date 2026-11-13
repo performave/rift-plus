@@ -3,7 +3,7 @@
 Releases are produced by [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 when a version tag is pushed. You should never need to build one by hand.
 
-> One-time setup — Apple Developer account, GitHub secrets — lives in
+> One-time setup — the signing mode, GitHub secrets — lives in
 > [ci-setup.md](ci-setup.md). Read that first if releases have never run here.
 
 ## TL;DR
@@ -16,8 +16,10 @@ just tag                        # annotated tag from Cargo.toml, with guards
 git push origin main --follow-tags
 ```
 
-Pushing the tag builds, signs, notarizes, and opens a **draft** release. Review
-it in the Releases tab and publish; publishing bumps the Homebrew formula.
+Pushing the tag builds, signs, and opens a **draft** release. It also notarizes
+when the `MACOS_SIGNING` variable is `notarized` (see
+[Signing](#signing-and-notarization)). Review the draft in the Releases tab and
+publish it. Publishing bumps the Homebrew formula.
 
 ## Versioning
 
@@ -59,19 +61,23 @@ Each guards the mistakes that are easy to make and annoying to undo:
 
 ## What the workflow does
 
-On a `v*` tag push, a `macos-14` runner:
+On a `v*` tag push, a `macos-26` runner:
 
-1. **Validates the tag** as semver, with a specific error for a doubled `v`.
+1. **Validates the tag** as semver, with a specific error for a doubled `v`, and
+   reads the signing mode from `MACOS_SIGNING`. An unknown value stops the run.
 2. **Checks the metadata agrees**: `Cargo.toml`, the `rift-wm` entry in
    `Cargo.lock`, and a `## [<version>]` heading in `CHANGELOG.md`. A bumped
    `Cargo.toml` with a stale lockfile means the bump was never committed
    properly, so it fails here rather than shipping.
-3. **Imports** the Developer ID certificate into a throwaway keychain.
+3. **Imports** the signing certificate into a throwaway keychain. Skipped when
+   the mode is `adhoc`.
 4. **Builds** `aarch64` and `x86_64`, and `lipo`s them universal. Not stripped —
    the release profile keeps debuginfo so crash reports symbolicate.
-5. **Codesigns** both binaries with the hardened runtime and a secure timestamp.
+5. **Codesigns** both binaries with the hardened runtime. Under `signed` or
+   `notarized` that uses the certificate and a secure timestamp. Under `adhoc`
+   it is an ad-hoc signature with no timestamp.
 6. **Notarizes** with `xcrun notarytool submit --wait` and an App Store Connect
-   API key.
+   API key. Only when the mode is `notarized`.
 7. **Assembles** `rift-plus-universal-macos-<version>.tar.gz` (both binaries plus
    `rift.default.toml`) and a `.sha256` beside it.
 8. **Extracts the release notes** from the matching `CHANGELOG.md` section.
@@ -89,13 +95,23 @@ waits for the release to actually be published.
 
 ## Signing and notarization
 
-Release binaries are Developer ID signed **and notarized in CI**. This is not
-cosmetic: macOS records the Accessibility grant against a binary's designated
-requirement, and an ad-hoc signature pins that to a cdhash which changes on
-every build — so an ad-hoc rift loses Accessibility on every upgrade and
-respawns in a launchd loop. A Developer ID signature gives a stable requirement
-that survives upgrades, and notarization keeps Gatekeeper quiet on a machine
-that did not build it.
+The `MACOS_SIGNING` repository variable picks the signature. The table and the
+secrets each mode needs are in [ci-setup.md](ci-setup.md#signing-modes).
+
+| mode | when |
+|---|---|
+| `adhoc` (unset) | no certificate at all |
+| `signed` | now: the free account's Apple Development certificate, while there is no paid Apple Developer account |
+| `notarized` | a paid account again, with a Developer ID |
+
+The choice is not cosmetic. macOS records the Accessibility grant against a
+binary's designated requirement, and an ad-hoc signature pins that to a cdhash
+which changes on every build. So after every upgrade, an ad-hoc rift has lost
+Accessibility and respawns in a launchd loop until the grant is approved again.
+The formula's caveats say so when the installed binary is ad-hoc. A certificate
+gives a stable requirement that survives upgrades. Notarization only adds a
+quiet Gatekeeper for a tarball downloaded by hand: Homebrew does not quarantine
+what a formula installs.
 
 The one thing never to hardened-sign is the scripting addition's loader and
 payload: they are written to `/Library/ScriptingAdditions` and ad-hoc signed at

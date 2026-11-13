@@ -35,9 +35,10 @@ Development certificate does the same job for a binary that never leaves your
 Mac. `just` uses `RIFT_CODESIGN_IDENTITY` if set, and otherwise the
 identity in the justfile.
 
-Release builds get this for free — CI signs with the hardened runtime and
-notarizes (see [releasing.md](releasing.md)) — so this only matters for binaries
-you swap in locally.
+Release builds get this when CI signs them with a certificate, which it does
+now: `MACOS_SIGNING` is `signed`, with the same Apple Development certificate
+`just` uses (see [ci-setup.md](ci-setup.md#signing-modes)). Under `adhoc`, a
+`brew upgrade` would lose the grant the same way a local ad-hoc rebuild does.
 
 ## Other recipes
 
@@ -93,10 +94,11 @@ answer is none — an empty run and a real one should never look alike.
 - **After a reboot or a Dock restart**, the scripting addition is gone from
   Dock's memory even though it is still installed. `just sa`, or let
   `run_on_start` do it. `just status` says which.
-- **`brew upgrade`** replaces the swapped binaries with the tap's build. That
-  build is signed by CI, not with your local identity, so expect to grant
-  Accessibility again — and it is not your working tree. Re-run `just install`
-  if you were testing something.
+- **`brew upgrade`** replaces the swapped binaries with the tap's build. Expect
+  to grant Accessibility again, unless CI signs with the same certificate as
+  your `identity` (`MACOS_SIGNING=signed` with the free Apple Development
+  certificate). And the tap's build is not your working tree: re-run
+  `just install` if you were testing something.
 - **Two window managers at once** do not fail loudly, they fight — windows
   oscillate as each reacts to the other's frame changes. Stop yabai and skhd
   before starting rift, and verify with `launchctl list | grep -iE

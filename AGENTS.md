@@ -6,7 +6,7 @@ Guidance for AI agents and new contributors working in this repository.
 
 A fork of [acsandmann/rift](https://github.com/acsandmann/rift), a
 tiling window manager for macOS. Rust; one binary (`rift`) plus a CLI
-(`rift-cli`), distributed as signed and notarized releases through
+(`rift-cli`), distributed as CI-signed releases through
 [performave/homebrew-tap](https://github.com/performave/homebrew-tap) as
 `rift-plus`.
 
@@ -66,9 +66,16 @@ justfile's `identity`; a free account's Apple Development one is enough).
 ## Releases
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds universal,
-Developer ID signs with the hardened runtime, notarizes, and opens a **draft**
-release with notes taken from `CHANGELOG.md`. Publishing that draft fires
-`tap.yml`, which bumps the formula.
+signs with the hardened runtime, and opens a **draft** release with notes taken
+from `CHANGELOG.md`. Publishing that draft fires `tap.yml`, which bumps the
+formula.
+
+The `MACOS_SIGNING` repository variable picks the signature: `adhoc` (the
+default, unset), `signed` (any certificate, no notarization), or `notarized`
+(Developer ID). There is no paid Apple Developer account right now, so releases
+are `signed` with the free account's Apple Development certificate. Do not make
+signing depend on whether the Apple secrets are set: the old paid team's App
+Store Connect secrets are still there, and its certificate is revoked.
 
 - Cutting one: **[docs/releasing.md](docs/releasing.md)** (`just bump`, `just
   tag`, `just untag`)
