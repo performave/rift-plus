@@ -11,6 +11,12 @@ Entries describe this fork's changes relative to
 
 ## [Unreleased]
 
+## [0.5.10-plus.9] - 2026-11-12
+
+0.5.10-plus.8 was tagged but never released, so this release also carries its
+changes, listed under 0.5.10-plus.8 in
+[CHANGELOG.md](https://github.com/performave/rift-plus/blob/main/CHANGELOG.md).
+
 ### Changed
 
 - **Releases are signed with an Apple Development certificate and no longer
@@ -1814,7 +1820,8 @@ First tagged release of the fork, against upstream `v0.5.3`.
   creation.
 - The release profile ships unstripped, so crash reports symbolicate.
 
-[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.8...HEAD
+[Unreleased]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.9...HEAD
+[0.5.10-plus.9]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.8...v0.5.10-plus.9
 [0.5.10-plus.8]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.7...v0.5.10-plus.8
 [0.5.10-plus.7]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.6...v0.5.10-plus.7
 [0.5.10-plus.6]: https://github.com/performave/rift-plus/compare/v0.5.10-plus.5...v0.5.10-plus.6
